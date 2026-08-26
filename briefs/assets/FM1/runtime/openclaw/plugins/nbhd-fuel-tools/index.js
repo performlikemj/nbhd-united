@@ -928,7 +928,7 @@ export default function register(api) {
             body.weeks = parseInteger(input.weeks, { defaultValue: undefined, min: 1, max: 12 });
           if (input.days_per_week !== undefined)
             body.days_per_week = parseInteger(input.days_per_week, { defaultValue: undefined, min: 1, max: 7 });
-          if (input.schedule_json) body.schedule_json = asObject(input.schedule_json);
+          if (input.schedule_json !== undefined) body.schedule_json = asObject(input.schedule_json);
           if (Array.isArray(input.remove_days)) body.remove_days = input.remove_days;
           if (input.replace_schedule !== undefined) body.replace_schedule = input.replace_schedule === true;
           if (input.week_overrides) body.week_overrides = asObject(input.week_overrides);

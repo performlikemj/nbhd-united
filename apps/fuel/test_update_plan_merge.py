@@ -39,6 +39,22 @@ class RuntimeUpdatePlanMergeTests(TestCase):
     def _plan_url(self, plan):
         return f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/"
 
+    def _create_plan(self, schedule, *, name="Test Plan"):
+        response = self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/",
+            {
+                "name": name,
+                "start_date": self.plan_start.isoformat(),
+                "weeks": 1,
+                "days_per_week": len(schedule),
+                "schedule_json": schedule,
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        return WorkoutPlan.objects.get(id=response.data["id"])
+
     def _create_weekday_plan(self):
         schedule = {
             day: {
@@ -48,20 +64,7 @@ class RuntimeUpdatePlanMergeTests(TestCase):
             }
             for day in ("monday", "tuesday", "wednesday", "thursday", "friday")
         }
-        response = self.client.post(
-            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/",
-            {
-                "name": "Five Day Plan",
-                "start_date": self.plan_start.isoformat(),
-                "weeks": 1,
-                "days_per_week": 5,
-                "schedule_json": schedule,
-            },
-            format="json",
-            **self.headers,
-        )
-        self.assertEqual(response.status_code, 201, response.data)
-        return WorkoutPlan.objects.get(id=response.data["id"])
+        return self._create_plan(schedule, name="Five Day Plan")
 
     def test_partial_weekend_schedule_merges_without_deleting_weekdays(self):
         plan = self._create_weekday_plan()
@@ -104,6 +107,24 @@ class RuntimeUpdatePlanMergeTests(TestCase):
             set(Workout.objects.filter(plan=plan, date__week_day__in=(1, 7)).values_list("activity", flat=True)),
             {"Mobility", "Recovery Flow"},
         )
+
+    def test_replace_schedule_false_explicitly_merges(self):
+        plan = self._create_weekday_plan()
+
+        response = self.client.patch(
+            self._plan_url(plan),
+            {
+                "schedule_json": {"saturday": {"category": "mobility", "activity": "Mobility"}},
+                "replace_schedule": False,
+            },
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        plan.refresh_from_db()
+        self.assertEqual(set(plan.schedule_json), {"0", "1", "2", "3", "4", "5"})
+        self.assertTrue(Workout.objects.filter(plan=plan, date__week_day=6).exists())
 
     def test_partial_day_omitting_detail_keeps_existing_prescription(self):
         plan = self._create_weekday_plan()
@@ -150,6 +171,48 @@ class RuntimeUpdatePlanMergeTests(TestCase):
         )
         self.assertFalse(Workout.objects.filter(plan=plan, date__week_day=6).exists())
         self.assertEqual(set(Workout.objects.filter(plan=plan).values_list("id", flat=True)), kept_ids)
+
+    def test_remove_days_validation_errors_self_correct(self):
+        plan = self._create_weekday_plan()
+        cases = (
+            ("non-list", "friday", "list_type"),
+            ("unknown day", ["funday"], "invalid_weekday"),
+            # Legacy integer weekdays are zero-based, so Friday is 4.
+            ("duplicate normalized day", ["fri", 4], "duplicate_weekday"),
+        )
+
+        for label, remove_days, error_type in cases:
+            with self.subTest(label=label):
+                response = self.client.patch(
+                    self._plan_url(plan),
+                    {"remove_days": remove_days},
+                    format="json",
+                    **self.headers,
+                )
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertEqual(response.data["error"], "validation_failed")
+                self.assertEqual(response.data["details"][0]["type"], error_type)
+
+    def test_schedule_json_and_remove_days_collision_is_rejected(self):
+        plan = self._create_weekday_plan()
+        original_schedule = plan.schedule_json
+
+        response = self.client.patch(
+            self._plan_url(plan),
+            {
+                "schedule_json": {"friday": {"category": "mobility", "activity": "Recovery"}},
+                "remove_days": ["fri"],
+            },
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data["error"], "validation_failed")
+        self.assertIn("cannot target the same day", response.data["message"])
+        self.assertEqual(response.data["details"][0]["type"], "schedule_remove_conflict")
+        plan.refresh_from_db()
+        self.assertEqual(plan.schedule_json, original_schedule)
 
     def test_replace_schedule_true_replaces_whole_template(self):
         plan = self._create_weekday_plan()
@@ -200,6 +263,85 @@ class RuntimeUpdatePlanMergeTests(TestCase):
         plan.refresh_from_db()
         self.assertEqual(plan.schedule_json, original_schedule)
         self.assertTrue(Workout.objects.filter(plan=plan, date__week_day=6).exists())
+
+    def test_implicit_null_removal_of_unprescribed_day_self_corrects(self):
+        plan = self._create_weekday_plan()
+        Workout.objects.filter(plan=plan, date__week_day=6).update(detail_json={})
+
+        response = self.client.patch(
+            self._plan_url(plan),
+            {"schedule_json": {"friday": None}},
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data["error"], "validation_failed")
+        self.assertIn("remove_days or replace_schedule", response.data["message"])
+        self.assertEqual(response.data["details"][0]["type"], "explicit_removal_required")
+
+    def test_category_flip_omitting_detail_requires_prescription(self):
+        plan = self._create_plan({"monday": {"category": "mobility", "activity": "Mobility", "detail_json": {}}})
+        original_schedule = plan.schedule_json
+
+        response = self.client.patch(
+            self._plan_url(plan),
+            {"schedule_json": {"monday": {"category": "strength", "activity": "Lift"}}},
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data["error"], "validation_failed")
+        self.assertEqual(response.data["details"][0]["type"], "missing_prescription")
+        plan.refresh_from_db()
+        self.assertEqual(plan.schedule_json, original_schedule)
+
+    def test_category_flip_with_detail_is_accepted(self):
+        plan = self._create_plan({"monday": {"category": "mobility", "activity": "Mobility", "detail_json": {}}})
+
+        response = self.client.patch(
+            self._plan_url(plan),
+            {
+                "schedule_json": {
+                    "monday": {
+                        "category": "strength",
+                        "activity": "Lift",
+                        "detail_json": _PRESCRIPTION,
+                    }
+                }
+            },
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        plan.refresh_from_db()
+        self.assertEqual(plan.schedule_json["0"]["category"], "strength")
+        self.assertEqual(plan.schedule_json["0"]["detail_json"], _PRESCRIPTION)
+        monday = Workout.objects.get(plan=plan, date=self.plan_start)
+        self.assertEqual(monday.detail_json, _PRESCRIPTION)
+
+    def test_merge_normalizes_legacy_name_keyed_stored_schedule(self):
+        plan = self._create_weekday_plan()
+        weekday_names = ("monday", "tuesday", "wednesday", "thursday", "friday")
+        legacy_schedule = {weekday_names[int(day)]: day_def for day, day_def in plan.schedule_json.items()}
+        WorkoutPlan.objects.filter(id=plan.id).update(schedule_json=legacy_schedule)
+        original_workout_ids = set(Workout.objects.filter(plan=plan).values_list("id", flat=True))
+
+        response = self.client.patch(
+            self._plan_url(plan),
+            {"schedule_json": {"saturday": {"category": "mobility", "activity": "Mobility"}}},
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        plan.refresh_from_db()
+        self.assertEqual(set(plan.schedule_json), {"0", "1", "2", "3", "4", "5"})
+        self.assertTrue(
+            original_workout_ids.issubset(set(Workout.objects.filter(plan=plan).values_list("id", flat=True)))
+        )
 
     def test_duplicate_numeric_and_name_keys_still_rejected(self):
         plan = self._create_weekday_plan()

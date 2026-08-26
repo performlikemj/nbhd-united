@@ -1495,7 +1495,7 @@ def _implicit_schedule_removal_error(day_keys):
     err = LLMValidationError(
         message=(
             "schedule_json merges; to drop days pass remove_days or replace_schedule. "
-            f"The attempted removal would drop prescribed planned workouts on: {', '.join(day_names)}."
+            f"Do not set merged schedule days to null; remove explicitly instead: {', '.join(day_names)}."
         ),
         details=[
             {
@@ -1511,17 +1511,36 @@ def _implicit_schedule_removal_error(day_keys):
     return Response(payload, status=status.HTTP_400_BAD_REQUEST)
 
 
-def _prescribed_planned_weekdays(plan, *, today):
-    """Weekdays with future planned workouts carrying a prescription."""
-    return {
-        workout.date.weekday()
-        for workout in Workout.objects.filter(
-            plan=plan,
-            status=WorkoutStatus.PLANNED,
-            date__gte=today,
-        ).only("date", "detail_json")
-        if bool(workout.detail_json)
-    }
+def _schedule_remove_collision_error(day_keys):
+    """Reject a request that both defines and explicitly removes a day."""
+    from apps.common.llm_contracts import LLMValidationError
+
+    day_names = [WEEKDAY_NAMES[int(day)] for day in sorted(day_keys, key=int)]
+    err = LLMValidationError(
+        message=(
+            "schedule_json and remove_days cannot target the same day. "
+            f"Choose either update or removal for: {', '.join(day_names)}."
+        ),
+        details=[
+            {
+                "loc": ["remove_days", day_name],
+                "msg": "day is also defined in schedule_json",
+                "type": "schedule_remove_conflict",
+            }
+            for day_name in day_names
+        ],
+    )
+    return Response(err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
+
+
+def _normalize_stored_schedule_keys(schedule_json):
+    """Canonicalize legacy stored weekday names before merge/reconciliation."""
+    normalized = {}
+    for raw_key, day_def in (schedule_json or {}).items():
+        day_int, key_err = _normalize_weekday_key(raw_key)
+        if key_err is None and day_int is not None:
+            normalized[str(day_int)] = day_def
+    return normalized
 
 
 def _validate_normalize_schedule(schedule_json, *, require_detail=True):
@@ -2422,32 +2441,23 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         schedule_supplied = "schedule_json" in data and isinstance(data["schedule_json"], dict)
         replace_schedule = data.get("replace_schedule") is True
         if schedule_supplied:
-            # Mirror the POST path: validate + normalize every prescription
-            # BEFORE persisting, so a malformed strength/calisthenics set is
-            # rejected with the self-correcting LLMValidationError envelope (400)
-            # rather than landing unvalidated in future Workout.detail_json via
-            # reconcile/apply (which does no detail validation).
             raw_schedule = data["schedule_json"]
             # ``null`` is how week_overrides denotes a rest day, so it is a
             # plausible (but unsafe) attempt to remove a base-template day.
             # Base schedules merge by default: point the caller at the two
-            # explicit deletion surfaces before ordinary shape validation.
-            if not replace_schedule and "remove_days" not in data:
-                null_days = set()
-                for raw_key, raw_val in raw_schedule.items():
-                    if raw_val is not None:
-                        continue
-                    day_int, key_err = _normalize_weekday_key(raw_key)
-                    if key_err is None and day_int is not None:
-                        null_days.add(str(day_int))
-                if null_days:
-                    prescribed_days = _prescribed_planned_weekdays(
-                        plan,
-                        today=today_in_tenant_tz(tenant),
-                    )
-                    protected_null_days = {day for day in null_days if int(day) in prescribed_days}
-                    if protected_null_days:
-                        return _implicit_schedule_removal_error(protected_null_days)
+            # explicit deletion surfaces before ordinary shape validation. This
+            # is the sole implicit-removal guard: every null day gets the same
+            # self-correcting response, independent of current workout contents.
+            null_days = set()
+            for raw_key, raw_val in raw_schedule.items():
+                if raw_val is not None:
+                    continue
+                day_int, key_err = _normalize_weekday_key(raw_key)
+                if key_err is None and day_int is not None:
+                    null_days.add(str(day_int))
+            if null_days:
+                return _implicit_schedule_removal_error(null_days)
+
             # require_detail=False: a day that omits detail_json here means
             # "leave the existing prescription alone" (its injected empty key is
             # stripped below), so only a day that explicitly supplied an empty
@@ -2478,11 +2488,20 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                 src = raw_by_weekday.get(day_str, {})
                 if isinstance(day_def, dict) and "detail_json" not in (src if isinstance(src, dict) else {}):
                     day_def.pop("detail_json", None)
-            current_schedule = dict(plan.schedule_json or {})
+
+            collisions = set(normalized_schedule) & set(normalized_remove_days)
+            if collisions:
+                return _schedule_remove_collision_error(collisions)
+
+            # Stored plans predate the name-key normalization contract in a few
+            # paths. Canonicalize before copying so the reconciler cannot silently
+            # discard a carried-forward name-keyed day.
+            current_schedule = _normalize_stored_schedule_keys(plan.schedule_json)
             if replace_schedule:
                 effective_schedule = dict(normalized_schedule)
             else:
                 effective_schedule = dict(current_schedule)
+                category_changed_days = set()
                 for day_str, incoming_day in normalized_schedule.items():
                     merged_day = dict(incoming_day)
                     existing_day = current_schedule.get(day_str)
@@ -2493,26 +2512,34 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                     ):
                         merged_day["detail_json"] = existing_day["detail_json"]
                     effective_schedule[day_str] = merged_day
+                    if not isinstance(existing_day, dict) or existing_day.get("category", "other") != merged_day.get(
+                        "category", "other"
+                    ):
+                        category_changed_days.add(day_str)
+
+                # Carry-forward happens before this validation. A new day or a
+                # category flip must satisfy the same prescription requirement as
+                # a fresh template, so mobility detail cannot become an empty
+                # strength/calisthenics workout after the first validation pass.
+                if category_changed_days:
+                    changed_schedule = {day: effective_schedule[day] for day in category_changed_days}
+                    validated_changed, changed_err = _validate_normalize_schedule(
+                        changed_schedule,
+                        require_detail=True,
+                    )
+                    if changed_err is not None:
+                        return changed_err
+                    effective_schedule.update(validated_changed)
 
             for day_str in normalized_remove_days:
                 effective_schedule.pop(day_str, None)
-
-            removed_days = set(current_schedule) - set(effective_schedule)
-            if removed_days and not replace_schedule and "remove_days" not in data:
-                prescribed_days = _prescribed_planned_weekdays(
-                    plan,
-                    today=today_in_tenant_tz(tenant),
-                )
-                protected_removed_days = {day for day in removed_days if int(day) in prescribed_days}
-                if protected_removed_days:
-                    return _implicit_schedule_removal_error(protected_removed_days)
 
             plan.schedule_json = effective_schedule
             updated_fields.append("schedule_json")
             needs_regeneration = True
 
         elif normalized_remove_days:
-            current_schedule = dict(plan.schedule_json or {})
+            current_schedule = _normalize_stored_schedule_keys(plan.schedule_json)
             for day_str in normalized_remove_days:
                 current_schedule.pop(day_str, None)
             plan.schedule_json = current_schedule

@@ -53,9 +53,7 @@ test("nbhd_fuel_update_plan forwards remove_days and replace_schedule", async (t
   const tool = collectTools({ apiBaseUrl: "https://nbhd.example" }).nbhd_fuel_update_plan;
   const result = await tool.execute("call-1", {
     plan_id: "plan-123",
-    schedule_json: {
-      saturday: { category: "mobility", activity: "Mobility" },
-    },
+    schedule_json: {},
     remove_days: ["friday", 3],
     replace_schedule: true,
   });
@@ -63,9 +61,7 @@ test("nbhd_fuel_update_plan forwards remove_days and replace_schedule", async (t
   assert.equal(captured.url.pathname, "/api/v1/fuel/runtime/tenant-123/plans/plan-123/");
   assert.equal(captured.options.method, "PATCH");
   assert.deepEqual(JSON.parse(captured.options.body), {
-    schedule_json: {
-      saturday: { category: "mobility", activity: "Mobility" },
-    },
+    schedule_json: {},
     remove_days: ["friday", 3],
     replace_schedule: true,
   });
