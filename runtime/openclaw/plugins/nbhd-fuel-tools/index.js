@@ -64,6 +64,58 @@ function renderPayload(payload) {
   };
 }
 
+function renderTextPayload(payload, text) {
+  return {
+    content: [{ type: "text", text }],
+    details: { json: payload },
+  };
+}
+
+function renderWritePayload(payload) {
+  const unmatched = Array.isArray(payload?.unmatched_exercises)
+    ? payload.unmatched_exercises.map(String).filter(Boolean)
+    : [];
+  if (unmatched.length === 0) return renderPayload(payload);
+  const warning = `No figure for: ${unmatched.join(", ")} — use exact catalog names (nbhd_fuel_search_exercises)`;
+  return renderTextPayload(payload, `${JSON.stringify(payload, null, 2)}\n${warning}`);
+}
+
+function renderExerciseSearch(payload) {
+  const rows = Array.isArray(payload?.results) ? payload.results : [];
+  const lines = rows.map((row) => {
+    const stretch = row?.stretch ? " · stretch" : "";
+    return `${row?.name || ""} — ${row?.muscle || ""} · ${row?.equipment || ""}${stretch}`;
+  });
+  lines.push(`total: ${Number.isFinite(payload?.total) ? payload.total : 0}`);
+  if (Array.isArray(payload?.muscles)) lines.push(`muscles: ${payload.muscles.join(", ")}`);
+  if (Array.isArray(payload?.equipment_types)) {
+    lines.push(`equipment: ${payload.equipment_types.join(", ")}`);
+  }
+  if (payload?.guidance) lines.push(String(payload.guidance));
+  return renderTextPayload(payload, lines.join("\n"));
+}
+
+function renderPlan(payload) {
+  const workouts = Array.isArray(payload?.workouts) ? payload.workouts : [];
+  const start = new Date(`${payload?.start_date || ""}T00:00:00Z`);
+  const lines = [`${payload?.name || "Plan"} · ${payload?.status || "unknown"}`];
+  let currentWeek = null;
+  for (const workout of workouts) {
+    const workoutDate = new Date(`${workout?.date || ""}T00:00:00Z`);
+    const week = Number.isNaN(start.valueOf()) || Number.isNaN(workoutDate.valueOf())
+      ? "?"
+      : Math.floor((workoutDate - start) / 604800000) + 1;
+    if (week !== currentWeek) {
+      currentWeek = week;
+      lines.push(`Week ${week}`);
+    }
+    lines.push(
+      `${workout?.date || ""} · ${workout?.activity || "Workout"} · ${workout?.status || "unknown"} · prescription ${workout?.has_prescription ? "yes" : "no"}`,
+    );
+  }
+  return renderTextPayload(payload, lines.join("\n"));
+}
+
 const TOOL_ERROR_DETAIL_MAX_CHARS = 2000;
 
 function clampErrorDetail(text) {
@@ -203,6 +255,75 @@ export default function register(api) {
             method: "GET",
           });
           return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Illustrated Exercise Catalog ───────────────────────────────────
+  api.registerTool(wrap({
+      name: "nbhd_fuel_search_exercises",
+      description:
+        "Search the catalog of 302 illustrated exercises; use the returned name verbatim so the app shows the figure. Call nbhd_fuel_search_exercises when choosing accessories or mobility movements, or when the user asks what else could I do for <muscle>? Filters are exact. Muscles: Adductors, Back, Biceps, Calves, Chest, Core, Forearms, Glutes, Hamstrings, Hips, Lats, Legs, Lower Back, Mobility, Posterior Chain, Quads, Rear Delts, Shoulders, Triceps, Upper Back. Equipment: Barbell, Bench, Bodyweight, Box, Cable, Cardio, Chair, Doorway, Dumbbell, Kettlebell, Machine, Plate, Pull-up Bar, Resistance Band, Stability Ball, Towel, Wall.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          query: { type: "string", description: "Name, alias, or muscle text to search." },
+          muscle: { type: "string", description: "Exact muscle filter from this tool's description." },
+          equipment: { type: "string", description: "Exact equipment filter from this tool's description." },
+          limit: { type: "integer", minimum: 1, maximum: 100, description: "Maximum rows (1-100)." },
+        },
+      },
+      async execute(_id, params) {
+        try {
+          const input = asObject(params);
+          const query = {};
+          if (input.query) query.q = asTrimmedString(input.query);
+          if (input.muscle) query.muscle = asTrimmedString(input.muscle);
+          if (input.equipment) query.equipment = asTrimmedString(input.equipment);
+          if (input.limit !== undefined) {
+            query.limit = parseInteger(input.limit, { defaultValue: 50, min: 1, max: 100 });
+          }
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, "/exercises/"),
+            method: "GET",
+            query,
+          });
+          return renderExerciseSearch(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Full Workout Plan ──────────────────────────────────────────────
+  api.registerTool(wrap({
+      name: "nbhd_fuel_get_plan",
+      description:
+        "Get one full plan with every workout row and has_prescription. Use it to fill in every empty session of a plan.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          plan_id: { type: "string", description: "UUID of the plan from nbhd_fuel_summary." },
+        },
+        required: ["plan_id"],
+      },
+      async execute(_id, params) {
+        try {
+          const planId = asTrimmedString(asObject(params).plan_id);
+          if (!planId) throw new Error("plan_id is required");
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, `/plans/${encodeURIComponent(planId)}/`),
+            method: "GET",
+          });
+          return renderPlan(payload);
         } catch (error) {
           return renderPayload({ error: error.message });
         }
@@ -406,7 +527,7 @@ export default function register(api) {
             method: "POST",
             body,
           });
-          return renderPayload(payload);
+          return renderWritePayload(payload);
         } catch (error) {
           return renderPayload({ error: error.message });
         }
@@ -474,7 +595,7 @@ export default function register(api) {
             method: "PATCH",
             body,
           });
-          return renderPayload(payload);
+          return renderWritePayload(payload);
         } catch (error) {
           return renderPayload({ error: error.message });
         }
@@ -793,7 +914,7 @@ export default function register(api) {
                 detail_json: {
                   type: "object",
                   description:
-                    'Category-specific prescription. Populate every training day, not just strength. Strength/calisthenics: REQUIRED — {"exercises": [{"name": "...", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}, ...]}]} (set type is one of weighted_reps | bodyweight_reps | hold_time). The backend validates strength/calisthenics and rejects both malformed sets AND an empty prescription with a 400 carrying the offending weekday, so design the real programming and self-correct — do not switch the category to dodge the requirement. Cardio: {"distance_km": 5, "pace": "5:30"} (or duration-only if pace is left to feel). HIIT: {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility: {"blocks": ["hip openers", "thoracic rotation"]}. Leaving a strength/calisthenics day empty is rejected; leaving a cardio/HIIT/mobility day empty just means the user sees only the activity name in the UI.',
+                    'Category-specific prescription. Populate every training day, not just strength. Strength/calisthenics: REQUIRED — {"exercises": [{"name": "...", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}, ...]}]} (set type is one of weighted_reps | bodyweight_reps | hold_time). The backend validates every planned category and rejects malformed sets or an empty prescription with a 400 carrying the offending weekday, so design the real programming and self-correct. Cardio: {"distance_km": 5, "pace": "5:30"}. HIIT: {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility uses skills with hold times, e.g. {"skills":[{"name":"Hip flexor stretch","sets":[{"type":"hold_time","hold_s":45}]}]}. Every planned day needs a prescription.',
                 },
                 target_rpe: {
                   type: "integer",
@@ -814,7 +935,7 @@ export default function register(api) {
           week_overrides: {
             type: "object",
             description:
-              'Optional per-week progression/deload. Keys are 0-indexed week offsets ("0"=first week) — these ARE numbers, unlike the weekday keys inside each value. Each value is a partial schedule_json (keyed by weekday NAME) merged over the base template for that week; map a weekday to null to make it a rest day that week. Example: {"3": {"monday": {"category":"strength","activity":"Deload","target_rpe":5}, "wednesday": null}} deloads Monday and rests Wednesday in week 4.',
+              'Optional per-week progression/deload. Keys are 0-indexed week offsets ("0"=first week). Each overridden weekday must be a complete day object with full detail_json because it replaces the base day wholesale. Example: {"3":{"monday":{"category":"strength","activity":"Deload","target_rpe":5,"detail_json":{"exercises":[{"name":"Bench Press","sets":[{"type":"weighted_reps","reps":5,"weight":50}]}]}}}}.',
           },
           notes: {
             type: "string",
@@ -843,7 +964,7 @@ export default function register(api) {
             method: "POST",
             body,
           });
-          return renderPayload(payload);
+          return renderWritePayload(payload);
         } catch (error) {
           return renderPayload({ error: error.message });
         }
@@ -909,7 +1030,7 @@ export default function register(api) {
           week_overrides: {
             type: "object",
             description:
-              'Replace the plan\'s per-week progression/deload map. Keys are 0-indexed ABSOLUTE plan weeks ("0" is always the plan\'s FIRST week, never "the first week left") and must be within the plan\'s length — a key of "9" on a 4-week plan is a 400. Each value is a partial schedule_json (keyed by weekday NAME) merged over the base template for that week; map a weekday to null to make it a rest day that week. Sent as a whole map: it REPLACES the stored one, so include the overrides you want to keep. Triggers workout regeneration.',
+              'Replace the plan\'s whole per-week progression/deload map. Keys are 0-indexed ABSOLUTE plan weeks ("0" is always the plan\'s FIRST week) and must be within the plan\'s length. Each overridden weekday must be a complete day object with full detail_json because the override replaces that base day wholesale; null makes it a rest day. Sent as a whole map: it REPLACES the stored one, so include every week you want to keep. Triggers workout regeneration.',
           },
         },
         required: ["plan_id"],
@@ -938,7 +1059,7 @@ export default function register(api) {
             method: "PATCH",
             body,
           });
-          return renderPayload(payload);
+          return renderWritePayload(payload);
         } catch (error) {
           return renderPayload({ error: error.message });
         }

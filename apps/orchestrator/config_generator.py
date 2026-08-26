@@ -65,7 +65,9 @@ SUBAGENT_READ_ONLY_TOOLS: tuple[str, ...] = (
     "nbhd_mission_context",  # Neighborhood mission context read.
     "nbhd_neighborhood_context",  # Neighborhood context read.
     "nbhd_fuel_audit",  # Fuel history audit read.
+    "nbhd_fuel_get_plan",  # Full workout-plan read.
     "nbhd_fuel_get_workout",  # Workout read.
+    "nbhd_fuel_search_exercises",  # Illustrated exercise catalog read.
     "nbhd_fuel_summary",  # Fuel summary read.
     "nbhd_insights_baseline",  # Insight baseline read.
     "nbhd_insights_compare",  # Insight comparison read.

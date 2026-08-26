@@ -234,7 +234,13 @@ describe("sub-agent read-only guard", () => {
   });
 
   it("allows reviewed read-only tools directly and through tool_call", () => {
-    for (const id of ["nbhd_journal_search", "nbhd_task_list", "nbhd_gmail_get_message_detail"]) {
+    for (const id of [
+      "nbhd_journal_search",
+      "nbhd_task_list",
+      "nbhd_gmail_get_message_detail",
+      "nbhd_fuel_get_plan",
+      "nbhd_fuel_search_exercises",
+    ]) {
       assert.ok(SUBAGENT_READ_ONLY_NBHD_TOOL_IDS.has(id), id);
       assert.equal(decideSubagentToolBlock({ toolName: id, params: {} }, helperKey), undefined);
       assert.equal(
