@@ -37,6 +37,8 @@ import { createHmac } from "node:crypto";
  * is enabled, not just typed-cron sessions. Origin stripping runs first in
  * its own guard; enforcement then remains fully try/caught and fail-open.
  * Same discipline as nbhd-routing-context's before_tool_call guard.
+ * Non-isolated cron targets (sessionTarget:"main" or custom keys without
+ * ``:run:``) remain unstamped and unenforced by design: fail-open, never guess.
  *
  * Handles both dispatch shapes: a direct call (toolName === "nbhd_send_to_user",
  * params.message) and the toolSearch meta-dispatch (toolName === "tool_call",
@@ -403,7 +405,9 @@ function lookupContract(jobId) {
 // cron session keys retain the authoritative job/run pair, in the runtime's
 // own `agent:<agent>:cron:<jobId>:run:<runId>` format
 // (isolated-agent-6jikzXvw.js:589-622). Require the runId to agree so an
-// unrelated or caller-shaped session key cannot attach provenance.
+// unrelated or caller-shaped session key cannot attach provenance. Cron jobs
+// targeting `main` or a custom session key without `:run:` deliberately do not
+// match and remain unstamped/unenforced (fail-open rather than infer identity).
 function cronJobIdFromContext(ctx, runId) {
   const direct = asTrimmedString(ctx && ctx.jobId);
   if (direct) return direct;

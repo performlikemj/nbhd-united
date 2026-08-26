@@ -621,6 +621,39 @@ describe("register() wires up the jobId/runId seam", () => {
     assert.equal(result.params._nbhd_origin, null);
   });
 
+  it("does not infer a job from a non-isolated main-session cron key", () => {
+    const api = makeFakeApi({ tenantId: "tenant-main-session", internalApiKey: "key-main-session" });
+    register(api);
+    api._handlers["cron_changed"]({
+      action: "started",
+      jobId: "job-main-session",
+      job: {
+        name: "main-session-cron",
+        description: contract({ kind: "contains", text: "Drink water" }, { action: "rewrite", content: "Drink water" }),
+      },
+    });
+    api._handlers["before_prompt_build"]({}, {
+      trigger: "cron",
+      runId: "run-main-session",
+      sessionKey: "agent:main:main",
+    });
+
+    const unstamped = api._handlers["before_tool_call"]({
+      runId: "run-main-session",
+      toolName: "nbhd_datebook_add_apple_reminder",
+      params: { items: [] },
+    });
+    assert.equal(unstamped.params._nbhd_origin, null);
+    assert.equal(
+      api._handlers["before_tool_call"]({
+        runId: "run-main-session",
+        toolName: "nbhd_send_to_user",
+        params: { message: "not contract-compliant" },
+      }),
+      undefined,
+    );
+  });
+
   it("joins a spawned helper runId to its requester cron run", () => {
     const api = makeFakeApi({ tenantId: "tenant-helper-origin", internalApiKey: "key-helper-origin" });
     register(api);
@@ -650,6 +683,35 @@ describe("register() wires up the jobId/runId seam", () => {
     assert.equal(result.params._nbhd_origin.kind, "cron");
     assert.equal(result.params._nbhd_origin.run_id, "run-helper-child");
     assert.equal(result.params._nbhd_origin.job_id, "job-helper-origin");
+  });
+
+  it("does not join a spawned helper whose requester is a non-cron user thread", () => {
+    const api = makeFakeApi({ tenantId: "tenant-user-helper", internalApiKey: "key-user-helper" });
+    register(api);
+    api._handlers["before_prompt_build"]({}, {
+      trigger: "cron",
+      jobId: "job-other-cron",
+      runId: "run-other-cron",
+      sessionKey: "agent:main:cron:job-other-cron:run:run-other-cron",
+    });
+    api._handlers["subagent_spawned"]({
+      runId: "run-user-helper",
+      childSessionKey: "agent:main:subagent:user-child",
+      agentId: "main",
+      mode: "run",
+      threadRequested: false,
+    }, {
+      runId: "run-user-helper",
+      childSessionKey: "agent:main:subagent:user-child",
+      requesterSessionKey: "agent:main:ios:thread:user-123",
+    });
+
+    const result = api._handlers["before_tool_call"]({
+      runId: "run-user-helper",
+      toolName: "nbhd_datebook_add_apple_reminder",
+      params: { items: [], _nbhd_origin: { sig: "forged" } },
+    });
+    assert.equal(result.params._nbhd_origin, null);
   });
 
   it("prunes expired cache entries on the next cron_changed call", () => {
