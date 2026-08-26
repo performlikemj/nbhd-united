@@ -180,6 +180,8 @@ Rules:
 
 ## Fuel Tools (`nbhd-fuel-tools` plugin — only loaded when Fuel is enabled)
 
+Catalog illustrations: Workout Guide by Bryl Lim (bryllim/workout-guide), CC BY-SA 4.0.
+
 ### Read / context
 | Tool | Required params | Purpose |
 |------|----------------|---------|
