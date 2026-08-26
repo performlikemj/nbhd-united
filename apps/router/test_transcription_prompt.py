@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.urls import resolve, reverse
 from rest_framework.test import APIClient, APIRequestFactory
 
 from apps.router.transcription import (
@@ -269,6 +270,11 @@ class InternalTranscriptionViewTests(TestCase):
             "HTTP_X_NBHD_INTERNAL_KEY": key,
             "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
         }
+
+    def test_internal_transcription_url_resolves_to_view(self):
+        self.assertEqual(reverse("internal-transcribe"), "/api/internal/transcribe/")
+        match = resolve("/api/internal/transcribe/")
+        self.assertIs(match.func.view_class, InternalTranscriptionView)
 
     def test_requires_internal_auth(self):
         request = self.factory.post(
