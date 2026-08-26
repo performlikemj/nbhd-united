@@ -18,23 +18,29 @@ function manifestPaths(root) {
   return paths;
 }
 
+function manifestOwnsHooks(manifest) {
+  // Mirrors openclaw@2026.5.28's activation planner `hasValues(plugin.hooks)`.
+  return (manifest.hooks?.length ?? 0) > 0;
+}
+
 export function discoverHookOnlyPlugins(pluginRoot = DEFAULT_PLUGIN_ROOT) {
   return manifestPaths(pluginRoot).flatMap((manifestPath) => {
     const pluginDirectory = path.dirname(manifestPath);
     const indexPath = path.join(pluginDirectory, "index.js");
-    if (!existsSync(indexPath)) return [];
-
-    const source = readFileSync(indexPath, "utf8");
-    const registersHooks = /\bapi\.on\s*\(/u.test(source);
-    const registersTools = /\b(?:api\.)?registerTool\s*\(/u.test(source);
-    if (!registersHooks || registersTools) return [];
-
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const source = existsSync(indexPath) ? readFileSync(indexPath, "utf8") : "";
+    const registersTypedHooks = /\bapi\.on\s*\(/u.test(source);
+    const ownsManifestHooks = manifestOwnsHooks(manifest);
+    const registersTools = /\b(?:api\.)?registerTool\s*\(/u.test(source);
+    if ((!registersTypedHooks && !ownsManifestHooks) || registersTools) return [];
+
     return [{
       id: manifest.id,
       indexPath,
       manifest,
       manifestPath,
+      ownsManifestHooks,
+      registersTypedHooks,
     }];
   }).sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -42,7 +48,9 @@ export function discoverHookOnlyPlugins(pluginRoot = DEFAULT_PLUGIN_ROOT) {
 export function assertHookOnlyManifestsDeclareActivation(pluginRoot = DEFAULT_PLUGIN_ROOT) {
   const plugins = discoverHookOnlyPlugins(pluginRoot);
   const missing = plugins.filter(
-    ({ manifest }) => !manifest.activation?.onCapabilities?.includes("hook"),
+    ({ manifest, ownsManifestHooks }) => (
+      !ownsManifestHooks && !manifest.activation?.onCapabilities?.includes("hook")
+    ),
   );
   if (missing.length > 0) {
     throw new Error(
@@ -50,6 +58,21 @@ export function assertHookOnlyManifestsDeclareActivation(pluginRoot = DEFAULT_PL
     );
   }
   return plugins;
+}
+
+export function assertHookPluginDiagnosticsClean(logText, expectedPlugins) {
+  const expectedIds = new Set(expectedPlugins.map(({ id }) => id));
+  const diagnosticLines = logText.replace(ANSI_ESCAPE, "").split(/\r?\n/u).filter((line) => (
+    [...expectedIds].some((id) => line.includes(id))
+      && (
+        line.includes("blocked because non-bundled plugins must set")
+        || line.includes("unknown typed hook")
+      )
+  ));
+  if (diagnosticLines.length > 0) {
+    throw new Error(`Hook registrations were dropped by OpenClaw:\n${diagnosticLines.join("\n")}`);
+  }
+  return diagnosticLines;
 }
 
 export function activatedPluginsFromLog(logText) {
@@ -75,8 +98,9 @@ export function assertHookOnlyPluginsActivated(logText, pluginRoot = DEFAULT_PLU
   const missing = expected.filter(({ id }) => !activatedIds.has(id));
   if (missing.length > 0) {
     throw new Error(
-      `Hook-only plugins absent from activated-plugin line: ${missing.map(({ id }) => id).join(", ")}\n${activated.line}`,
+      `Hook plugins absent from activated-plugin line: ${missing.map(({ id }) => id).join(", ")}\n${activated.line}`,
     );
   }
-  return { ...activated, expected: expected.map(({ id }) => id) };
+  const diagnostics = assertHookPluginDiagnosticsClean(logText, expected);
+  return { ...activated, diagnostics, expected: expected.map(({ id }) => id) };
 }

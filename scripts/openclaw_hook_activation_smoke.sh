@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Boot the exact Dockerfile OpenClaw pin with a real generated maximal config
-# and require every source-derived hook-only plugin in the activation line.
+# and require every repo-derived hook plugin in the activation line with no
+# dropped or unknown typed-hook diagnostics.
 
 set -euo pipefail
 
@@ -10,24 +11,13 @@ if [ ! -f "$MAXIMAL_CONFIG" ]; then
   exit 1
 fi
 
-OPENCLAW_VERSION="$(sed -nE 's/^ARG OPENCLAW_VERSION=([^[:space:]]+).*$/\1/p' Dockerfile.openclaw | head -n 1)"
-if [ -z "$OPENCLAW_VERSION" ]; then
-  echo "Could not resolve OPENCLAW_VERSION from Dockerfile.openclaw" >&2
-  exit 1
-fi
-
 TEMPORARY_ROOT="$(mktemp -d)"
 cleanup() {
   rm -rf "$TEMPORARY_ROOT"
 }
 trap cleanup EXIT
 
-echo "Installing exact OpenClaw pin: $OPENCLAW_VERSION"
-npm install \
-  --prefix "$TEMPORARY_ROOT/install" \
-  --no-audit \
-  --no-fund \
-  "openclaw@$OPENCLAW_VERSION"
+./scripts/install_pinned_openclaw.sh "$TEMPORARY_ROOT/install"
 
 OPENCLAW_REPRO_BIN="$TEMPORARY_ROOT/install/node_modules/openclaw/openclaw.mjs" \
 OPENCLAW_MAXIMAL_CONFIG="$MAXIMAL_CONFIG" \

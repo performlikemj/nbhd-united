@@ -127,6 +127,12 @@ class GeneratedConfigStrictTests(TestCase):
         config = generate_openclaw_config(tenant)
         errors = [i for i in validate_openclaw_config(config, strict=True) if i.severity == "error"]
         self.assertEqual(errors, [], f"default config tripped strict gate: {errors}")
+        for plugin_id in ("nbhd-doc-taint-guard", "nbhd-routing-context"):
+            with self.subTest(conversation_hook_plugin=plugin_id):
+                self.assertEqual(
+                    config["plugins"]["entries"][plugin_id]["hooks"],
+                    {"allowConversationAccess": True, "timeoutMs": 30000},
+                )
 
     def test_maximal_feature_flag_tenant_passes(self):
         """The shape of the tenants that actually broke: friends on + every
@@ -205,6 +211,12 @@ class UploadConfigGateTests(TestCase):
 class GenerateSmokeConfigCommandTests(TestCase):
     """The CI boot smoke depends on `generate_smoke_config --maximal`."""
 
+    @override_settings(
+        OPENCLAW_ACTIVITY_STREAM_PLUGIN_ID="nbhd-activity-stream",
+        OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID="nbhd-cron-enforcement",
+        OPENCLAW_CRON_ENFORCEMENT_PLUGIN_PATH="/opt/nbhd/plugins/nbhd-cron-enforcement",
+        OPENCLAW_STREAM_PROGRESS_PLUGIN_ID="nbhd-stream-progress",
+    )
     def test_maximal_command_writes_strict_valid_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "openclaw-maximal.json"
@@ -228,6 +240,18 @@ class GenerateSmokeConfigCommandTests(TestCase):
             entries["nbhd-subagent-bridge"]["hooks"],
             {"allowConversationAccess": True, "timeoutMs": 30000},
         )
+        for plugin_id in (
+            "nbhd-doc-taint-guard",
+            "nbhd-routing-context",
+            "nbhd-activity-stream",
+            "nbhd-stream-progress",
+        ):
+            with self.subTest(conversation_hook_plugin=plugin_id):
+                self.assertEqual(
+                    entries[plugin_id]["hooks"],
+                    {"allowConversationAccess": True, "timeoutMs": 30000},
+                )
+        self.assertNotIn("hooks", entries["nbhd-cron-enforcement"])
         self.assertEqual(entries["nbhd-usage-reporter"]["hooks"], {"allowConversationAccess": True})
         self.assertEqual(
             entries["nbhd-usage-reporter"]["config"],

@@ -44,7 +44,7 @@ async function waitForActivatedPluginsLine(child, logs) {
   throw new Error(`Timed out waiting for OpenClaw's activated-plugin line\n${logs()}`);
 }
 
-test("pinned gateway activates every source-derived hook-only plugin in the maximal config", {
+test("pinned gateway activates every repo-derived hook plugin without dropped-hook diagnostics", {
   timeout: 60_000,
 }, async (t) => {
   const configuredBinary = process.env.OPENCLAW_REPRO_BIN;
@@ -116,5 +116,6 @@ test("pinned gateway activates every source-derived hook-only plugin in the maxi
   await waitForActivatedPluginsLine(child, () => gatewayLogs);
   const result = assertHookOnlyPluginsActivated(gatewayLogs, localPluginRoot);
   console.log(result.line);
-  console.log(`Activated hook-only plugins: ${result.expected.join(", ")}`);
+  console.log(`Activated hook plugins: ${result.expected.join(", ")}`);
+  console.log(`Dropped/unknown typed-hook diagnostics: ${result.diagnostics.length}`);
 });

@@ -189,7 +189,11 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("nbhd-doc-taint-guard", config["plugins"]["allow"])
         self.assertEqual(
             config["plugins"]["entries"]["nbhd-doc-taint-guard"],
-            {"enabled": True, "config": {"mode": "log_only"}},
+            {
+                "enabled": True,
+                "config": {"mode": "log_only"},
+                "hooks": {"allowConversationAccess": True, "timeoutMs": 30000},
+            },
         )
         self.assertIn("/opt/nbhd/plugins/nbhd-doc-taint-guard", config["plugins"]["load"]["paths"])
 

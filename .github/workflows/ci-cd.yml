@@ -564,7 +564,8 @@ jobs:
 
           # Doctor validates manifests and paths but does not exercise the lazy
           # activation planner. Boot the gateway and assert its authoritative
-          # activated-plugin line against the source-derived hook-only inventory.
+          # activated-plugin line and dropped-hook diagnostics against the
+          # repo-derived hook-plugin inventory (typed + manifest-owned hooks).
           jq '.channels.telegram.enabled = false
               | .agents.defaults.workspace = "/tmp/oc-smoke-workspace"
               | .agents.defaults.heartbeat = {"every":"0m"}' \
@@ -600,7 +601,7 @@ jobs:
           node runtime/openclaw/plugins/assert-hook-activation.mjs /tmp/oc-gateway-boot.log
           cleanup_boot_smoke
           trap - EXIT
-          echo "OpenClaw image boot smoke passed — every source-derived hook-only plugin activated."
+          echo "OpenClaw image boot smoke passed — every repo-derived hook plugin activated without dropped-hook diagnostics."
 
       - name: Deploy Django to Container Apps
         if: steps.freshness.outputs.superseded != 'true'

@@ -13,7 +13,8 @@ if (!logPath) {
 try {
   const result = assertHookOnlyPluginsActivated(readFileSync(logPath, "utf8"));
   console.log(result.line);
-  console.log(`Hook activation assertion passed (${result.expected.length} source-derived hook-only plugins).`);
+  console.log(`Hook activation assertion passed (${result.expected.length} repo-derived hook plugins).`);
+  console.log(`Dropped/unknown typed-hook diagnostics: ${result.diagnostics.length}`);
 } catch (error) {
   console.error(`Hook activation assertion FAILED: ${error.message}`);
   process.exit(1);

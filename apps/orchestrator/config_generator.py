@@ -2742,6 +2742,16 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         subagent_bridge_id = str(
             getattr(settings, "OPENCLAW_SUBAGENT_BRIDGE_PLUGIN_ID", "nbhd-subagent-bridge") or ""
         ).strip()
+        conversation_hook_plugin_ids = {
+            str(getattr(settings, setting_name, "") or "").strip()
+            for setting_name in (
+                "OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID",
+                "OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID",
+                "OPENCLAW_ACTIVITY_STREAM_PLUGIN_ID",
+                "OPENCLAW_STREAM_PROGRESS_PLUGIN_ID",
+            )
+        }
+        conversation_hook_plugin_ids.discard("")
         plugin_config: dict[str, Any] = {
             "allow": [pid for pid, _ in _active_plugins],
             "entries": {
@@ -2749,6 +2759,19 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 for pid, _ in _active_plugins
             },
         }
+
+        # These config-loaded plugins use OpenClaw conversation hooks. In
+        # 2026.5.28 the loader silently drops those registrations unless the
+        # non-bundled policy is explicit. Doc taint + routing are fleet-wide;
+        # activity/progress receive the same policy whenever their IDs are
+        # configured. Mirror the bridge's full hook budget so the guards are
+        # not given a tighter runtime contract than the existing hook owner.
+        for plugin_id in conversation_hook_plugin_ids:
+            if plugin_id in plugin_config["entries"]:
+                plugin_config["entries"][plugin_id]["hooks"] = {
+                    "allowConversationAccess": True,
+                    "timeoutMs": 30000,
+                }
 
         if subagents_on:
             # Both plugins come from plugins.load.paths, which OpenClaw marks
