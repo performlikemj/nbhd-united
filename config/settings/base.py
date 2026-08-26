@@ -613,6 +613,8 @@ AZURE_KV_SECRET_APPLE_MAPS_AUTHKEY = env(
 NBHD_APPLE_MAPS_KEY_ID = env("NBHD_APPLE_MAPS_KEY_ID", default="")
 NBHD_APPLE_MAPS_TEAM_ID = env("NBHD_APPLE_MAPS_TEAM_ID", default="")
 OPENROUTER_API_KEY = env("OPENROUTER_API_KEY", default="")
+# All OpenRouter endpoints for this slug were verified ZDR on 2026-08-26.
+# Run ``manage.py check_zdr_routes`` before changing it.
 OPENROUTER_STT_MODEL = env("OPENROUTER_STT_MODEL", default="openai/whisper-large-v3-turbo")
 AZURE_KV_SECRET_OPENROUTER_API_KEY = env(
     "AZURE_KV_SECRET_OPENROUTER_API_KEY",

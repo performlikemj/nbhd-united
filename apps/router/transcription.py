@@ -1,4 +1,4 @@
-"""OpenRouter ZDR speech-to-text and its optional non-PII vocabulary.
+"""OpenRouter speech-to-text and its optional non-PII vocabulary.
 
 Speech recognizers transcribe a short clip with no knowledge of the speaker's
 world, so distinctive proper nouns — brands, project names, people — come back
@@ -21,12 +21,18 @@ the shared :func:`transcribe_audio` OpenRouter path. OpenRouter currently
 accepts but ignores the generic STT ``prompt`` field, so server requests send
 no prompt rather than leaking identity fields for no transcription benefit.
 
+OpenRouter's audio transcription endpoint also ignores the generic
+``provider`` routing object. We keep sending the mandatory shared body shape,
+but it is not the ZDR enforcement mechanism for STT. The actual control is
+that every endpoint for the configured model appears in OpenRouter's ZDR
+inventory; ``manage.py check_zdr_routes`` verifies that invariant.
+
 PII boundary
 ------------
-For Whisper the audio already goes to OpenAI, so the hint adds no new *audio*
-egress; for iOS the terms stay on the user's own device. Either way we
-deliberately draw ONLY from sources the user or the PII arbiter have already
-declared non-identifying:
+For server-side STT the audio is already sent through the configured
+OpenRouter model, while for iOS the terms stay on the user's own device. Either
+way we deliberately draw ONLY from sources the user or the PII arbiter have
+already declared non-identifying:
 
 * ``pii_denylist`` keys — brands / projects / jargon explicitly marked
   "not PII for me" (this is exactly where "rakuten" lands once denylisted).
@@ -71,10 +77,12 @@ def transcribe_audio(
     tenant: Tenant | None = None,
     timeout: int = 60,
 ) -> str:
-    """Transcribe audio through OpenRouter with mandatory ZDR routing.
+    """Transcribe audio through the configured OpenRouter STT model.
 
     The JSON/base64 request shape works for Telegram, LINE, and the internal
-    container shim. There is deliberately no direct-provider fallback.
+    container shim. The provider object is retained but ignored by OpenRouter's
+    STT endpoint; run ``check_zdr_routes`` to verify all model endpoints are
+    ZDR. There is deliberately no direct-provider fallback.
     """
     del tenant  # Reserved for safe vocabulary routing if OpenRouter supports it.
     if not audio_data:
@@ -146,11 +154,10 @@ def collect_transcription_vocab(tenant: Tenant | None) -> list[str]:
 
 
 def build_transcription_prompt(tenant: Tenant | None) -> str | None:
-    """Return a Whisper ``prompt`` biasing decoding toward the tenant's known
-    non-PII proper nouns, or ``None`` when there is no useful vocabulary.
+    """Build an optional non-PII speech-recognition vocabulary prompt.
 
-    Used by the two server-side Whisper call sites (Telegram poller, LINE
-    webhook). Never raises — see ``collect_transcription_vocab``.
+    OpenRouter currently ignores this field for STT, so server requests do not
+    send it. Never raises — see ``collect_transcription_vocab``.
     """
     terms = collect_transcription_vocab(tenant)
     if not terms:
