@@ -28,9 +28,9 @@ Shared vocabulary for the codebase. Terms are grouped; **bold** cross-references
 | **Tool policy** | The deny-list of OpenClaw tools (`apps/orchestrator/tool_policy.py`) — e.g. built-in `memory_search` is denied because it puts **SQLite on the share** (see invariant #1). |
 | **Action gating** | The approve/deny flow (`apps/actions`) where a sensitive assistant tool call is held until the user confirms it via a button callback. |
 | **LiteLLM** | Model-routing layer OpenClaw uses to reach LLM providers. |
-| **OpenRouter** | The default platform LLM gateway. Platform key at Key Vault `openrouter-api-key`; **ZDR** enabled for platform traffic (not BYO). |
-| **ZDR** | Zero Data Retention — provider setting so prompts/completions aren't retained. Enabled for platform OpenRouter traffic only. |
-| **BYO / BYOK** | Bring-Your-Own-Key: a tenant supplies their own LLM provider credentials (`apps/byo_models`), used instead of the platform key. |
+| **OpenRouter** | The default platform LLM gateway. Platform key at Key Vault `openrouter-api-key`; **ZDR** is enforced per request in code + account setting for platform traffic (not BYO). |
+| **ZDR** | Zero Data Retention — provider setting so prompts/completions aren't retained. Enforced per request in code + account setting for platform OpenRouter traffic; STT additionally uses an all-endpoints-ZDR model. |
+| **BYO / BYOK** | Bring-Your-Own-Key: the parked, non-ZDR scaffold in `apps/byo_models` for tenant-supplied provider credentials. The feature defaults off and is hidden; platform inference uses OpenRouter ZDR. |
 
 ## Lifecycle & scheduling
 

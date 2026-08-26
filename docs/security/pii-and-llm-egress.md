@@ -16,10 +16,49 @@ arbiter-retirement design) and
 [`../ios-chat-redaction-transparency-directive.md`](../ios-chat-redaction-transparency-directive.md)
 (owner-facing UX for what was hidden).
 
-Audience: privacy/security auditor. All claims below were verified by
-reading the cited source as of 2026-07-09 (`main`, post-#1087), not inferred
-from docstrings alone — several docstrings and even sibling docs turned out
-to be stale (§7i).
+Audience: privacy/security auditor. The model-egress claims below describe the
+post-fix state assembled on 2026-08-26, including the coordinated egress-sealing
+changes. Historical at-rest findings retain their original evidence dates.
+
+---
+
+## Model-egress posture
+
+**Content sent for model inference leaves only via OpenRouter ZDR routes.**
+Chat and embedding requests enforce ZDR per request in code and are also
+covered by the OpenRouter account setting. Speech-to-text uses an OpenRouter
+model whose eligible endpoints are all ZDR; the post-deploy route check pins
+that model-level property.
+
+The disclosed limits are precise:
+
+- Raw audio is sent for transcription without PII redaction. It still uses the
+  all-endpoints-ZDR STT route.
+- Background and embedding seams use known-value replacement, not NER. That
+  guard is fail-open: an unknown value or redaction failure can pass through.
+- Channel transports (Telegram/LINE/Apple delivery) and connected-app tool
+  calls are data egress, but are outside this *model-inference* posture.
+- BYO Anthropic is a parked scaffold, not part of the active posture. It is
+  non-ZDR, has zero adopted credentials as of 2026-08-26, defaults off, and the
+  rollout disconnect command removes any credential before reconciling config.
+
+Container bindings remain broader than active model egress: tenant containers
+receive `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, and `ANTHROPIC_API_KEY` secret
+references. The direct-provider bindings are currently inert; static guards
+reject new provider-host/SDK/key reads outside explicitly reviewed seams. If
+the parked BYO flag is deliberately re-enabled, the BYO reconciler replaces
+`ANTHROPIC_API_KEY` with `CLAUDE_CODE_OAUTH_TOKEN` for that tenant; that route
+is non-ZDR.
+
+Closed direct-provider paths in the 2026-08-26 sealing pass:
+
+| Former path | Post-fix route |
+|---|---|
+| Embeddings and their six callers | OpenRouter embeddings; `provider.zdr=true` is attached per request and every caller supplies tenant context for known-value redaction |
+| Telegram voice and LINE voice | Shared `apps/router/transcription.py` OpenRouter STT seam; raw-audio exception disclosed above |
+| Container-native STT | `openrouter/openai/whisper-large-v3-turbo`; route check requires every eligible endpoint to be ZDR |
+| Lessons cluster naming, copilot, tutoring, and `rewrite_lessons_actionable` | Shared `apps.common.openrouter.chat_completion`, with the mandatory per-request ZDR body |
+| `nbhd-image-gen` OpenAI plugin | Deleted from the runtime image and generated plugin allowlist |
 
 ---
 
@@ -60,26 +99,17 @@ that still describe the old arbiter as live.
 | iOS/web chat (`ChatMessageView`, Siri Tier-3 escalation) | Yes — `redact_user_message` inside `enqueue_tenant_turn` | `apps/router/chat_views.py:322`, shared chokepoint for both callers |
 | Tool responses (Gmail/Calendar/Reddit) | Yes — `redact_tool_response`, validated-only mint | `apps/integrations/runtime_views.py:930,1010,1092,3719` |
 | Workspace `USER.md` (agent-authored sections) | Yes — `RedactionSession(mint='never')` over every section except the placeholder-native privacy legend | `apps/orchestrator/workspace_envelope.py:100-186` (shipped #1083, 2026-07-09) |
-| Workspace `USER.md` (**onboarding write**, before first refresh) | **No — bypasses the redaction path entirely** | `apps/router/onboarding.py:599-627` — see §7a |
+| Workspace `USER.md` (**onboarding write**, before first refresh) | Yes — checked mint-redaction; the write is skipped if redaction is unconfirmed | `apps/router/onboarding.py` (`72dad31c`, pinned by `0b6bc9f9`) — see §7a |
 | Journal mirror to file share (`memory_sync`) | Yes — same `RedactionSession` pattern | `apps/orchestrator/memory_sync.py` (per `pii-redaction-security.md`) |
 | Neighborhood/Friends share | Yes — `redact_user_message`, ephemeral fresh session | `apps/friends/services.py:1158` |
 | Insights synthesis (`apps/insights/synthesis.py`) | Effectively yes — reads already-placeholder-space journal/goal data, never calls `rehydrate_*` (verified: zero redact/rehydrate references in the module — it doesn't need to touch the layer because its inputs are already masked) | `apps/insights/synthesis.py` |
-| **Siri Tier-2 fast responder** (`SiriRespondView`) | **No — explicitly rehydrated first** | `apps/router/siri_views.py:87-111` (`_rehydrated_snapshot`), sent verbatim as system-prompt content at `:198-205` |
-| **Core meditation compose** (`gather_meditation_signals` → `apps.core.compose`) | **No — real values by design**, justified inline by the ZDR guarantee, not redaction | `apps/core/services.py:83-85`; `apps/core/compose.py:1-16` explicitly models itself on the (now-retired) arbiter pattern |
-| BYO Claude CLI container-internal tool calls (web search etc., if any) | Outside Django's pipeline entirely — never touches `apps/pii` | Structural: BYO CLI mode runs inside the container; Django's redaction only covers what Django forwards to it |
+| Siri Tier-2 fast responder (`SiriRespondView`) | Yes — placeholder snapshot + checked intent redaction, known-value fallback, entity legend; only the reply is rehydrated | `6b141d5d` |
+| Core meditation compose (`gather_meditation_signals` → `apps.core.compose`) | Yes — known-value redaction plus placeholder legend before model egress | `4a134707`, `984b5dc4` |
+| BYO Claude CLI container-internal calls | Parked/non-ZDR — outside Django's pipeline if deliberately re-enabled | Flag defaults off and fleet rollout disconnects credentials; scaffold remains in `apps/byo_models` |
 
-**The two starred rows are the real finding of this section.** Both
-`SiriRespondView._fast_answer` and `apps.core.compose` send the tenant's
-**real names, places, and journal/goal content** — not placeholders — to a
-cloud model. Both are deliberate, both are gated to the platform's
-zero-data-retention OpenRouter key only (`apps.common.openrouter.chat_completion`
-defaults to `settings.OPENROUTER_API_KEY`, never a BYO key — verified no
-`api_key` override at either call site), and both say so in code comments.
-This is a real, working control — but it is a **contractual** one (the
-provider's retention promise), not a **technical** one (the platform never
-holding the plaintext). It is a materially different trust boundary from
-every other row in this table, and it is not disclosed anywhere in
-`pii-redaction-security.md`'s "what gets redacted" section. See §7b.
+The former Siri Tier-2 and meditation-compose cleartext exceptions are closed.
+Both now send placeholder-space context through the shared OpenRouter client;
+entity legends preserve model usefulness without restoring real values.
 
 ---
 
@@ -91,17 +121,15 @@ every other row in this table, and it is not disclosed anywhere in
 | LINE | Yes (`line_webhook.py:1270`) | Yes (`line_webhook.py:674`, `cron_delivery.py`) | |
 | iOS/web chat | Yes (`chat_views.py:322`) | Yes (`pending_queue.py`, `_clean_assistant_text_for_app`) | `AppChatMessage.user_text` stored verbatim by design (§6) |
 | Siri Tier-0 (`SiriQuickStatusView`, no LLM) | N/A | Yes — `_rehydrated_snapshot` is correct here: it's a deterministic read served straight to the owner's own device, never to a model | `apps/router/siri_views.py:120-148` |
-| Siri Tier-2 (`SiriRespondView`, fast model) | **No** | N/A (real values sent outbound to the model, not the user) | §2, §7b |
+| Siri Tier-2 (`SiriRespondView`, fast model) | Yes — state and intent remain placeholder-space | Yes — only the model reply is rehydrated for the owner | `6b141d5d`, §2, §7b |
 | Siri Tier-3 escalation | Yes — routes through `enqueue_tenant_turn` | Yes — same as iOS/web chat | `apps/router/siri_views.py:232` |
 | Cron / proactive delivery | N/A (agent-authored, already placeholder-space) | Yes — mandatory egress seam, `rehydrate_for_tenant` | `apps/router/cron_delivery.py:171` |
 | Hibernation buffer drain (`BufferedMessage`) | Yes, at write time (#1085) | Yes — Telegram path now converges on the live poller's rehydrated relay | `apps/router/hibernation.py` (drain), model docstring `apps/router/models.py:9-26` |
 | Neighborhood/Friends share | Yes, ephemeral session | Yes | `apps/friends/services.py:1158` |
 | On-device private mode (iOS Foundation Models) | N/A — never leaves the device | N/A | The only surface where "we can't read your data" is literally true; served the **rehydrated** context digest (`render_context_digest`) precisely because it stays on-device |
 
-Every inbound message-routing channel funnels PII redaction correctly. The
-one outbound gap in this table (Siri Tier-2) is not a routing miss — it's a
-distinct, intentionally-designed read path that happens to also be an LLM
-call.
+Every inbound message-routing channel funnels PII redaction correctly. Siri
+Tier-2 now preserves that boundary through its fast-model call as well.
 
 ---
 
@@ -124,15 +152,13 @@ model it's configured to call) ever sees the text. **A BYO tenant's chat,
 tool results, and workspace files get the same placeholder treatment as
 everyone else's.**
 
-What genuinely differs for BYO, per the [GLOSSARY](../GLOSSARY.md) and
-confirmed unchanged here:
+The BYO implementation remains useful as a parked scaffold, but it is not the
+fleet posture:
 
-- **ZDR is platform-OpenRouter-only.** BYO traffic goes to whatever
-  provider/plan the tenant configured, under that provider's own retention
-  policy — not the platform's ZDR agreement. This matters for the residual
-  PII that redaction doesn't catch (the user's own allow-listed name, model
-  hallucination edge cases, fail-open turns — §7d) and for anything a BYO
-  Claude CLI session does with its own tools outside Django's pipeline.
+- **ZDR is platform-OpenRouter-only.** BYO Anthropic is non-ZDR. The flag now
+  defaults false and is false for non-deleted tenants; zero credentials had
+  been adopted when the UI was hidden on 2026-08-26. The API and Key Vault
+  plumbing remain parked, with DELETE deliberately available while flag-off.
 - **BYO session transcripts on the file share.** Per the encryption-at-rest
   directive §6, BYO tenants' `claude-state/projects/*.jsonl` transcripts
   rest on the per-tenant file share (non-BYO transcripts are ephemeral,
@@ -196,74 +222,19 @@ framing).
 
 ## 7. Residual egress / leak paths
 
-### 7a. Onboarding writes real name, city, and free-text interests to `USER.md` with zero redaction — **[high][open]**
+### 7a. Onboarding `USER.md` cleartext write — **[closed]**
 
-`apps/router/onboarding.py:599-627` (`_write_user_md`) is called once, at
-onboarding step 4, for **every tenant**, before any other file-share write
-touches `USER.md`. It builds the file directly:
+The former first-write bypass is closed by `72dad31c`: onboarding now renders
+the managed envelope through checked mint-redaction and skips the write when
+redaction is unconfirmed. `0b6bc9f9` pins first-seen-name and failure behavior.
 
-```python
-name = tenant.user.display_name or "Friend"
-...
-city = getattr(tenant.user, "location_city", "") or ""
-...
-content = f"""# About You
-- **Name:** {name}
-...{location_line}
-## What you're looking for
-{interests}
-..."""
-upload_workspace_file(str(tenant.id), "workspace/USER.md", content)
-```
+### 7b. Siri Tier-2 + Core meditation cleartext model egress — **[closed]**
 
-`interests` is raw user-typed free text from the onboarding "what are you
-looking for" question — it can contain names, relationships, employers,
-health conditions, anything the user chose to type. This call goes straight
-to `upload_workspace_file`, **never through `RedactionSession` or any
-`apps.pii` function.** The redaction fix that closed this exact class of
-leak for the *rest* of `USER.md` (#1083, `render_managed_region`) does not
-touch this code path at all — `onboarding.py` never imports or calls
-`push_user_md`.
-
-**It gets worse on the next refresh, not better.** `push_user_md`'s merge
-algorithm (`workspace_envelope.py:318-352`) has three cases; onboarding's
-raw content has no `BEGIN`/`END` sentinel markers, so the *first* subsequent
-`push_user_md` call (cron `refresh-user-md-fleet`, hourly; or any of the
-dozen other triggers in §"push_user_md callers") hits **Case 3**: "agent has
-written content but no markers exist yet — prepend managed, preserve
-everything else verbatim below." The onboarding block — real name, real
-city, raw interests text — is preserved **verbatim, permanently**, below the
-managed region, on every subsequent merge (Case 2 thereafter always
-re-appends the same `after` tail). It is never redacted, never expires, and
-is read by the container's agent on every single turn (chat and cron alike)
-for as long as the tenant exists, sitting on file-share storage mounted via
-the shared storage-account key.
-
-**Fix:** route `_write_user_md`'s content through a `RedactionSession`
-before upload (mirroring `render_managed_region`'s `mint='never'` pattern —
-or full mint, since this is user-typed chat-equivalent content and is the
-one source class the redaction design treats as trusted to mint fresh
-entities), or better, delete `_write_user_md` entirely and have onboarding
-call `push_user_md(tenant, force=True)` once step 4 completes so the
-onboarding data flows through the same envelope-registry rendering path
-(`apps/tenants/envelope.py`) that already redacts the "About You" section
-for every later refresh.
-
-### 7b. Siri Tier-2 fast responder + Core meditation compose send real PII to a cloud model, relying on ZDR instead of redaction — **[med][by-design]**
-
-See §2. `SiriRespondView._fast_answer` (`apps/router/siri_views.py:191-225`)
-and `apps.core.compose` (`apps/core/services.py:83-85`) both deliberately
-call `rehydrate_text`/read already-rehydrated context and forward it to
-`apps.common.openrouter.chat_completion` with the platform key. This is a
-real, working, code-enforced boundary (BYO keys are structurally excluded —
-no `api_key=` override at either site), and it's disclosed in both modules'
-comments. It is **not** disclosed in `pii-redaction-security.md`'s "what
-gets redacted" section, which reads as if redaction is universal for
-LLM-bound traffic. An auditor should treat "reaches OpenRouter ZDR in the
-clear" as a distinct, weaker guarantee than "never leaves the platform
-process" and should confirm the ZDR contract terms independently — this
-doc's confidence in the boundary is limited to "the code never routes this
-through a BYO key," not to OpenRouter's actual data handling.
+Siri Tier-2 now sends a placeholder snapshot and checked-redacted intent, uses
+known-value redaction as its deterministic fallback, supplies an entity legend,
+and rehydrates only the owner-facing reply (`6b141d5d`). Meditation composition
+known-value-redacts its formatted signals (`4a134707`) and adds the placeholder
+legend (`984b5dc4`). Both calls use the shared per-request-ZDR OpenRouter seam.
 
 ### 7c. PAT scope bypass extends to the PII review/denylist endpoints — **[med][open]**
 
@@ -336,14 +307,9 @@ this is the correct next target once the crypto substrate exists.
 
 ## Findings
 
-- **[high][open]** Onboarding writes the user's real name, city, and raw
-  free-text "interests" directly to `workspace/USER.md` with zero redaction
-  (`apps/router/onboarding.py:599-627`), bypassing the #1083 fix entirely.
-  Worse, the next `push_user_md` merge preserves that raw block verbatim,
-  permanently, outside the managed/redacted region. Every tenant hits this
-  at onboarding. Fix: route onboarding's `USER.md` write through
-  `RedactionSession` or replace it with a `push_user_md(force=True)` call.
-  See §7a.
+- **[closed]** Onboarding's first `USER.md` write now uses checked
+  mint-redaction and fails closed when redaction is unconfirmed (`72dad31c`,
+  `0b6bc9f9`). See §7a.
 
 - **[high][open]** `Tenant.pii_entity_map`/`pii_denylist` remain plaintext
   JSON columns — the reversal key for every placeholder fleet-wide. Fully
@@ -352,16 +318,10 @@ this is the correct next target once the crypto substrate exists.
   (`apps/crypto` doesn't exist). Not a new finding, but the single highest-
   value target for whenever the crypto substrate lands. See §6, §7e.
 
-- **[med][by-design]** `SiriRespondView`'s Tier-2 fast responder and
-  `apps.core.compose` (meditation authoring) both intentionally rehydrate
-  real PII and send it to a cloud model over the platform's zero-data-
-  retention OpenRouter key, trading redaction for a contractual retention
-  guarantee instead of a technical one. Deliberate and code-documented, but
-  undisclosed in `pii-redaction-security.md`'s "what gets redacted" section
-  — an auditor reading only that doc would believe LLM-bound traffic is
-  universally redacted. Recommend documenting this exception explicitly in
-  the platform's privacy posture and confirming the OpenRouter ZDR contract
-  terms independently of the code guarantee. See §2, §7b.
+- **[closed]** Siri Tier-2 and meditation compose now keep model-bound context
+  in placeholder space and provide entity legends; real values return only at
+  the owner-facing Siri reply seam (`6b141d5d`, `4a134707`, `984b5dc4`). See
+  §2, §7b.
 
 - **[med][open]** The PAT-scope enforcement gap found in
   [`authn-authz-and-api-surface.md`](authn-authz-and-api-surface.md) §2a
