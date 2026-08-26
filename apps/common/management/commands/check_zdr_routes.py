@@ -1,8 +1,9 @@
 """Verify model endpoint ZDR eligibility after deploys or before model changes.
 
-Run this post-deploy and before changing either the configured STT model or the
-embedding model ID; it fails closed unless every advertised endpoint for both
-models appears in OpenRouter's current ZDR endpoint inventory.
+Verified 2026-08-26: OpenRouter STT ignores the request ``provider`` object, so
+every STT endpoint must be ZDR; embeddings honor ``provider.zdr`` as a hard
+filter, so they need at least one ZDR endpoint. Run this post-deploy and before
+changing either model ID.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ _DEFAULT_STT_MODEL = "openai/whisper-large-v3-turbo"
 class Command(BaseCommand):
     """Run post-deploy and before changing either STT or embedding model IDs."""
 
-    help = "Fail unless every STT and embedding endpoint is listed as ZDR by OpenRouter."
+    help = "Verify the STT all-ZDR and embeddings has-ZDR-endpoint invariants."
 
     def handle(self, *args, **options):
         del args, options
@@ -31,27 +32,54 @@ class Command(BaseCommand):
             raise CommandError("OPENROUTER_API_KEY is not configured")
 
         stt_model = str(getattr(settings, "OPENROUTER_STT_MODEL", _DEFAULT_STT_MODEL) or _DEFAULT_STT_MODEL).strip()
-        models = tuple(dict.fromkeys((stt_model, EMBEDDING_MODEL)))
         headers = {"Authorization": f"Bearer {key}"}
 
         try:
-            advertised = {model: self._fetch_model_providers(model, headers) for model in models}
+            stt_providers = self._fetch_model_providers(stt_model, headers)
+            embedding_providers = self._fetch_model_providers(EMBEDDING_MODEL, headers)
             zdr_routes = self._fetch_zdr_routes(headers)
         except (requests.RequestException, ValueError, TypeError, KeyError):
             raise CommandError("Unable to verify OpenRouter ZDR routes") from None
 
-        failures: dict[str, list[str]] = {}
-        for model, providers in advertised.items():
-            missing = sorted(provider for provider in providers if (model, provider) not in zdr_routes)
-            if missing:
-                failures[model] = missing
+        stt_zdr, stt_non_zdr = self._partition_providers(stt_model, stt_providers, zdr_routes)
+        embedding_zdr, embedding_non_zdr = self._partition_providers(
+            EMBEDDING_MODEL,
+            embedding_providers,
+            zdr_routes,
+        )
 
+        self._print_model_result(stt_model, "all_endpoints_zdr", stt_zdr, stt_non_zdr)
+        self._print_model_result(
+            EMBEDDING_MODEL,
+            "at_least_one_endpoint_zdr",
+            embedding_zdr,
+            embedding_non_zdr,
+        )
+
+        failures = []
+        if stt_non_zdr:
+            failures.append(f"{stt_model} has non-ZDR STT endpoints")
+        if not embedding_zdr:
+            failures.append(f"{EMBEDDING_MODEL} has no ZDR embedding endpoint")
         if failures:
-            for model, providers in failures.items():
-                self.stderr.write(f"{model} -> {', '.join(providers)}")
-            raise CommandError("OpenRouter has non-ZDR endpoints for configured models")
+            raise CommandError("; ".join(failures))
 
-        self.stdout.write(self.style.SUCCESS(f"ZDR routes verified for {len(models)} model(s)."))
+        self.stdout.write(self.style.SUCCESS("ZDR route rules verified for 2 model(s)."))
+
+    @staticmethod
+    def _partition_providers(
+        model: str,
+        providers: set[str],
+        zdr_routes: set[tuple[str, str]],
+    ) -> tuple[list[str], list[str]]:
+        zdr = sorted(provider for provider in providers if (model, provider) in zdr_routes)
+        non_zdr = sorted(providers.difference(zdr))
+        return zdr, non_zdr
+
+    def _print_model_result(self, model: str, rule: str, zdr: list[str], non_zdr: list[str]) -> None:
+        zdr_names = ", ".join(zdr) if zdr else "none"
+        non_zdr_names = ", ".join(non_zdr) if non_zdr else "none"
+        self.stdout.write(f"{model} rule={rule} zdr=[{zdr_names}] non_zdr=[{non_zdr_names}]")
 
     @staticmethod
     def _fetch_model_providers(model: str, headers: dict[str, str]) -> set[str]:

@@ -36,53 +36,79 @@ class CheckZdrRoutesCommandTests(SimpleTestCase):
         if _STT_MODEL in url:
             return _response({"data": {"endpoints": [{"provider_name": "DeepInfra"}, {"provider_name": "Groq"}]}})
         if _EMBEDDING_MODEL in url:
-            return _response({"data": {"endpoints": [{"provider_name": "Azure"}]}})
+            return _response({"data": {"endpoints": [{"provider_name": "Azure"}, {"provider_name": "OpenAI"}]}})
         raise AssertionError(f"Unexpected URL: {url}")
 
     @patch("apps.common.management.commands.check_zdr_routes.requests.get")
-    def test_all_advertised_endpoints_are_zdr(self, get):
+    def test_mixed_embedding_endpoints_pass_when_one_is_zdr(self, get):
         get.side_effect = self._success_response
         stdout = StringIO()
 
         call_command("check_zdr_routes", stdout=stdout)
 
-        self.assertIn("ZDR routes verified for 2 model(s).", stdout.getvalue())
+        output = stdout.getvalue()
+        self.assertIn(
+            f"{_STT_MODEL} rule=all_endpoints_zdr zdr=[DeepInfra, Groq] non_zdr=[none]",
+            output,
+        )
+        self.assertIn(
+            f"{_EMBEDDING_MODEL} rule=at_least_one_endpoint_zdr zdr=[Azure] non_zdr=[OpenAI]",
+            output,
+        )
+        self.assertIn("ZDR route rules verified for 2 model(s).", output)
         self.assertEqual(get.call_count, 3)
         for call in get.call_args_list:
             self.assertEqual(call.kwargs["timeout"], 30)
             self.assertEqual(call.kwargs["headers"]["Authorization"], "Bearer route-check-test-key")
 
     @patch("apps.common.management.commands.check_zdr_routes.requests.get")
-    def test_non_zdr_provider_names_are_reported_and_command_fails(self, get):
+    def test_embedding_with_zero_zdr_endpoints_fails(self, get):
+        def responses(url, **kwargs):
+            response = self._success_response(url, **kwargs)
+            if _EMBEDDING_MODEL in url:
+                return _response({"data": {"endpoints": [{"provider_name": "OpenAI"}]}})
+            return response
+
+        get.side_effect = responses
+        stdout = StringIO()
+
+        with self.assertRaises(CommandError) as raised:
+            call_command("check_zdr_routes", stdout=stdout)
+
+        self.assertIn(
+            f"{_EMBEDDING_MODEL} rule=at_least_one_endpoint_zdr zdr=[none] non_zdr=[OpenAI]",
+            stdout.getvalue(),
+        )
+        self.assertIn("has no ZDR embedding endpoint", str(raised.exception))
+
+    @patch("apps.common.management.commands.check_zdr_routes.requests.get")
+    def test_stt_with_any_non_zdr_endpoint_fails(self, get):
         def responses(url, **kwargs):
             response = self._success_response(url, **kwargs)
             if _STT_MODEL in url and not url.endswith("/endpoints/zdr"):
                 return _response(
                     {"data": {"endpoints": [{"provider_name": "DeepInfra"}, {"provider_name": "OtherCloud"}]}}
                 )
-            if _EMBEDDING_MODEL in url:
-                return _response({"data": {"endpoints": [{"provider_name": "Azure"}, {"provider_name": "OtherEmbed"}]}})
             return response
 
         get.side_effect = responses
-        stderr = StringIO()
+        stdout = StringIO()
 
-        with self.assertRaises(CommandError):
-            call_command("check_zdr_routes", stderr=stderr)
+        with self.assertRaises(CommandError) as raised:
+            call_command("check_zdr_routes", stdout=stdout)
 
-        self.assertIn(f"{_STT_MODEL} -> OtherCloud", stderr.getvalue())
-        self.assertIn(f"{_EMBEDDING_MODEL} -> OtherEmbed", stderr.getvalue())
-        self.assertNotIn("route-check-test-key", stderr.getvalue())
+        self.assertIn(
+            f"{_STT_MODEL} rule=all_endpoints_zdr zdr=[DeepInfra] non_zdr=[OtherCloud]",
+            stdout.getvalue(),
+        )
+        self.assertIn("has non-ZDR STT endpoints", str(raised.exception))
 
     @patch(
         "apps.common.management.commands.check_zdr_routes.requests.get",
         side_effect=requests.ConnectionError("route-check-test-key must stay secret"),
     )
     def test_network_error_fails_without_printing_secret(self, _get):
-        stderr = StringIO()
-
         with self.assertRaises(CommandError) as raised:
-            call_command("check_zdr_routes", stderr=stderr)
+            call_command("check_zdr_routes")
 
         self.assertNotIn("route-check-test-key", str(raised.exception))
-        self.assertNotIn("route-check-test-key", stderr.getvalue())

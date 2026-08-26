@@ -16,6 +16,8 @@ from apps.tenants.models import Tenant
 
 from .models import Lesson, LessonConnection
 
+# Its OpenAI endpoint is non-ZDR and excluded by mandatory provider.zdr (verified 2026-08-26).
+# check_zdr_routes guards that at least one eligible ZDR embedding endpoint remains.
 EMBEDDING_MODEL = "openai/text-embedding-3-small"
 EMBEDDING_DIMS = 1536
 
