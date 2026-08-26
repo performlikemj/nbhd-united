@@ -313,6 +313,12 @@ jobs:
           ALLOWED_HOSTS: "*"
           MOONSHOT_API_KEY: "sk-smoke-test-dummy"
           NBHD_INTERNAL_API_KEY: "smoke-test-internal-key"
+          # Include opt-in/dark hook plugins in the maximal image contract.
+          # The assertion derives the expected inventory from plugin source.
+          OPENCLAW_ACTIVITY_STREAM_PLUGIN_ID: nbhd-activity-stream
+          OPENCLAW_STREAM_PROGRESS_PLUGIN_ID: nbhd-stream-progress
+          OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID: nbhd-cron-enforcement
+          OPENCLAW_CRON_ENFORCEMENT_PLUGIN_PATH: /opt/nbhd/plugins/nbhd-cron-enforcement
         run: |
           python manage.py migrate --noinput
           python manage.py generate_smoke_config --maximal --output openclaw-maximal.json
@@ -372,6 +378,7 @@ jobs:
           node --test runtime/openclaw/plugins/nbhd-datebook-tools/
           node --test runtime/openclaw/plugins/nbhd-usage-reporter/register.test.mjs
           node --test runtime/openclaw/plugins/nbhd-journal-tools/subagent-bridge/test.js
+          node --test runtime/openclaw/plugins/hook-activation.test.mjs
           node --test runtime/openclaw/plugins/nbhd-friends-tools/index.test.mjs
           node --test runtime/openclaw/external-content-wrap.test.js
           node --test runtime/openclaw/plugins/nbhd-doc-taint-guard/test.js
@@ -382,6 +389,13 @@ jobs:
         # real loaded datebook plugin factory, and captured Django-runtime POST.
         run: |
           ./scripts/openclaw_origin_propagation_smoke.sh
+
+      - name: Run pinned OpenClaw hook-activation smoke
+        # Boots the exact Dockerfile pin with the real generated maximal config.
+        # Expected hook-only plugins are discovered from index.js + manifests,
+        # so adding a new hook-only directory automatically widens this guard.
+        run: |
+          ./scripts/openclaw_hook_activation_smoke.sh openclaw-maximal.json
 
       - name: Audit OpenClaw chmod call-site inventory
         # Diffs the chmod-family callee shapes in the pinned OpenClaw npm
@@ -546,7 +560,47 @@ jobs:
             echo "::error::OpenClaw image boot smoke FAILED — the built image cannot validate a maximal-flags (friends_enabled) config. See the log above (plugin path not found / Invalid config)." >&2
             exit 1
           fi
-          echo "OpenClaw image boot smoke passed — maximal-flags config validates against the built image."
+          echo "OpenClaw doctor passed — maximal-flags config validates against the built image."
+
+          # Doctor validates manifests and paths but does not exercise the lazy
+          # activation planner. Boot the gateway and assert its authoritative
+          # activated-plugin line against the source-derived hook-only inventory.
+          jq '.channels.telegram.enabled = false
+              | .agents.defaults.workspace = "/tmp/oc-smoke-workspace"
+              | .agents.defaults.heartbeat = {"every":"0m"}' \
+            openclaw-maximal.json > /tmp/openclaw-maximal-boot.json
+          OC_BOOT_CONTAINER="oc-hook-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup_boot_smoke() {
+            docker rm -f "$OC_BOOT_CONTAINER" >/dev/null 2>&1 || true
+          }
+          trap cleanup_boot_smoke EXIT
+          docker run --rm -d \
+            --name "$OC_BOOT_CONTAINER" \
+            -v "/tmp/openclaw-maximal-boot.json:/home/node/.openclaw/openclaw.json:ro" \
+            -e OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json \
+            -e OPENCLAW_STATE_DIR=/tmp/oc-smoke-state \
+            -e OPENCLAW_DISABLE_BONJOUR=1 \
+            -e OPENROUTER_API_KEY=sk-smoke-test-dummy \
+            -e NBHD_API_BASE_URL=http://127.0.0.1:9 \
+            -e NBHD_TENANT_ID=00000000-0000-4000-8000-000000000123 \
+            -e NBHD_INTERNAL_API_KEY=smoke-test-internal-key \
+            --entrypoint openclaw \
+            "$OC_IMAGE" gateway --bind loopback --verbose
+          for _ in $(seq 1 150); do
+            docker logs "$OC_BOOT_CONTAINER" > /tmp/oc-gateway-boot.log 2>&1 || true
+            if grep -q "http server listening" /tmp/oc-gateway-boot.log; then
+              break
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' "$OC_BOOT_CONTAINER" 2>/dev/null || true)" != "true" ]; then
+              break
+            fi
+            sleep 0.2
+          done
+          docker logs "$OC_BOOT_CONTAINER" 2>&1 | tee /tmp/oc-gateway-boot.log
+          node runtime/openclaw/plugins/assert-hook-activation.mjs /tmp/oc-gateway-boot.log
+          cleanup_boot_smoke
+          trap - EXIT
+          echo "OpenClaw image boot smoke passed — every source-derived hook-only plugin activated."
 
       - name: Deploy Django to Container Apps
         if: steps.freshness.outputs.superseded != 'true'

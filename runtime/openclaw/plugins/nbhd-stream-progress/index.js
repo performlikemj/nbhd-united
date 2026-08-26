@@ -120,7 +120,7 @@ export default function register(api) {
   if (!api || typeof api.on !== "function") {
     return;
   }
-  api.logger.info("NBHD stream-progress plugin registered");
+  api.logger.warn("NBHD stream-progress plugin registered");
 
   // Per-run cumulative accumulator. Turns are serialized per container, so a
   // single current-run buffer suffices; a run-id change resets it.

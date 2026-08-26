@@ -272,7 +272,11 @@ export default function register(api) {
   // doesn't).
   const toolCallResolvedId = new Map();
 
-  api.logger.info(`NBHD document taint guard plugin registered (mode=${mode})`);
+  try {
+    api.logger.warn(`NBHD document taint guard plugin registered (mode=${mode})`);
+  } catch (_ignored) {
+    // Logging must never disable the security hooks during registration.
+  }
 
   api.on("before_agent_run", (event, ctx) => {
     try {

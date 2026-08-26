@@ -118,7 +118,7 @@ export default function register(api) {
   if (!api || typeof api.on !== "function") {
     return;
   }
-  api.logger.info("NBHD activity-stream plugin registered");
+  api.logger.warn("NBHD activity-stream plugin registered");
 
   // Narrate each tool the agent reaches for. FAIL-CLOSED hook → fire-and-forget,
   // never throw, always return undefined (never block a real tool call).

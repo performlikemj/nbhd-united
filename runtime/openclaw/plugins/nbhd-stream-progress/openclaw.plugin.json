@@ -2,6 +2,9 @@
   "id": "nbhd-stream-progress",
   "name": "NBHD Stream Progress",
   "description": "Streams per-step partial assistant text (pseudo-streaming) back to the NBHD control-plane so polling clients can render text as the turn composes instead of waiting for the whole reply.",
+  "activation": {
+    "onCapabilities": ["hook"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

@@ -269,7 +269,7 @@ export default function register(api) {
   const subscribe = (event, handler) => api.on(event, handler);
   const meterScopes = configuredMeterScopes(api.pluginConfig);
 
-  api.logger.info("NBHD usage reporter plugin registered");
+  api.logger.warn("NBHD usage reporter plugin registered");
 
   // Track the most recent provider/model attempted on this agent run.
   // OpenClaw's `agent_end` event payload only carries `success`, `error`,

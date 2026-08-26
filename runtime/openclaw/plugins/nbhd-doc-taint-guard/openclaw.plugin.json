@@ -5,6 +5,9 @@
   "contracts": {
     "tools": []
   },
+  "activation": {
+    "onCapabilities": ["hook"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
