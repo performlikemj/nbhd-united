@@ -15,7 +15,7 @@ from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
 
 from apps.pii.management.commands.retire_stoplisted_bindings import _retire_stoplisted
-from apps.pii.redactor import is_never_a_name
+from apps.pii.redactor import _CATALOG_FITNESS_PHRASES, _span_tokens, is_never_a_name
 from apps.tenants.models import Tenant, User
 
 
@@ -104,6 +104,13 @@ class IsNeverANameTests(SimpleTestCase):
             "Farmers Walk",
         ]:
             self.assertTrue(is_never_a_name(text), text)
+
+    def test_catalog_phrase_set_excludes_single_token_aliases(self):
+        self.assertFalse([phrase for phrase in _CATALOG_FITNESS_PHRASES if len(_span_tokens(phrase)) == 1])
+        for text in ["Pallof", "Bridge", "Clam", "Bench"]:
+            self.assertFalse(is_never_a_name(text), text)
+        self.assertTrue(is_never_a_name("Pallof Press"))
+        self.assertTrue(is_never_a_name("Tricep"))
 
     def test_catalog_surname_and_place_tokens_are_never_retired_bare(self):
         for text in [

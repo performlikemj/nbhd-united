@@ -450,7 +450,7 @@ _FITNESS_TOKENS = frozenset(
 # add bare — e.g. "glute bridge march" (the 'march' token collides with the
 # month, so we match the whole phrase instead of adding 'march').
 _CATALOG_FITNESS_PHRASES = frozenset(
-    joined for raw in fuel_catalog.fitness_phrases() if (joined := " ".join(_span_tokens(raw.casefold())))
+    " ".join(tokens) for raw in fuel_catalog.fitness_phrases() if len(tokens := _span_tokens(raw.casefold())) >= 2
 )
 _FITNESS_PHRASES = (
     frozenset(
@@ -841,7 +841,7 @@ def is_never_a_name(text: str) -> bool:
     if len(tokens) == 1 and tokens[0] in _FITNESS_SURNAME_TOKENS:
         return False
     joined = " ".join(tokens)
-    if joined in _FITNESS_PHRASES:
+    if len(tokens) >= 2 and joined in _FITNESS_PHRASES:
         return True
     if len(tokens) == 1 and tokens[0] in _RETIRABLE_FITNESS_TOKENS:
         return True
