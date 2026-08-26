@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
+from apps.platform_logs.models import ToolContractEvent
 from apps.tenants.services import create_tenant
 from apps.tenants.test_utils import seed_internal_key
 
@@ -75,6 +76,8 @@ class PlanVarietyRuntimeTests(TestCase):
         self.assertTrue(all(track["max_consecutive_same"] == 8 for track in response.data["tracks"]))
         self.assertEqual(response.data["week_overrides_semantics"], "whole_map_replacement")
         self.assertEqual(response.data["catalog_candidates"], [])
+        event = ToolContractEvent.objects.get(reason_code="plan_rotation_required")
+        self.assertEqual(event.detail, {"guard_policy": "default", "guard_tracks": 5})
         self.assertFalse(WorkoutPlan.objects.filter(tenant=self.tenant).exists())
 
     @patch("apps.fuel.runtime_views._manage_fuel_cron")
@@ -142,6 +145,28 @@ class PlanVarietyRuntimeTests(TestCase):
         self.assertEqual(response.data["repeat_reason"], "Clinician-directed fixed rehab block")
         plan = WorkoutPlan.objects.get(id=response.data["id"])
         self.assertEqual(plan.schedule_json["_plan_policy"]["repeat_policy"], "intentional")
+        event = ToolContractEvent.objects.get(reason_code="intentional_repeat")
+        self.assertEqual(event.detail, {"guard_policy": "intentional", "intentional_repeat": True})
+
+    @patch("apps.fuel.runtime_views._manage_fuel_cron")
+    def test_compiler_marker_is_counted_and_never_persisted(self, _cron):
+        response = self.client.post(
+            self.url(),
+            {
+                **self.body({"monday": self.day("Push")}),
+                "weeks": 2,
+                "_compiled_rotations": 7,
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        event = ToolContractEvent.objects.get(reason_code="catalog_annotation")
+        self.assertEqual(event.detail["rotation_compiler_expansions"], 7)
+        plan = WorkoutPlan.objects.get(id=response.data["id"])
+        self.assertNotIn("_compiled_rotations", repr(plan.schedule_json))
+        self.assertNotIn("_compiled_rotations", repr(plan.week_overrides))
+        self.assertNotIn("_compiled_rotations", response.data)
 
     @patch("apps.fuel.runtime_views._manage_fuel_cron")
     def test_metadata_only_patch_never_retroactively_rejects_legacy_plan(self, _cron):

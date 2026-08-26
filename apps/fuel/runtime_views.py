@@ -198,6 +198,50 @@ def _add_catalog_feedback(payload: dict, matches: list[dict], unmatched: list[st
     return payload
 
 
+def _compiled_rotation_count(data) -> int:
+    try:
+        return max(0, min(1000, int(data.get("_compiled_rotations", 0))))
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def _emit_catalog_write_event(
+    tenant,
+    *,
+    tool_name: str,
+    matches: list[dict],
+    total: int,
+    compiled_rotations: int = 0,
+) -> None:
+    if total <= 0 and compiled_rotations <= 0:
+        return
+    counts = {matched_by: 0 for matched_by in ("canonical", "slug", "alias", "plural", "equipment_prefix")}
+    for match in matches:
+        matched_by = str(match.get("matched_by") or "")
+        if matched_by in counts:
+            counts[matched_by] += 1
+    _emit_fuel_event(
+        tenant,
+        tool_name=tool_name,
+        outcome="accepted",
+        reason_code="catalog_annotation",
+        detail={
+            "catalog_total": total,
+            "catalog_matched": len(matches),
+            "catalog_unmatched": max(0, total - len(matches)),
+            "catalog_coverage": round(len(matches) / total, 4) if total else 1.0,
+            **{f"matched_{matched_by}": count for matched_by, count in counts.items()},
+            "rotation_compiler_expansions": compiled_rotations,
+        },
+    )
+
+
+def _guard_policy_code(policy: dict) -> str:
+    if policy.get("repeat_policy") == "intentional":
+        return "intentional"
+    return str(policy.get("variation_policy") or "default")
+
+
 def _mapped_detail_paths(
     raw_value,
     *,
@@ -551,6 +595,12 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         }
         if rpe_clamped:
             payload["rpe_clamped"] = True
+        _emit_catalog_write_event(
+            tenant,
+            tool_name="runtime-fuel-log",
+            matches=catalog_matches,
+            total=len(incoming_catalog_paths),
+        )
         _add_catalog_feedback(payload, catalog_matches, unmatched_exercises)
         return Response(payload, status=status.HTTP_201_CREATED)
 
@@ -609,6 +659,7 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
         catalog_matches: list[dict] = []
         unmatched_exercises: list[str] = []
         server_owned_detail = None
+        incoming_catalog_paths: list[IncomingPath] = []
 
         if "activity" in data:
             workout.activity = str(data["activity"]).strip()
@@ -772,6 +823,12 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             "rpe": workout.rpe,
         }
         if "detail_json" in data:
+            _emit_catalog_write_event(
+                tenant,
+                tool_name="runtime-fuel-workout-detail",
+                matches=catalog_matches,
+                total=len(incoming_catalog_paths),
+            )
             _add_catalog_feedback(payload, catalog_matches, unmatched_exercises)
         return Response(payload)
 
@@ -2658,6 +2715,13 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
             repeat_reason=plan_policy.get("repeat_reason", ""),
         )
         if rotation_error is not None:
+            _emit_fuel_event(
+                tenant,
+                tool_name="runtime-fuel-plans",
+                outcome="rejected",
+                reason_code="plan_rotation_required",
+                detail={"guard_policy": _guard_policy_code(plan_policy), "guard_tracks": len(rotation_error["tracks"])},
+            )
             return Response(rotation_error, status=status.HTTP_400_BAD_REQUEST)
         normalized_schedule = _attach_plan_policy(normalized_schedule, plan_policy)
 
@@ -2741,6 +2805,22 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
         result["workouts_created"] = workouts_created
         if superseded:
             result["superseded_plans"] = superseded
+        compiled_rotations = _compiled_rotation_count(data)
+        _emit_catalog_write_event(
+            tenant,
+            tool_name="runtime-fuel-plans",
+            matches=catalog_matches,
+            total=len(incoming_catalog_paths),
+            compiled_rotations=compiled_rotations,
+        )
+        if plan_policy.get("repeat_policy") == "intentional":
+            _emit_fuel_event(
+                tenant,
+                tool_name="runtime-fuel-plans",
+                outcome="accepted",
+                reason_code="intentional_repeat",
+                detail={"guard_policy": "intentional", "intentional_repeat": True},
+            )
         _add_catalog_feedback(result, catalog_matches, unmatched_exercises)
         return Response(result, status=status.HTTP_201_CREATED)
 
@@ -3018,6 +3098,16 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                 repeat_reason=plan_policy.get("repeat_reason", ""),
             )
             if rotation_error is not None:
+                _emit_fuel_event(
+                    tenant,
+                    tool_name="runtime-fuel-plan-detail",
+                    outcome="rejected",
+                    reason_code="plan_rotation_required",
+                    detail={
+                        "guard_policy": _guard_policy_code(plan_policy),
+                        "guard_tracks": len(rotation_error["tracks"]),
+                    },
+                )
                 return Response(rotation_error, status=status.HTTP_400_BAD_REQUEST)
 
         if updated_fields:
@@ -3127,6 +3217,23 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         resp = _serialize_plan(plan, include_workouts=True, today=today_in_tenant_tz(tenant))
         if superseded:
             resp["superseded_plans"] = superseded
+        _emit_catalog_write_event(
+            tenant,
+            tool_name="runtime-fuel-plan-detail",
+            matches=catalog_matches,
+            total=len(catalog_paths),
+            compiled_rotations=_compiled_rotation_count(data),
+        )
+        if plan_policy.get("repeat_policy") == "intentional" and any(
+            key in data for key in ("schedule_json", "weeks", "week_overrides", "repeat_policy", "repeat_reason")
+        ):
+            _emit_fuel_event(
+                tenant,
+                tool_name="runtime-fuel-plan-detail",
+                outcome="accepted",
+                reason_code="intentional_repeat",
+                detail={"guard_policy": "intentional", "intentional_repeat": True},
+            )
         _add_catalog_feedback(resp, catalog_matches, unmatched_exercises)
         return Response(resp)
 

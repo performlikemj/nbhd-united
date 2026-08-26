@@ -66,6 +66,20 @@ DETAIL_ALLOWLIST: dict[str, frozenset[str]] = {
             "rpe_clamped",
             "weeks",  # the plan's legal week count
             "week_key",  # the out-of-range override key
+            # Phase 2c deterministic catalog/variety chain (shape only).
+            "catalog_total",
+            "catalog_matched",
+            "catalog_unmatched",
+            "catalog_coverage",
+            "matched_canonical",
+            "matched_slug",
+            "matched_alias",
+            "matched_plural",
+            "matched_equipment_prefix",
+            "guard_policy",
+            "guard_tracks",
+            "intentional_repeat",
+            "rotation_compiler_expansions",
         }
     ),
     # "pattern" is the typed cron pattern (pure_reminder, ...) — it separates

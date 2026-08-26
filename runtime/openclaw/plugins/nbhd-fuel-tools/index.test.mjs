@@ -281,6 +281,7 @@ test("create_plan compiles rotations across plural weeks, existing overrides, an
   });
 
   assert.equal(Object.hasOwn(captured, "accessory_rotations"), false);
+  assert.equal(captured._compiled_rotations, 4);
   assert.equal(captured.schedule_json.monday.detail_json.exercises[1].name, "Base Curl");
   assert.equal(captured.week_overrides["0"].monday.detail_json.exercises[1].name, "Hammer Curl");
   assert.equal(captured.week_overrides["1"].monday.activity, "Custom Monday");

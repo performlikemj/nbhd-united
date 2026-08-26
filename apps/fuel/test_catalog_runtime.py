@@ -9,6 +9,7 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
+from apps.platform_logs.models import ToolContractEvent
 from apps.tenants.services import create_tenant
 from apps.tenants.test_utils import seed_internal_key
 
@@ -450,6 +451,35 @@ class CatalogAnnotationRuntimeTests(CatalogRuntimeCase):
             fetched.data["detail_json"]["exercises"][0]["catalog_ref"]["slug"],
             "arnold-press",
         )
+
+    def test_catalog_telemetry_is_shape_only_and_counts_coverage(self):
+        response = self.client.post(
+            self.url("log/"),
+            {
+                "activity": "Telemetry",
+                "category": "strength",
+                "detail_json": {
+                    "exercises": [
+                        self.exercise("Bench Press"),
+                        self.exercise("Dumbbell Hammer Curls"),
+                        self.exercise("Unknown move"),
+                        self.exercise("Private move", user_verbatim=True),
+                    ]
+                },
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        event = ToolContractEvent.objects.get(reason_code="catalog_annotation")
+        self.assertEqual(event.detail["catalog_total"], 4)
+        self.assertEqual(event.detail["catalog_matched"], 2)
+        self.assertEqual(event.detail["catalog_unmatched"], 2)
+        self.assertEqual(event.detail["catalog_coverage"], 0.5)
+        self.assertEqual(event.detail["matched_canonical"], 1)
+        self.assertEqual(event.detail["matched_equipment_prefix"], 1)
+        self.assertNotIn("Bench", repr(event.detail))
+        self.assertNotIn("Unknown", repr(event.detail))
 
     @patch("apps.fuel.runtime_views._manage_fuel_cron")
     def test_notes_and_status_only_patches_leave_json_byte_identical(self, _cron):
