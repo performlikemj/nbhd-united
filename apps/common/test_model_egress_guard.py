@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 
 from django.test import SimpleTestCase
@@ -41,10 +43,10 @@ _PROVIDER_KEY_READ = re.compile(
     r"env\(\s*['\"](?:OPENAI|ANTHROPIC)_API_KEY['\"]",
 )
 
-# PR-B owns these already-established, fenced runtime/container credentials.
-# Keeping exact path+rule pairs makes any new use fail while those known seams
-# are removed independently. Django's settings declaration is configuration,
-# not a provider call.
+# PR-B2 removes the azure_client/image-gen runtime seams; integration must
+# shrink those allowlist entries once that lands. On PR-A alone they remain
+# real, so keeping exact path+rule pairs makes any new use fail. Django's
+# settings declaration is configuration, not a provider call.
 _ALLOWED_MATCHES = {
     ("config/settings/base.py", "provider_key_read"),
     ("apps/orchestrator/azure_client.py", "provider_key_read"),
@@ -52,46 +54,88 @@ _ALLOWED_MATCHES = {
     ("runtime/openclaw/plugins/nbhd-image-gen/index.js", "provider_key_read"),
 }
 
+_EGRESS_PATTERNS = (
+    ("model_hostname", _MODEL_HOSTNAME),
+    ("sdk_usage", _SDK_USAGE),
+    ("provider_key_read", _PROVIDER_KEY_READ),
+)
+
 
 def _deployable_files():
-    for root_name in _DEPLOYABLE_ROOTS:
-        root = _ROOT / root_name
-        if not root.exists():
+    tracked = subprocess.run(
+        ["git", "-C", str(_ROOT), "ls-files", "-z"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    for encoded_relative in tracked.split(b"\0"):
+        if not encoded_relative:
             continue
-        for path in root.rglob("*"):
-            relative = path.relative_to(_ROOT)
-            if not path.is_file() or path.suffix not in _SOURCE_SUFFIXES:
-                continue
-            if "tests" in relative.parts or path.name.startswith("test") or ".test." in path.name:
-                continue
+        relative = Path(encoded_relative.decode("utf-8"))
+        path = _ROOT / relative
+        if not path.is_file():
+            continue
+
+        root_special = len(relative.parts) == 1 and (
+            relative.name.startswith("Dockerfile") or "entrypoint" in relative.name
+        )
+        deployable_source = (
+            bool(relative.parts)
+            and relative.parts[0] in _DEPLOYABLE_ROOTS
+            and path.suffix in _SOURCE_SUFFIXES
+            and "tests" not in relative.parts
+            and not path.name.startswith("test")
+            and ".test." not in path.name
+        )
+        if root_special or deployable_source:
             yield path
-    yield from sorted(path for path in _ROOT.glob("Dockerfile*") if path.is_file())
-    yield from sorted(path for path in _ROOT.glob("*entrypoint*") if path.is_file())
+
+
+def _find_offenders():
+    offenders = []
+    for path in _deployable_files():
+        relative = path.relative_to(_ROOT).as_posix()
+        for line_number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if line.lstrip().startswith(("#", "//")):
+                continue
+            for rule, pattern in _EGRESS_PATTERNS:
+                if pattern.search(line) and (relative, rule) not in _ALLOWED_MATCHES:
+                    offenders.append((relative, line_number, rule))
+    return offenders
 
 
 class ModelEgressStaticGuard(SimpleTestCase):
     def test_no_unapproved_provider_egress(self):
-        offenders = []
-        patterns = (
-            ("model_hostname", _MODEL_HOSTNAME),
-            ("sdk_usage", _SDK_USAGE),
-            ("provider_key_read", _PROVIDER_KEY_READ),
-        )
-        for path in _deployable_files():
-            relative = path.relative_to(_ROOT).as_posix()
-            for line_number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
-                if line.lstrip().startswith(("#", "//")):
-                    continue
-                for rule, pattern in patterns:
-                    if pattern.search(line) and (relative, rule) not in _ALLOWED_MATCHES:
-                        offenders.append((relative, line_number, rule))
-
+        offenders = _find_offenders()
         self.assertEqual(
             offenders,
             [],
             "Direct model-provider egress, SDK usage, or provider-key reads must "
             f"use an explicitly reviewed seam. Offenders: {offenders}",
         )
+
+    def test_tracked_offender_is_scanned_and_untracked_artifact_is_ignored(self):
+        tracked_offender = _ROOT / "runtime/openclaw/plugins/nbhd-image-gen/index.js"
+        self.assertIn(tracked_offender, set(_deployable_files()))
+        self.assertRegex(tracked_offender.read_text(), _MODEL_HOSTNAME)
+
+        runtime_dir = _ROOT / "runtime/openclaw"
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=runtime_dir,
+            prefix="egress-guard-untracked-",
+            suffix=".js",
+            delete=False,
+        ) as artifact:
+            artifact.write('const OpenAI = require("openai");\n')
+            artifact_path = Path(artifact.name)
+
+        try:
+            self.assertRegex(artifact_path.read_text(), _SDK_USAGE)
+            self.assertNotIn(artifact_path, set(_deployable_files()))
+            relative = artifact_path.relative_to(_ROOT).as_posix()
+            self.assertFalse(any(path == relative for path, _line, _rule in _find_offenders()))
+        finally:
+            artifact_path.unlink(missing_ok=True)
 
     def test_six_embedding_callers_all_pass_tenant(self):
         expected = {
