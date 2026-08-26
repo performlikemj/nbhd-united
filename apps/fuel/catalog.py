@@ -178,3 +178,9 @@ def equipment_types() -> list[str]:
 
 def vocabulary() -> frozenset[str]:
     return _catalog().vocabulary()
+
+
+def fitness_phrases() -> frozenset[str]:
+    """Raw entry names and alias keys for the PII fitness phrase stop-list."""
+    loaded = _catalog()
+    return frozenset([*(entry.name for entry in loaded.entries), *loaded.aliases.keys()])

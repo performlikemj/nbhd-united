@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from apps.fuel import catalog as fuel_catalog
 from apps.pii.config import ADDRESS_CONTEXT_LABELS, DEBERTA_LABEL_MAP, LABEL_SCORE_OVERRIDES, TIER_POLICIES
 from apps.pii.entity_registry import (
     canonical_key as _canonical_key,
@@ -38,6 +39,16 @@ if TYPE_CHECKING:
     from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
+
+# Data-only dependency: PII imports the pure ``apps.fuel.catalog`` module so
+# public exercise vocabulary follows the shipped iOS picture catalog. No Fuel
+# models, Django runtime views, or exercise names from tenant data are imported.
+_ALPHA_TOKEN_RE = re.compile(r"[^a-z]+")
+
+
+def _span_tokens(matched_lower: str) -> list[str]:
+    """Alphabetic tokens of a lowercased span (digits/punct are separators)."""
+    return [token for token in _ALPHA_TOKEN_RE.split(matched_lower) if token]
 
 
 @dataclass(frozen=True)
@@ -420,6 +431,17 @@ _FITNESS_TOKENS = frozenset(
         "skullcrusher",
         "skullcrushers",
         "preworkout",
+        # Catalog-safe anatomy/movement tokens. Deliberately excludes surnames
+        # and places such as arnold, pendlay, copenhagen, and meadows.
+        "tricep",
+        "triceps",
+        "bicep",
+        "biceps",
+        "calf",
+        "calves",
+        "pushdown",
+        "pushdowns",
+        "lateral",
     }
 )
 
@@ -427,10 +449,52 @@ _FITNESS_TOKENS = frozenset(
 # from ``_FITNESS_TOKENS`` for phrases whose only distinctive token is unsafe to
 # add bare — e.g. "glute bridge march" (the 'march' token collides with the
 # month, so we match the whole phrase instead of adding 'march').
-_FITNESS_PHRASES = frozenset(
+_CATALOG_FITNESS_PHRASES = frozenset(
+    joined for raw in fuel_catalog.fitness_phrases() if (joined := " ".join(_span_tokens(raw.casefold())))
+)
+_FITNESS_PHRASES = (
+    frozenset(
+        {
+            "glute bridge march",
+            "glute bridge marches",
+            # Required whole-span protections absent from catalog v2. They stay
+            # phrase-only because both distinctive tokens are real surnames.
+            "zercher squat",
+            "kroc row",
+        }
+    )
+    | _CATALOG_FITNESS_PHRASES
+)
+
+# Safe as exact bare-token retire targets. This is narrower than
+# ``_FITNESS_TOKENS`` so adding a partial-span suppression never silently makes
+# an old binding destructively eligible for retirement.
+_RETIRABLE_FITNESS_TOKENS = frozenset(
     {
-        "glute bridge march",
-        "glute bridge marches",
+        "tricep",
+        "triceps",
+        "bicep",
+        "biceps",
+        "calf",
+        "calves",
+        "pushdown",
+        "pushdowns",
+        "lateral",
+    }
+)
+_FITNESS_SURNAME_TOKENS = frozenset(
+    {
+        "arnold",
+        "farmer",
+        "jefferson",
+        "hindu",
+        "copenhagen",
+        "cossack",
+        "hack",
+        "meadows",
+        "pendlay",
+        "zercher",
+        "kroc",
     }
 )
 
@@ -615,6 +679,9 @@ _DEMONYM_STOPLIST = frozenset(
         "russian",
         "mexican",
         "brazilian",
+        "romanian",
+        "bulgarian",
+        "nordic",
     }
 )
 
@@ -634,10 +701,6 @@ _NAME_COLLISION_STOPLIST = frozenset(
         "joy",
     }
 )
-
-# Splits a lowercased span into alphabetic tokens for the fitness / common-word
-# guards ("pec deck flys" -> ['pec', 'deck', 'flys']).
-_ALPHA_TOKEN_RE = re.compile(r"[^a-z]+")
 
 # ISO date / ISO-week / slash-date spans the model tags as LOCATION (ZIPCODE
 # collapses to LOCATION too) — e.g. "2026-W25" @0.99, "2026-06-30". Anchored
@@ -688,12 +751,7 @@ def _has_birth_context(text: str, start: int, end: int) -> bool:
     return bool(_BIRTH_CONTEXT_RE.search(text[lo:hi]))
 
 
-def _span_tokens(matched_lower: str) -> list[str]:
-    """Alphabetic tokens of a lowercased span (digits/punct are separators)."""
-    return [t for t in _ALPHA_TOKEN_RE.split(matched_lower) if t]
-
-
-def _is_fitness_span(matched_lower: str) -> bool:
+def _is_fitness_span(matched_lower: str, *, full_text: str = "") -> bool:
     """True when a span is an exercise note, not PII.
 
     Whole-span exact match against the canonical vocab / phrase sets, plus a
@@ -701,7 +759,16 @@ def _is_fitness_span(matched_lower: str) -> bool:
     'inyasa flow') still suppress. Only tokens ≥3 chars count, to avoid a stray
     two-letter fragment tripping the guard.
     """
-    if matched_lower in _FITNESS_VOCAB or matched_lower in _FITNESS_PHRASES:
+    matched_phrase = " ".join(_span_tokens(matched_lower))
+    leaf_phrase = " ".join(_span_tokens(full_text.casefold())) if full_text else ""
+    if matched_lower in _FITNESS_VOCAB or matched_phrase in _FITNESS_PHRASES:
+        return True
+    # The detector may return only the surname-shaped token from an otherwise
+    # exact exercise leaf ("Arnold" from "Arnold press"). The recursive store
+    # authors each detail_json leaf alone, so exact whole-leaf membership is the
+    # narrow contextual guard: prose such as "Met Arnold for lunch" is not a
+    # catalog phrase and remains PII.
+    if leaf_phrase in _FITNESS_PHRASES:
         return True
     return any(len(t) >= 3 and t in _FITNESS_TOKENS for t in _span_tokens(matched_lower))
 
@@ -769,6 +836,15 @@ def is_never_a_name(text: str) -> bool:
         return False
     if any(token in _RETIRE_EXEMPT_TOKENS for token in tokens):
         return False
+    # Whole catalog phrases are safe to retire, but never a bare surname/place
+    # token even if that token happens to be a catalog alias (e.g. "Pendlay").
+    if len(tokens) == 1 and tokens[0] in _FITNESS_SURNAME_TOKENS:
+        return False
+    joined = " ".join(tokens)
+    if joined in _FITNESS_PHRASES:
+        return True
+    if len(tokens) == 1 and tokens[0] in _RETIRABLE_FITNESS_TOKENS:
+        return True
     return _is_fleet_stoplisted_span(tokens)
 
 
@@ -2218,7 +2294,7 @@ def _filter_results(
             if _is_numeric_or_unit_span(matched_text):
                 _log_skip(tenant, result, "numeric", len(matched_text))
                 continue
-            if _is_fitness_span(matched_lower):
+            if _is_fitness_span(matched_lower, full_text=text):
                 _log_skip(tenant, result, "fitness_vocab", len(matched_text))
                 continue
             if _is_common_word_span(matched_lower, _at_sentence_start(text, result.start)):
