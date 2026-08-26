@@ -7,6 +7,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
@@ -24,6 +25,8 @@ _SOURCE_SUFFIXES = {
     ".yml",
     ".toml",
 }
+_DEPENDENCY_LOCKFILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
+_VENDORED_RUNTIME_DIRS = {"pinned-runtime", "vendor", "vendored", "third-party", "third_party"}
 
 _MODEL_HOSTNAME = re.compile(
     r"api\.openai\.com|openai\.com/v1|api\.anthropic\.com|"
@@ -43,10 +46,10 @@ _PROVIDER_KEY_READ = re.compile(
     r"env\(\s*['\"](?:OPENAI|ANTHROPIC)_API_KEY['\"]",
 )
 
-# PR-B2 removes the azure_client/image-gen runtime seams; integration must
-# shrink those allowlist entries once that lands. On PR-A alone they remain
-# real, so keeping exact path+rule pairs makes any new use fail. Django's
-# settings declaration is configuration, not a provider call.
+# PR-B2 removes the azure_client/image-gen runtime seams at integration, where
+# these entries become tolerated no-ops. On PR-A alone they remain real, so
+# keeping exact path+rule pairs makes any new use fail. Django's settings
+# declaration is configuration, not a provider call.
 _ALLOWED_MATCHES = {
     ("config/settings/base.py", "provider_key_read"),
     ("apps/orchestrator/azure_client.py", "provider_key_read"),
@@ -59,6 +62,40 @@ _EGRESS_PATTERNS = (
     ("sdk_usage", _SDK_USAGE),
     ("provider_key_read", _PROVIDER_KEY_READ),
 )
+
+
+def _is_vendored_dependency(relative: Path) -> bool:
+    vendored_runtime_manifest = (
+        relative.name in {"package.json", "package-lock.json"}
+        and bool(relative.parts)
+        and relative.parts[0] == "runtime"
+        and any(part in _VENDORED_RUNTIME_DIRS for part in relative.parts[1:-1])
+    )
+    # Vendored third-party dependencies and their manifests are not our egress surface.
+    return (
+        "node_modules" in relative.parts
+        or relative.parts[:3] == ("runtime", "openclaw", "pinned-runtime")
+        or relative.name in _DEPENDENCY_LOCKFILES
+        or vendored_runtime_manifest
+    )
+
+
+def _is_deployable(relative: Path) -> bool:
+    if _is_vendored_dependency(relative):
+        return False
+
+    root_special = len(relative.parts) == 1 and (
+        relative.name.startswith("Dockerfile") or "entrypoint" in relative.name
+    )
+    deployable_source = (
+        bool(relative.parts)
+        and relative.parts[0] in _DEPLOYABLE_ROOTS
+        and relative.suffix in _SOURCE_SUFFIXES
+        and "tests" not in relative.parts
+        and not relative.name.startswith("test")
+        and ".test." not in relative.name
+    )
+    return root_special or deployable_source
 
 
 def _deployable_files():
@@ -74,19 +111,7 @@ def _deployable_files():
         path = _ROOT / relative
         if not path.is_file():
             continue
-
-        root_special = len(relative.parts) == 1 and (
-            relative.name.startswith("Dockerfile") or "entrypoint" in relative.name
-        )
-        deployable_source = (
-            bool(relative.parts)
-            and relative.parts[0] in _DEPLOYABLE_ROOTS
-            and path.suffix in _SOURCE_SUFFIXES
-            and "tests" not in relative.parts
-            and not path.name.startswith("test")
-            and ".test." not in path.name
-        )
-        if root_special or deployable_source:
+        if _is_deployable(relative):
             yield path
 
 
@@ -114,28 +139,41 @@ class ModelEgressStaticGuard(SimpleTestCase):
         )
 
     def test_tracked_offender_is_scanned_and_untracked_artifact_is_ignored(self):
-        tracked_offender = _ROOT / "runtime/openclaw/plugins/nbhd-image-gen/index.js"
-        self.assertIn(tracked_offender, set(_deployable_files()))
-        self.assertRegex(tracked_offender.read_text(), _MODEL_HOSTNAME)
-
         runtime_dir = _ROOT / "runtime/openclaw"
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            dir=runtime_dir,
-            prefix="egress-guard-untracked-",
-            suffix=".js",
-            delete=False,
-        ) as artifact:
-            artifact.write('const OpenAI = require("openai");\n')
-            artifact_path = Path(artifact.name)
+        with tempfile.TemporaryDirectory(dir=runtime_dir, prefix="egress-guard-") as directory:
+            tracked_offender = Path(directory) / "tracked-offender.js"
+            untracked_artifact = Path(directory) / "untracked-artifact.js"
+            tracked_offender.write_text('const OpenAI = require("openai");\n')
+            untracked_artifact.write_text('const OpenAI = require("openai");\n')
+            tracked_relative = tracked_offender.relative_to(_ROOT).as_posix()
+            untracked_relative = untracked_artifact.relative_to(_ROOT).as_posix()
+            git_result = subprocess.CompletedProcess(args=[], returncode=0, stdout=f"{tracked_relative}\0".encode())
 
-        try:
-            self.assertRegex(artifact_path.read_text(), _SDK_USAGE)
-            self.assertNotIn(artifact_path, set(_deployable_files()))
-            relative = artifact_path.relative_to(_ROOT).as_posix()
-            self.assertFalse(any(path == relative for path, _line, _rule in _find_offenders()))
-        finally:
-            artifact_path.unlink(missing_ok=True)
+            with patch.object(subprocess, "run", return_value=git_result):
+                deployable = set(_deployable_files())
+                offenders = _find_offenders()
+
+            self.assertIn(tracked_offender, deployable)
+            self.assertNotIn(untracked_artifact, deployable)
+            self.assertIn((tracked_relative, 1, "sdk_usage"), offenders)
+            self.assertFalse(any(path == untracked_relative for path, _line, _rule in offenders))
+
+    def test_vendored_dependency_manifests_are_excluded(self):
+        excluded = (
+            "runtime/openclaw/pinned-runtime/package-lock.json",
+            "runtime/openclaw/pinned-runtime/package.json",
+            "runtime/openclaw/node_modules/openai/index.js",
+            "apps/example/package-lock.json",
+            "runtime/vendor/example/package.json",
+            "scripts/pnpm-lock.yaml",
+            "config/yarn.lock",
+        )
+        for relative in excluded:
+            with self.subTest(relative=relative):
+                self.assertFalse(_is_deployable(Path(relative)))
+
+        self.assertTrue(_is_deployable(Path("runtime/openclaw/nbhd-transcribe.js")))
+        self.assertTrue(_is_deployable(Path("runtime/openclaw/plugins/nbhd-example/index.mjs")))
 
     def test_six_embedding_callers_all_pass_tenant(self):
         expected = {
