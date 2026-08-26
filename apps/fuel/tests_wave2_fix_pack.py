@@ -97,10 +97,16 @@ class EmptyPrescriptionGuardTests(_RuntimeFuelCase):
         self.assertEqual(resp.status_code, 201, resp.data)
         self.assertEqual(Workout.objects.get(tenant=self.tenant).status, "skipped")
 
-    def test_cardio_without_prescription_unaffected(self):
-        # The guard is scoped to the two categories that carry exercises. A run
-        # has no "exercises" and must keep logging in one shot.
-        resp = self.log({"category": "cardio", "activity": "Morning Run", "duration_minutes": 30})
+    def test_planned_cardio_without_prescription_rejected(self):
+        resp = self.log({"status": "planned", "category": "cardio", "activity": "Morning Run"})
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertEqual(resp.data["details"][0]["type"], "missing_prescription")
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 0)
+
+    def test_done_cardio_without_prescription_allowed(self):
+        # Completed logs describe what happened rather than a prescription the
+        # user should open and follow, so they remain outside the planned guard.
+        resp = self.log({"category": "cardio", "activity": "Morning Run"})
         self.assertEqual(resp.status_code, 201, resp.data)
 
 

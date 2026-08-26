@@ -175,7 +175,8 @@ def _emit_fuel_event(tenant, *, tool_name, outcome, reason_code="", detail=None)
 _STATUS_HINT = ", ".join(WorkoutStatus.values)
 
 # Statuses describing a session that did not happen. Nothing was performed and
-# nothing is prescribed, so the empty-prescription guard does not apply to them.
+# nothing is prescribed, so the strength/calisthenics empty-prescription guard
+# does not apply to them.
 _NO_PRESCRIPTION_STATUSES = frozenset({WorkoutStatus.SKIPPED, WorkoutStatus.RESCHEDULED, WorkoutStatus.REST})
 
 
@@ -339,25 +340,18 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             )
             return Response(flat_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
 
-        # A strength/calisthenics log with no exercises is an invisible
-        # workout: the row exists, the Fuel tab shows the activity name, and
-        # opening it reveals nothing to do or to review. The PLAN path has
-        # rejected this since #1481 and its comment predicted this exact hole
-        # on the log path — on 2026-08-19 the canary fell into it (three set
-        # rejections, then a 201 carrying skills=[]). Same envelope, so the
-        # model adds a real prescription and retries in-loop.
-        #
-        # Exempt the statuses where there is nothing to prescribe: a session the
-        # user SKIPPED (or moved, or a rest day) has no sets by definition, and
-        # requiring them would leave "I missed leg day" with no expressible
-        # payload at all — the very gap the status enum above just closed.
-        if (
-            category in ("strength", "calisthenics")
-            and workout_status not in _NO_PRESCRIPTION_STATUSES
-            and not _has_prescription(detail_json)
+        # Strength/calisthenics logs represent performed sets even when DONE, so
+        # preserve the wave2 guard against the assistant logging an empty list.
+        # Other categories are guarded only while PLANNED; their completed logs
+        # may validly describe what happened without structured detail.
+        requires_prescription = (
+            category in ("strength", "calisthenics") and workout_status not in _NO_PRESCRIPTION_STATUSES
+        ) or workout_status == WorkoutStatus.PLANNED
+        if requires_prescription and not _has_prescription(
+            detail_json,
+            category,
+            duration_minutes=duration,
         ):
-            from apps.common.llm_contracts import LLMValidationError
-
             _emit_fuel_event(
                 tenant,
                 tool_name="runtime-fuel-log",
@@ -365,22 +359,10 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
                 reason_code="empty_prescription",
                 detail={"category": category},
             )
-            pres_err = LLMValidationError(
-                message=(
-                    "Strength and calisthenics workouts require an exercise "
-                    "prescription. Add at least one exercise with sets under "
-                    "detail_json.exercises before retrying — record the work that "
-                    "was actually done, don't drop the category to dodge this and "
-                    "don't send an empty exercises list."
-                ),
-                details=[
-                    {
-                        "loc": ["detail_json", "exercises"],
-                        "msg": "strength/calisthenics workouts require a non-empty exercises list",
-                        "type": "missing_prescription",
-                        "example": _EMPTY_PRESCRIPTION_EXAMPLE,
-                    }
-                ],
+            pres_err = _missing_prescription_error(
+                category,
+                loc_prefix=["detail_json"],
+                subject="workouts",
             )
             return Response(pres_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
 
@@ -579,6 +561,24 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                     detail={"category": ncat, "field": str(flat_err.details[0]["loc"][-1])},
                 )
                 return Response(flat_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
+            if workout.status == WorkoutStatus.PLANNED and not _has_prescription(
+                nd,
+                ncat,
+                duration_minutes=workout.duration_minutes,
+            ):
+                _emit_fuel_event(
+                    tenant,
+                    tool_name="runtime-fuel-workout-detail",
+                    outcome="rejected",
+                    reason_code="empty_prescription",
+                    detail={"category": ncat},
+                )
+                pres_err = _missing_prescription_error(
+                    ncat,
+                    loc_prefix=["detail_json"],
+                    subject="planned workouts",
+                )
+                return Response(pres_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
             workout.detail_json = nd
             updated_fields.append("detail_json")
             if ncat != workout.category:
@@ -1389,20 +1389,71 @@ def _serialize_plan(plan, include_workouts=False, *, today=None):
 _EMPTY_PRESCRIPTION_EXAMPLE = {
     "exercises": [{"name": "Bench Press", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 60}]}]
 }
+_CARDIO_PRESCRIPTION_EXAMPLE = {"distance_km": 5, "pace": "5:30"}
+_HIIT_PRESCRIPTION_EXAMPLE = {"rounds": 8, "work_s": 30, "rest_s": 30}
+_MOBILITY_PRESCRIPTION_EXAMPLE = {
+    "skills": [
+        {"name": "Hip flexor stretch", "sets": [{"type": "hold_time", "hold_s": 45}]},
+        {"name": "Cat-cow", "sets": [{"type": "hold_time", "hold_s": 60}]},
+    ]
+}
+
+_PRESCRIPTION_GUIDANCE = {
+    "strength": {
+        "key": "exercises",
+        "requirement": "a non-empty exercises or skills list",
+        "example": _EMPTY_PRESCRIPTION_EXAMPLE,
+    },
+    "calisthenics": {
+        "key": "exercises",
+        "requirement": "a non-empty exercises or skills list",
+        "example": _EMPTY_PRESCRIPTION_EXAMPLE,
+    },
+    "cardio": {
+        "key": "distance_km",
+        "requirement": "cardio targets or duration_minutes",
+        "example": _CARDIO_PRESCRIPTION_EXAMPLE,
+    },
+    "hiit": {
+        "key": "rounds",
+        "requirement": "rounds with work_s, structure, exercises, or skills",
+        "example": _HIIT_PRESCRIPTION_EXAMPLE,
+    },
+    "mobility": {
+        "key": "skills",
+        "requirement": "a non-empty blocks, skills, or exercises list",
+        "example": _MOBILITY_PRESCRIPTION_EXAMPLE,
+    },
+}
 
 
-def _has_prescription(detail) -> bool:
-    """True when ``detail`` carries at least one exercise (or calisthenics
-    ``skills``) entry.
+def _missing_prescription_error(category, *, loc_prefix, subject):
+    """Build the category-specific self-correction envelope for planned work."""
+    from apps.common.llm_contracts import LLMValidationError
 
-    Used to reject strength/calisthenics plan days whose normalized
-    ``detail_json`` would expand into a planned Workout with no exercises at
-    all — the empty-plan bug the iOS Fuel tab surfaces (activity name shown, but
-    zero exercises to do).
-    """
-    if not isinstance(detail, dict):
-        return False
-    return any(isinstance(detail.get(key), list) and detail.get(key) for key in ("exercises", "skills"))
+    guidance = _PRESCRIPTION_GUIDANCE[category]
+    return LLMValidationError(
+        message=(
+            f"{category.title()} {subject} require a real prescription: "
+            f"{guidance['requirement']}. Add category-appropriate detail_json "
+            "content before retrying; don't change the category to dodge this check."
+        ),
+        details=[
+            {
+                "loc": [*loc_prefix, guidance["key"]],
+                "msg": f"{category} requires {guidance['requirement']}",
+                "type": "missing_prescription",
+                "example": guidance["example"],
+            }
+        ],
+    )
+
+
+def _has_prescription(detail, category="strength", *, duration_minutes=None) -> bool:
+    """Backward-compatible alias for the pure category contract."""
+    from .set_contract import has_prescription
+
+    return has_prescription(detail, category, duration_minutes=duration_minutes)
 
 
 _WEEKDAY_KEY_HINT = "a weekday name (monday..sunday, or mon..sun) or a legacy integer 0-6 (0=Mon..6=Sun)"
@@ -1595,24 +1646,24 @@ def _canonicalize_raw_schedule_keys(schedule_json):
     return canonical, None
 
 
-def _validate_normalize_schedule(schedule_json, *, require_detail=True):
+def _validate_normalize_schedule(schedule_json, *, require_detail=True, detail_supplied_days=None):
     """Validate weekday keys + normalize/validate each day's prescription.
 
     Returns ``(normalized_schedule, error_response)``. On any problem
     ``normalized_schedule`` is None and ``error_response`` is a 400 — carrying
-    the ``LLMValidationError`` envelope when a strength/calisthenics
-    ``detail_json`` is the culprit, so the agent self-corrects in-loop (the same
-    chokepoint the log-workout path uses). Atomic by design: the caller persists
-    nothing unless the whole schedule validates.
+    the ``LLMValidationError`` envelope when ``detail_json`` is the culprit, so
+    the agent self-corrects in-loop (the same chokepoint the log-workout path
+    uses). Atomic by design: the caller persists nothing unless the whole
+    schedule validates.
 
     ``require_detail`` (default True, the create path) additionally rejects any
-    strength/calisthenics day whose prescription is empty — even when the caller
-    supplied no ``detail_json`` at all — because a fresh plan expands every day
-    into a brand-new Workout, and an empty strength day means the user opens it
-    to no exercises. On the update path pass ``require_detail=False``: there a
+    category whose prescription is empty — even when the caller supplied no
+    ``detail_json`` at all — because a fresh plan expands every day into a
+    brand-new Workout. On the update path pass ``require_detail=False``: there a
     day that OMITS ``detail_json`` is a "leave the existing prescription alone"
-    signal (the caller strips the injected empty key), so only a day that
-    explicitly supplied an empty ``detail_json`` is rejected.
+    signal, so only a day that explicitly supplied an empty ``detail_json`` is
+    rejected. ``detail_supplied_days`` preserves that distinction after a merge
+    has inherited stored fields into the validation candidate.
     """
     from .set_contract import normalize_detail, validate_detail
 
@@ -1651,7 +1702,9 @@ def _validate_normalize_schedule(schedule_json, *, require_detail=True):
             category = "other"
         activity = str(workout_def.get("activity") or WorkoutCategory(category).label).strip()
 
-        detail_supplied = "detail_json" in workout_def
+        detail_supplied = (
+            "detail_json" in workout_def if detail_supplied_days is None else str(day_int) in detail_supplied_days
+        )
         detail = workout_def.get("detail_json", {}) or {}
         detail, category = normalize_detail(detail, category, activity=activity)[:2]
         detail, verr = validate_detail(detail, category)
@@ -1661,37 +1714,26 @@ def _validate_normalize_schedule(schedule_json, *, require_detail=True):
             payload["weekday_name"] = WEEKDAY_NAMES[day_int]
             return None, Response(payload, status=status.HTTP_400_BAD_REQUEST)
 
-        # A strength/calisthenics day with no exercises passes validate_detail
-        # (it only checks sets that ARE present) but expands into a planned
-        # Workout with nothing to do — the empty-plan the iOS Fuel tab surfaces.
-        # Reject it in the same self-correction envelope the malformed-set path
-        # uses so the agent adds a real prescription and retries in-loop. Skip
-        # days that merely omitted detail_json on the update path
-        # (require_detail=False): those mean "leave the existing plan alone" and
-        # the caller strips the injected empty key — enforcing here would wedge
-        # a status/duration-only edit of a legacy plan.
-        if (
-            category in ("strength", "calisthenics")
-            and (require_detail or detail_supplied)
-            and not _has_prescription(detail)
-        ):
-            from apps.common.llm_contracts import LLMValidationError
+        duration = workout_def.get("duration_minutes")
+        if duration is not None:
+            try:
+                duration = int(duration)
+            except (TypeError, ValueError):
+                duration = None
 
-            pres_err = LLMValidationError(
-                message=(
-                    "Strength and calisthenics training days require an exercise "
-                    "prescription. Add at least one exercise with sets under "
-                    "detail_json.exercises before retrying — design the real "
-                    "programming for the day, don't drop the category to dodge this."
-                ),
-                details=[
-                    {
-                        "loc": ["schedule_json", WEEKDAY_NAMES[day_int], "detail_json", "exercises"],
-                        "msg": "strength/calisthenics days require a non-empty exercises list",
-                        "type": "missing_prescription",
-                        "example": _EMPTY_PRESCRIPTION_EXAMPLE,
-                    }
-                ],
+        # Shape validation only checks fields that are present. This separate
+        # category matrix rejects a planned day that would expand into a title
+        # and duration with no usable instructions. Omitted detail on partial
+        # updates remains an explicit leave-existing-content-alone signal.
+        if (require_detail or detail_supplied) and not _has_prescription(
+            detail,
+            category,
+            duration_minutes=duration,
+        ):
+            pres_err = _missing_prescription_error(
+                category,
+                loc_prefix=["schedule_json", WEEKDAY_NAMES[day_int], "detail_json"],
+                subject="training days",
             )
             payload = dict(pres_err.as_tool_result())
             payload["weekday"] = day_int
@@ -1704,13 +1746,6 @@ def _validate_normalize_schedule(schedule_json, *, require_detail=True):
                 target_rpe = max(1, min(10, int(target_rpe)))
             except (TypeError, ValueError):
                 target_rpe = None
-
-        duration = workout_def.get("duration_minutes")
-        if duration is not None:
-            try:
-                duration = int(duration)
-            except (TypeError, ValueError):
-                duration = None
 
         norm: dict = {"category": category, "activity": activity, "detail_json": detail}
         if duration is not None:
@@ -2565,9 +2600,15 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                 # Merge raw day fields before normalization so omitted fields
                 # inherit their stored values instead of receiving validator
                 # defaults. New days still receive the normal defaults.
+                detail_supplied_days = {
+                    day_str
+                    for day_str, incoming_day in raw_by_weekday.items()
+                    if isinstance(incoming_day, dict) and "detail_json" in incoming_day
+                }
                 normalized_schedule, sched_err = _validate_normalize_schedule(
                     merged_schedule,
                     require_detail=False,
+                    detail_supplied_days=detail_supplied_days,
                 )
                 if sched_err is not None:
                     return sched_err

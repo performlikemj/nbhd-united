@@ -39,6 +39,7 @@ __all__ = [
     "SET_METRICS",
     "set_metric",
     "coerce_set",
+    "has_prescription",
     "normalize_detail",
     "validate_detail",
     "validate_flat_detail",
@@ -50,6 +51,38 @@ __all__ = [
 # describe whole cardio/mobility workouts, not per-set data, and are
 # intentionally out of scope here — see CONTINUITY_fuel-set-contract.md.)
 SET_METRICS = frozenset({METRIC_WEIGHTED_REPS, METRIC_BODYWEIGHT_REPS, METRIC_HOLD_TIME})
+
+
+def has_prescription(detail: Any, category: str, *, duration_minutes: Any = None) -> bool:
+    """Return whether a planned workout has usable category-specific content.
+
+    Categories outside the prescribed workout set intentionally pass: sport,
+    rest-like values, and future categories do not have a detail contract here.
+    ``duration_minutes`` is a valid standalone cardio prescription when it was
+    supplied, including zero; callers own any numeric coercion or range rules.
+    """
+    if category not in ("strength", "calisthenics", "cardio", "hiit", "mobility"):
+        return True
+    if not isinstance(detail, dict):
+        return False
+
+    def _non_empty_list(key: str) -> bool:
+        value = detail.get(key)
+        return isinstance(value, list) and bool(value)
+
+    if category in ("strength", "calisthenics"):
+        return _non_empty_list("exercises") or _non_empty_list("skills")
+    if category == "cardio":
+        return duration_minutes is not None or any(
+            detail.get(key) for key in ("distance_km", "pace", "structure", "avg_hr", "elevation", "avg_power")
+        )
+    if category == "hiit":
+        return (
+            bool(detail.get("rounds") and detail.get("work_s"))
+            or bool(detail.get("structure"))
+            or any(_non_empty_list(key) for key in ("exercises", "skills"))
+        )
+    return any(_non_empty_list(key) for key in ("blocks", "skills", "exercises"))
 
 
 def _positive_weight(value: Any) -> bool:
@@ -180,6 +213,20 @@ def normalize_detail(detail: Any, category: str, *, activity: str | None = None)
     ):
         overrides.append({"field": "category", "from": category, "to": reg_cats[0]})
         category = reg_cats[0]
+
+    key_move = None
+    if category == "calisthenics":
+        key_move = ("exercises", "skills")
+    elif category == "strength":
+        key_move = ("skills", "exercises")
+    if key_move is not None:
+        source_key, target_key = key_move
+        source = new.get(source_key)
+        target = new.get(target_key)
+        if isinstance(source, list) and source and not (isinstance(target, list) and target):
+            new[target_key] = source
+            new.pop(source_key, None)
+            overrides.append({"field": "exercise_key", "from": source_key, "to": target_key})
 
     if overrides:
         new["_normalized"] = overrides
@@ -402,7 +449,18 @@ def _error_offender(detail: Any, loc: list) -> tuple[Any, str | None]:
     """
     if not isinstance(detail, dict) or not loc or loc[0] not in ("exercises", "skills"):
         return None, None
-    container = detail.get(loc[0])
+    container_key = loc[0]
+    container = detail.get(container_key)
+    if not isinstance(container, list):
+        # ``normalize_detail`` may have moved exercises↔skills to match a
+        # corrected strength/calisthenics category before validation produced
+        # this loc. The move is 1:1, so the opposite source key maps safely back
+        # to the caller's pre-normalized fragment for legacy-error comparison.
+        alternate_key = "skills" if container_key == "exercises" else "exercises"
+        alternate = detail.get(alternate_key)
+        if isinstance(alternate, list):
+            container_key = alternate_key
+            container = alternate
     if len(loc) < 2 or not isinstance(loc[1], int):
         return container, "container"
     if not isinstance(container, list) or not (0 <= loc[1] < len(container)):
@@ -456,7 +514,10 @@ def split_detail_errors(details: list[dict], incoming: Any, stored: Any) -> tupl
         elif kind == "exercise":
             known = any(frag == e for e in stored_exercises)
         elif kind == "container":
-            known = isinstance(stored, dict) and frag == stored.get(loc[0])
+            known = isinstance(stored, dict) and frag in (
+                stored.get(loc[0]),
+                stored.get("skills" if loc[0] == "exercises" else "exercises"),
+            )
         else:
             known = False
         (preexisting if known else new_details).append(err)
