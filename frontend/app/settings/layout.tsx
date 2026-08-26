@@ -7,7 +7,6 @@ import { usePathname } from "next/navigation";
 import { ReactNode } from "react";
 
 import {
-  fetchByoCredentials,
   fetchEntityRegistry,
   fetchIntegrations,
   fetchMe,
@@ -154,7 +153,6 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         break;
       case "/settings/ai-provider":
         void queryClient.prefetchQuery({ queryKey: ["tenant"], queryFn: fetchTenant });
-        void queryClient.prefetchQuery({ queryKey: ["byo-credentials"], queryFn: fetchByoCredentials });
         break;
       default:
         break;
