@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { once } from "node:events";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
@@ -11,6 +12,8 @@ import { test } from "node:test";
 const TOOL_NAME = "nbhd_datebook_add_apple_reminder";
 const THREAD_ID = "00000000-0000-4000-8000-000000000001";
 const GATEWAY_TOKEN = "origin-repro-gateway-token";
+const TENANT_ID = "00000000-0000-4000-8000-000000000002";
+const INTERNAL_API_KEY = "internal-origin-repro-key";
 
 function sendJson(response, status, payload) {
   const body = JSON.stringify(payload);
@@ -79,6 +82,17 @@ async function stopChild(child) {
     child.kill("SIGKILL");
     await once(child, "exit");
   }
+}
+
+async function runCommand(command, args, options) {
+  const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const [code] = await once(child, "exit");
+  assert.equal(code, 0, `${command} ${args.join(" ")} failed\n${stdout}\n${stderr}`);
+  return { stdout, stderr };
 }
 
 function fakeRuntime() {
@@ -175,7 +189,7 @@ function fakeRuntime() {
   return { observations, server };
 }
 
-async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "ios" } = {}) {
+async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "ios", trigger = "chat" } = {}) {
   const configuredBinary = process.env.OPENCLAW_REPRO_BIN;
   assert.ok(configuredBinary, "OPENCLAW_REPRO_BIN must point to the pinned openclaw.mjs");
   const openclawBinary = await realpath(configuredBinary);
@@ -250,6 +264,16 @@ async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "
   await chmod(configPath, 0o600);
 
   let gatewayLogs = "";
+  const childEnv = {
+    ...process.env,
+    NODE_OPTIONS: "",
+    OPENCLAW_CONFIG_PATH: configPath,
+    OPENCLAW_STATE_DIR: stateDirectory,
+    OPENCLAW_DISABLE_BONJOUR: "1",
+    NBHD_API_BASE_URL: `http://127.0.0.1:${runtimePort}`,
+    NBHD_TENANT_ID: TENANT_ID,
+    NBHD_INTERNAL_API_KEY: INTERNAL_API_KEY,
+  };
   const child = spawn(process.execPath, [
     openclawBinary,
     "gateway",
@@ -259,16 +283,7 @@ async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "
     "loopback",
     "--verbose",
   ], {
-    env: {
-      ...process.env,
-      NODE_OPTIONS: "",
-      OPENCLAW_CONFIG_PATH: configPath,
-      OPENCLAW_STATE_DIR: stateDirectory,
-      OPENCLAW_DISABLE_BONJOUR: "1",
-      NBHD_API_BASE_URL: `http://127.0.0.1:${runtimePort}`,
-      NBHD_TENANT_ID: "tenant-origin-repro",
-      NBHD_INTERNAL_API_KEY: "internal-origin-repro-key",
-    },
+    env: childEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
   const appendLogs = (chunk) => {
@@ -285,6 +300,38 @@ async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "
 
   const gatewayUrl = `http://127.0.0.1:${gatewayPort}`;
   await waitForGateway(gatewayUrl, child, () => gatewayLogs);
+  if (trigger === "cron") {
+    const cliConnection = ["--url", `ws://127.0.0.1:${gatewayPort}`, "--token", GATEWAY_TOKEN];
+    const added = await runCommand(process.execPath, [
+      openclawBinary,
+      "cron",
+      "add",
+      "--name",
+      "Origin Stamp Repro",
+      "--at",
+      "+1h",
+      "--session",
+      "isolated",
+      "--message",
+      "Add an Apple reminder to buy milk",
+      "--no-deliver",
+      "--json",
+      ...cliConnection,
+    ], { env: childEnv });
+    const job = JSON.parse(added.stdout);
+    assert.ok(job.id, added.stdout);
+    await runCommand(process.execPath, [
+      openclawBinary,
+      "cron",
+      "run",
+      job.id,
+      "--wait",
+      "--wait-timeout",
+      "30s",
+      ...cliConnection,
+    ], { env: childEnv });
+    return { observations, gatewayLogs: () => gatewayLogs, job };
+  }
   const response = await fetch(`${gatewayUrl}/v1/chat/completions`, {
     method: "POST",
     headers: {
@@ -324,7 +371,7 @@ test("pinned OpenClaw carries an iOS turn through the real loaded datebook plugi
 test("pinned OpenClaw executes the enforcement null override without forwarding origin", {
   timeout: 60_000,
 }, async (t) => {
-  const { observations } = await runPinnedFlow(t, {
+  const { observations, gatewayLogs } = await runPinnedFlow(t, {
     includeEnforcement: true,
     // Use a native channel in this second regression so it exercises only the
     // before_tool_call merge seam; the first test retains the iOS fallback pin.
@@ -332,4 +379,32 @@ test("pinned OpenClaw executes the enforcement null override without forwarding 
   });
   assert.equal(observations.datebookBody?.command_type, "reminder_create");
   assert.equal(Object.hasOwn(observations.datebookBody, "origin"), false, "null override must not be forwarded");
+  assert.match(gatewayLogs, /nbhd-cron-enforcement: registered/, "the null assertion must exercise the loaded hook");
+});
+
+test("pinned OpenClaw signs origin on a real cron-triggered agent run", {
+  timeout: 60_000,
+}, async (t) => {
+  const { observations, gatewayLogs, job } = await runPinnedFlow(t, {
+    includeEnforcement: true,
+    messageChannel: "telegram",
+    trigger: "cron",
+  });
+  const origin = observations.datebookBody?.origin;
+  assert.match(gatewayLogs(), /nbhd-cron-enforcement: registered/);
+  assert.equal(
+    origin?.v,
+    1,
+    `captured body=${JSON.stringify(observations.datebookBody)}\n${gatewayLogs()}`,
+  );
+  assert.equal(origin?.kind, "cron");
+  assert.equal(origin?.tenant_id, TENANT_ID);
+  assert.equal(origin?.job_id, job.id);
+  assert.equal(typeof origin?.run_id, "string");
+  assert.ok(origin.run_id);
+  assert.equal(typeof origin?.ts, "number");
+  assert.ok(Math.abs(Math.floor(Date.now() / 1000) - origin.ts) <= 900);
+  const message = `nbhd-origin.v1|${TENANT_ID}|cron|${origin.run_id}|${job.id}|${origin.ts}`;
+  const expected = createHmac("sha256", INTERNAL_API_KEY).update(message).digest("hex");
+  assert.equal(origin.sig, expected, "stamp must satisfy Django verify_origin_stamp's HMAC contract");
 });

@@ -398,6 +398,20 @@ function lookupContract(jobId) {
   return entry;
 }
 
+// openclaw@2026.5.28's embedded attempt drops jobId when it rebuilds the
+// before_prompt_build context (selection-BMP-JCML.js:16673-16684). Isolated
+// cron session keys retain the authoritative job/run pair, in the runtime's
+// own `agent:<agent>:cron:<jobId>:run:<runId>` format
+// (isolated-agent-6jikzXvw.js:589-622). Require the runId to agree so an
+// unrelated or caller-shaped session key cannot attach provenance.
+function cronJobIdFromContext(ctx, runId) {
+  const direct = asTrimmedString(ctx && ctx.jobId);
+  if (direct) return direct;
+  const sessionKey = asTrimmedString(ctx && ctx.sessionKey);
+  const match = /^agent:[^:]+:cron:([^:]+):run:([^:]+)$/u.exec(sessionKey);
+  return match && match[2] === runId ? match[1] : "";
+}
+
 function isOriginStampedTool(toolId) {
   return toolId.startsWith("nbhd_cron_create_") || toolId.startsWith("nbhd_datebook_add_");
 }
@@ -487,7 +501,11 @@ export default function register(api) {
   const runtime = getPluginConfig(api);
   const { cacheTtlMs } = runtime;
 
-  safeLog(api, "info", "nbhd-cron-enforcement: registered (cron_changed + before_prompt_build + before_tool_call)");
+  safeLog(
+    api,
+    "warn",
+    "nbhd-cron-enforcement: registered (cron_changed + before_prompt_build + subagent_spawned + before_tool_call)",
+  );
 
   // ── cron_changed ───────────────────────────────────────────────────────
   api.on("cron_changed", (event) => {
@@ -527,10 +545,11 @@ export default function register(api) {
       pruneExpired();
       if (ctx && ctx.trigger === "cron") {
         const runId = asTrimmedString(ctx.runId);
-        const jobId = asTrimmedString(ctx.jobId);
+        const jobId = cronJobIdFromContext(ctx, runId);
         if (runId && jobId && !lookupRun(runId)) {
           runById.set(runId, {
             jobId,
+            sessionKey: asTrimmedString(ctx.sessionKey),
             ts: Date.now(),
             revisions: 0,
             sends: 0,
@@ -541,6 +560,29 @@ export default function register(api) {
       return undefined;
     } catch (error) {
       safeLogError(api, "warn", "nbhd-cron-enforcement: before_prompt_build error", error);
+      return undefined;
+    }
+  });
+
+  // A helper run gets its own runId. Join it back to the tracked requester
+  // after OpenClaw announces the spawn so provenance survives an offloaded
+  // tool call. Share the same mutable run entry so enforcement counters cannot
+  // be reset or bypassed merely by crossing the sub-agent boundary.
+  api.on("subagent_spawned", (event, ctx) => {
+    try {
+      pruneExpired();
+      const childRunId = asTrimmedString((event && event.runId) || (ctx && ctx.runId));
+      const requesterSessionKey = asTrimmedString(ctx && ctx.requesterSessionKey);
+      if (!childRunId || !requesterSessionKey) return undefined;
+      for (const [requesterRunId, entry] of runById.entries()) {
+        if (entry.sessionKey !== requesterSessionKey) continue;
+        const requesterRun = lookupRun(requesterRunId);
+        if (requesterRun) runById.set(childRunId, requesterRun);
+        break;
+      }
+      return undefined;
+    } catch (error) {
+      safeLogError(api, "warn", "nbhd-cron-enforcement: subagent_spawned error", error);
       return undefined;
     }
   });
