@@ -3137,6 +3137,7 @@ class RequirePrescriptionOnStrengthDaysTests(TestCase):
         create = self._post({"monday": {"activity": "Mobility", "category": "mobility", **_MOBILITY_DETAIL}})
         self.assertEqual(create.status_code, 201, create.data)
         plan_id = create.data["id"]
+        detail_before = WorkoutPlan.objects.get(id=plan_id).schedule_json["0"]["detail_json"]
 
         resp = self.client.patch(
             f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan_id}/",
@@ -3147,7 +3148,7 @@ class RequirePrescriptionOnStrengthDaysTests(TestCase):
 
         self.assertEqual(resp.status_code, 200, resp.data)
         plan = WorkoutPlan.objects.get(id=plan_id)
-        self.assertEqual(plan.schedule_json["0"]["detail_json"], _MOBILITY_DETAIL["detail_json"])
+        self.assertEqual(plan.schedule_json["0"]["detail_json"], detail_before)
 
     def test_update_explicit_empty_mobility_detail_rejected(self):
         create = self._post({"monday": {"activity": "Mobility", "category": "mobility", **_MOBILITY_DETAIL}})

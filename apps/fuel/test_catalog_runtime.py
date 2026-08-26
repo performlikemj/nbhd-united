@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from unittest.mock import patch
 
@@ -275,3 +276,218 @@ class UnmatchedExerciseFeedbackTests(CatalogRuntimeCase):
             plan.schedule_json["0"]["detail_json"]["exercises"][0]["name"],
             "[PERSON_1] special",
         )
+
+
+class CatalogAnnotationRuntimeTests(CatalogRuntimeCase):
+    weighted_set = [{"type": "weighted_reps", "reps": 8, "weight": 10}]
+
+    def exercise(self, name, **extra):
+        return {"name": name, "sets": self.weighted_set, **extra}
+
+    def strength_day(self, *exercises):
+        return {
+            "activity": "Strength",
+            "category": "strength",
+            "detail_json": {"exercises": list(exercises)},
+        }
+
+    def test_workout_create_and_update_annotate_names_without_rewriting(self):
+        created = self.client.post(
+            self.url("log/"),
+            {
+                "activity": "Catalog",
+                "category": "strength",
+                "detail_json": {
+                    "exercises": [
+                        self.exercise("Dumbbell Hammer Curls"),
+                        self.exercise("Mystery private move", user_verbatim=True),
+                    ]
+                },
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(
+            created.data["catalog_matches"],
+            [
+                {
+                    "loc": ["detail_json", "exercises", 0, "name"],
+                    "slug": "hammer-curl",
+                    "matched_by": "equipment_prefix",
+                    "name": "Hammer Curl",
+                }
+            ],
+        )
+        self.assertNotIn("unmatched_exercises", created.data)
+        workout = Workout.objects.get(id=created.data["id"])
+        item = workout.detail_json["exercises"][0]
+        self.assertEqual(item["name"], "Dumbbell Hammer Curls")
+        self.assertEqual(item["catalog_ref"]["slug"], "hammer-curl")
+
+        updated = self.client.patch(
+            self.url(f"workouts/{workout.id}/"),
+            {"detail_json": {"exercises": [self.exercise("Dumbbell Arnold Press")]}},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(updated.status_code, 200, updated.data)
+        workout.refresh_from_db()
+        self.assertEqual(workout.detail_json["exercises"][0]["name"], "Dumbbell Arnold Press")
+        self.assertEqual(workout.detail_json["exercises"][0]["catalog_ref"]["slug"], "arnold-press")
+
+    @patch("apps.fuel.runtime_views._manage_fuel_cron")
+    def test_plan_create_annotates_base_and_override_and_dedupe_reports_nothing(self, _cron):
+        body = {
+            "name": "Annotated plan",
+            "start_date": "2026-04-27",
+            "weeks": 2,
+            "days_per_week": 1,
+            "schedule_json": {"monday": self.strength_day(self.exercise("Dumbbell Hammer Curls"))},
+            "week_overrides": {"1": {"monday": self.strength_day(self.exercise("Dumbbell Arnold Press"))}},
+        }
+        created = self.client.post(self.url("plans/"), body, format="json", **self.headers)
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(
+            [match["loc"] for match in created.data["catalog_matches"]],
+            [
+                ["schedule_json", "monday", "detail_json", "exercises", 0, "name"],
+                ["week_overrides", "1", "monday", "detail_json", "exercises", 0, "name"],
+            ],
+        )
+        plan = WorkoutPlan.objects.get(id=created.data["id"])
+        self.assertEqual(plan.schedule_json["0"]["detail_json"]["exercises"][0]["name"], "Dumbbell Hammer Curls")
+        self.assertEqual(
+            plan.week_overrides["1"]["0"]["detail_json"]["exercises"][0]["catalog_ref"]["slug"],
+            "arnold-press",
+        )
+
+        deduped = self.client.post(self.url("plans/"), body, format="json", **self.headers)
+        self.assertEqual(deduped.status_code, 200, deduped.data)
+        self.assertTrue(deduped.data["deduped"])
+        self.assertNotIn("catalog_matches", deduped.data)
+
+    @patch("apps.fuel.runtime_views._manage_fuel_cron")
+    def test_plan_patch_only_annotates_incoming_day(self, _cron):
+        monday = self.strength_day(self.exercise("Dumbbell Hammer Curls"))
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Path mask",
+            start_date=date.today() + timedelta(days=7),
+            weeks=2,
+            days_per_week=2,
+            schedule_json={"0": monday},
+        )
+        monday_before = json.dumps(plan.schedule_json["0"], sort_keys=True)
+
+        response = self.client.patch(
+            self.url(f"plans/{plan.id}/"),
+            {"schedule_json": {"tuesday": self.strength_day(self.exercise("Dumbbell Front Raises"))}},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            response.data["catalog_matches"][0]["loc"],
+            ["schedule_json", "tuesday", "detail_json", "exercises", 0, "name"],
+        )
+        plan.refresh_from_db()
+        self.assertEqual(json.dumps(plan.schedule_json["0"], sort_keys=True), monday_before)
+        self.assertNotIn("catalog_ref", plan.schedule_json["0"]["detail_json"]["exercises"][0])
+        self.assertEqual(
+            plan.schedule_json["1"]["detail_json"]["exercises"][0]["catalog_ref"]["slug"],
+            "front-raise",
+        )
+
+    @patch("apps.fuel.runtime_views._manage_fuel_cron")
+    def test_plan_patch_week_override_surface_is_annotated(self, _cron):
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Override annotation",
+            start_date=date.today() + timedelta(days=7),
+            weeks=2,
+            days_per_week=1,
+            schedule_json={"0": self.strength_day(self.exercise("Bench Press"))},
+        )
+        response = self.client.patch(
+            self.url(f"plans/{plan.id}/"),
+            {"week_overrides": {"1": {"monday": self.strength_day(self.exercise("Dumbbell Arnold Press"))}}},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["catalog_matches"][0]["slug"], "arnold-press")
+        plan.refresh_from_db()
+        self.assertEqual(
+            plan.week_overrides["1"]["0"]["detail_json"]["exercises"][0]["catalog_ref"]["slug"],
+            "arnold-press",
+        )
+
+    def test_pii_authoring_and_egress_cannot_rewrite_catalog_slug(self):
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": {"name": "Arnold"},
+            "[PERSON_2]": {"name": "arnold"},
+        }
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["pii_entity_map", "layer1_placeholder_writes"])
+        created = self.client.post(
+            self.url("log/"),
+            {
+                "activity": "Catalog",
+                "category": "strength",
+                "detail_json": {"exercises": [self.exercise("Dumbbell Arnold Press")]},
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data["catalog_matches"][0]["slug"], "arnold-press")
+        workout = Workout.objects.get(id=created.data["id"])
+        self.assertEqual(workout.detail_json["exercises"][0]["catalog_ref"]["slug"], "arnold-press")
+
+        fetched = self.client.get(self.url(f"workouts/{workout.id}/"), **self.headers)
+        self.assertEqual(
+            fetched.data["detail_json"]["exercises"][0]["catalog_ref"]["slug"],
+            "arnold-press",
+        )
+
+    @patch("apps.fuel.runtime_views._manage_fuel_cron")
+    def test_notes_and_status_only_patches_leave_json_byte_identical(self, _cron):
+        detail = {"exercises": [self.exercise("Dumbbell Arnold Press")]}
+        workout = Workout.objects.create(
+            tenant=self.tenant,
+            date=date.today(),
+            status="planned",
+            category="strength",
+            activity="Stable",
+            detail_json=detail,
+        )
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Stable",
+            start_date=date.today() + timedelta(days=7),
+            weeks=2,
+            days_per_week=1,
+            schedule_json={"0": self.strength_day(self.exercise("Dumbbell Arnold Press"))},
+        )
+        workout_before = json.dumps(workout.detail_json, sort_keys=True)
+        schedule_before = json.dumps(plan.schedule_json, sort_keys=True)
+
+        workout_response = self.client.patch(
+            self.url(f"workouts/{workout.id}/"),
+            {"status": "done"},
+            format="json",
+            **self.headers,
+        )
+        plan_response = self.client.patch(
+            self.url(f"plans/{plan.id}/"),
+            {"notes": "metadata only"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(workout_response.status_code, 200)
+        self.assertEqual(plan_response.status_code, 200)
+        workout.refresh_from_db()
+        plan.refresh_from_db()
+        self.assertEqual(json.dumps(workout.detail_json, sort_keys=True), workout_before)
+        self.assertEqual(json.dumps(plan.schedule_json, sort_keys=True), schedule_before)

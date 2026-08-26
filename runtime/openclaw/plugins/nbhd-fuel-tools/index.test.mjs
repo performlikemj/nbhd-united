@@ -212,6 +212,29 @@ test("all four write tools render the unmatched exercise warning line", async (t
   }
 });
 
+test("write tools render catalog matches from their own local request", async (t) => {
+  setRuntimeEnv(t);
+  t.mock.method(globalThis, "fetch", async () =>
+    response(200, JSON.stringify({
+      id: "row-1",
+      catalog_matches: [{
+        loc: ["detail_json", "exercises", 0, "name"],
+        slug: "hammer-curl",
+        matched_by: "equipment_prefix",
+        name: "Hammer Curl",
+      }],
+    })),
+  );
+  const result = await collectTools({ apiBaseUrl: "https://nbhd.example" })
+    .nbhd_fuel_log_workout.execute("call", {
+      activity: "Arms",
+      category: "strength",
+      detail_json: { exercises: [{ name: "Dumbbell Hammer Curls", sets: [] }] },
+    });
+  assert.match(result.content[0].text, /figure: Hammer Curl ← "Dumbbell Hammer Curls"/);
+  assert.equal(result.details.json.catalog_matches[0].slug, "hammer-curl");
+});
+
 test("nbhd_fuel_update_plan exposes explicit schedule removal fields", () => {
   const tool = collectTools().nbhd_fuel_update_plan;
   const properties = tool.parameters.properties;

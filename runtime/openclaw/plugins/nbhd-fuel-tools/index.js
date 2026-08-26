@@ -71,13 +71,33 @@ function renderTextPayload(payload, text) {
   };
 }
 
-function renderWritePayload(payload) {
+function valueAtLoc(payload, loc) {
+  let current = payload;
+  for (const part of Array.isArray(loc) ? loc : []) {
+    if (current === null || current === undefined) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function renderWritePayload(payload, localRequest = {}) {
   const unmatched = Array.isArray(payload?.unmatched_exercises)
     ? payload.unmatched_exercises.map(String).filter(Boolean)
     : [];
-  if (unmatched.length === 0) return renderPayload(payload);
-  const warning = `No figure for: ${unmatched.join(", ")} — for movements you chose, use exact catalog names (nbhd_fuel_search_exercises); never swap a user-requested movement without asking`;
-  return renderTextPayload(payload, `${JSON.stringify(payload, null, 2)}\n${warning}`);
+  const matches = Array.isArray(payload?.catalog_matches) ? payload.catalog_matches : [];
+  if (unmatched.length === 0 && matches.length === 0) return renderPayload(payload);
+  const lines = [JSON.stringify(payload, null, 2)];
+  for (const match of matches) {
+    const received = valueAtLoc(localRequest, match?.loc);
+    const catalogName = asTrimmedString(match?.name) || asTrimmedString(match?.slug);
+    if (catalogName && typeof received === "string") {
+      lines.push(`figure: ${catalogName} ← ${JSON.stringify(received)}`);
+    }
+  }
+  if (unmatched.length > 0) {
+    lines.push(`No figure for: ${unmatched.join(", ")} — for movements you chose, use exact catalog names (nbhd_fuel_search_exercises); never swap a user-requested movement without asking`);
+  }
+  return renderTextPayload(payload, lines.join("\n"));
 }
 
 const PRESCRIPTION_LEGEND =
@@ -549,7 +569,7 @@ export default function register(api) {
             method: "POST",
             body,
           });
-          return renderWritePayload(payload);
+          return renderWritePayload(payload, body);
         } catch (error) {
           return renderPayload({ error: error.message });
         }
@@ -617,7 +637,7 @@ export default function register(api) {
             method: "PATCH",
             body,
           });
-          return renderWritePayload(payload);
+          return renderWritePayload(payload, body);
         } catch (error) {
           return renderPayload({ error: error.message });
         }
@@ -986,7 +1006,7 @@ export default function register(api) {
             method: "POST",
             body,
           });
-          return renderWritePayload(payload);
+          return renderWritePayload(payload, body);
         } catch (error) {
           return renderPayload({ error: error.message });
         }
@@ -1081,7 +1101,7 @@ export default function register(api) {
             method: "PATCH",
             body,
           });
-          return renderWritePayload(payload);
+          return renderWritePayload(payload, body);
         } catch (error) {
           return renderPayload({ error: error.message });
         }

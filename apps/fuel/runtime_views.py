@@ -21,6 +21,7 @@ from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
 from . import catalog
+from .catalog_annotation import IncomingPath, annotate_incoming, incoming_name_paths, reinsert_catalog_refs
 from .models import (
     BodyWeightLog,
     FuelProfile,
@@ -58,6 +59,32 @@ class _FuelResponseGuard(KnownValueResponseGuardMixin):
             "summary",
         }
     )
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        """Keep server-owned catalog refs outside tenant substitution."""
+        refs: list[tuple[tuple[str | int, ...], dict]] = []
+
+        def collect(value, path=()):
+            if isinstance(value, dict):
+                if isinstance(value.get("catalog_ref"), dict):
+                    refs.append(((*path, "catalog_ref"), value["catalog_ref"]))
+                for key, child in value.items():
+                    if key != "catalog_ref":
+                        collect(child, (*path, key))
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    collect(child, (*path, index))
+
+        if hasattr(response, "data"):
+            collect(response.data)
+        guarded = super().finalize_response(request, response, *args, **kwargs)
+        if hasattr(guarded, "data"):
+            for path, ref in refs:
+                current = guarded.data
+                for part in path[:-1]:
+                    current = current[part]
+                current[path[-1]] = ref
+        return guarded
 
 
 _PROFILE_FIELDS = (
@@ -162,37 +189,67 @@ def _known_facet(value: str, legal_values: list[str]) -> bool:
     return any(_facet_key(candidate) == wanted for candidate in legal_values)
 
 
-def _unmatched_exercise_names(*values) -> list[str]:
-    """Find prescribed exercise/skill names without an exact catalog match."""
-    unmatched: list[str] = []
-    seen: set[str] = set()
-
-    def walk(value):
-        if isinstance(value, dict):
-            for key, child in value.items():
-                if key in {"exercises", "skills"} and isinstance(child, list):
-                    for item in child:
-                        if not isinstance(item, dict):
-                            continue
-                        name = str(item.get("name") or "").strip()
-                        if name and name not in seen and catalog.match(name) is None:
-                            seen.add(name)
-                            unmatched.append(name)
-                walk(child)
-        elif isinstance(value, list):
-            for child in value:
-                walk(child)
-
-    for value in values:
-        walk(value)
-    return unmatched
-
-
-def _add_unmatched_exercises(payload: dict, *written_values) -> dict:
-    unmatched = _unmatched_exercise_names(*written_values)
+def _add_catalog_feedback(payload: dict, matches: list[dict], unmatched: list[str]) -> dict:
+    if matches:
+        payload["catalog_matches"] = matches
     if unmatched:
         payload["unmatched_exercises"] = unmatched
     return payload
+
+
+def _mapped_detail_paths(
+    raw_value,
+    *,
+    payload_prefix: tuple[str | int, ...],
+    loc_prefix: tuple[str | int, ...],
+) -> list[IncomingPath]:
+    return [
+        IncomingPath((*payload_prefix, *relative), (*loc_prefix, *relative))
+        for relative in incoming_name_paths(raw_value)
+    ]
+
+
+def _mapped_schedule_paths(raw_schedule, *, payload_root: str, loc_root: str) -> list[IncomingPath]:
+    paths: list[IncomingPath] = []
+    if not isinstance(raw_schedule, dict):
+        return paths
+    for raw_day, day_def in raw_schedule.items():
+        day_int, key_err = _normalize_weekday_key(raw_day)
+        if key_err is not None or day_int is None or not isinstance(day_def, dict):
+            continue
+        paths.extend(
+            _mapped_detail_paths(
+                day_def,
+                payload_prefix=(payload_root, str(day_int)),
+                loc_prefix=(loc_root, raw_day),
+            )
+        )
+    return paths
+
+
+def _mapped_override_paths(raw_overrides) -> list[IncomingPath]:
+    paths: list[IncomingPath] = []
+    if not isinstance(raw_overrides, dict):
+        return paths
+    for raw_week, raw_schedule in raw_overrides.items():
+        try:
+            week = str(int(raw_week))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(raw_schedule, dict):
+            continue
+        for raw_day, day_def in raw_schedule.items():
+            day_int, key_err = _normalize_weekday_key(raw_day)
+            if key_err is not None or day_int is None or not isinstance(day_def, dict):
+                continue
+            paths.extend(
+                _mapped_detail_paths(
+                    day_def,
+                    payload_prefix=("week_overrides", week, str(day_int)),
+                    loc_prefix=("week_overrides", raw_week, raw_day),
+                )
+            )
+    return paths
 
 
 def _emit_fuel_event(tenant, *, tool_name, outcome, reason_code="", detail=None):
@@ -385,6 +442,17 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             )
             return Response(flat_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
 
+        incoming_catalog_paths = _mapped_detail_paths(
+            data.get("detail_json", {}) or {},
+            payload_prefix=("detail_json",),
+            loc_prefix=("detail_json",),
+        )
+        catalog_payload, catalog_matches, unmatched_exercises = annotate_incoming(
+            {"detail_json": detail_json},
+            incoming_catalog_paths,
+        )
+        detail_json = catalog_payload["detail_json"]
+
         # Strength/calisthenics logs represent performed sets even when DONE, so
         # preserve the wave2 guard against the assistant logging an empty list.
         # Other categories are guarded only while PLANNED; their completed logs
@@ -434,6 +502,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             writer="runtime",
             defer_detection=True,
         )
+        authored["detail_json"] = reinsert_catalog_refs(authored["detail_json"], detail_json)
 
         try:
             workout = Workout.objects.create(
@@ -481,7 +550,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         }
         if rpe_clamped:
             payload["rpe_clamped"] = True
-        _add_unmatched_exercises(payload, workout.detail_json)
+        _add_catalog_feedback(payload, catalog_matches, unmatched_exercises)
         return Response(payload, status=status.HTTP_201_CREATED)
 
 
@@ -536,6 +605,9 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
         data = request.data
         original_date = workout.date
         updated_fields = []
+        catalog_matches: list[dict] = []
+        unmatched_exercises: list[str] = []
+        server_owned_detail = None
 
         if "activity" in data:
             workout.activity = str(data["activity"]).strip()
@@ -626,6 +698,17 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                 )
                 return Response(pres_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
             workout.detail_json = nd
+            incoming_catalog_paths = _mapped_detail_paths(
+                data["detail_json"],
+                payload_prefix=("detail_json",),
+                loc_prefix=("detail_json",),
+            )
+            catalog_payload, catalog_matches, unmatched_exercises = annotate_incoming(
+                {"detail_json": workout.detail_json},
+                incoming_catalog_paths,
+            )
+            workout.detail_json = catalog_payload["detail_json"]
+            server_owned_detail = workout.detail_json
             updated_fields.append("detail_json")
             if ncat != workout.category:
                 workout.category = ncat
@@ -649,6 +732,8 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                 receipts=workout.pii_receipts,
                 defer_detection=True,
             )
+            if "detail_json" in authored and server_owned_detail is not None:
+                authored["detail_json"] = reinsert_catalog_refs(authored["detail_json"], server_owned_detail)
             for field, value in authored.items():
                 setattr(workout, field, value)
             if pii_values:
@@ -686,7 +771,7 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             "rpe": workout.rpe,
         }
         if "detail_json" in data:
-            _add_unmatched_exercises(payload, workout.detail_json)
+            _add_catalog_feedback(payload, catalog_matches, unmatched_exercises)
         return Response(payload)
 
     def delete(self, request, tenant_id, workout_id):
@@ -2487,6 +2572,20 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
                 result["superseded_plans"] = superseded
             return Response(result, status=status.HTTP_200_OK)
 
+        incoming_catalog_paths = [
+            *_mapped_schedule_paths(schedule_json, payload_root="schedule_json", loc_root="schedule_json"),
+            *_mapped_override_paths(data.get("week_overrides")),
+        ]
+        catalog_payload, catalog_matches, unmatched_exercises = annotate_incoming(
+            {
+                "schedule_json": normalized_schedule,
+                "week_overrides": normalized_overrides,
+            },
+            incoming_catalog_paths,
+        )
+        normalized_schedule = catalog_payload["schedule_json"]
+        normalized_overrides = catalog_payload["week_overrides"]
+
         from apps.pii.store_authoring import author_store_fields
 
         authored_plan, plan_receipts = author_store_fields(
@@ -2502,6 +2601,14 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
             seam="fuel.runtime.plan.create",
             writer="runtime",
             defer_detection=True,
+        )
+        authored_plan["schedule_json"] = reinsert_catalog_refs(
+            authored_plan["schedule_json"],
+            normalized_schedule,
+        )
+        authored_plan["week_overrides"] = reinsert_catalog_refs(
+            authored_plan["week_overrides"],
+            normalized_overrides,
         )
         authored_workouts = _author_plan_expansion_inputs(
             tenant,
@@ -2559,7 +2666,7 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
         result["workouts_created"] = workouts_created
         if superseded:
             result["superseded_plans"] = superseded
-        _add_unmatched_exercises(result, authored_plan["schedule_json"], authored_plan["week_overrides"])
+        _add_catalog_feedback(result, catalog_matches, unmatched_exercises)
         return Response(result, status=status.HTTP_201_CREATED)
 
 
@@ -2606,6 +2713,8 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         data = request.data
         updated_fields = []
         needs_regeneration = False
+        catalog_matches: list[dict] = []
+        unmatched_exercises: list[str] = []
 
         if "name" in data:
             plan.name = str(data["name"]).strip()
@@ -2793,6 +2902,26 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
             except (TypeError, ValueError):
                 pass
 
+        catalog_paths: list[IncomingPath] = []
+        if schedule_supplied:
+            catalog_paths.extend(
+                _mapped_schedule_paths(data["schedule_json"], payload_root="schedule_json", loc_root="schedule_json")
+            )
+        if "week_overrides" in data:
+            catalog_paths.extend(_mapped_override_paths(data["week_overrides"]))
+        server_owned_plan_json = None
+        if schedule_supplied or "week_overrides" in data:
+            catalog_payload, catalog_matches, unmatched_exercises = annotate_incoming(
+                {
+                    "schedule_json": plan.schedule_json,
+                    "week_overrides": plan.week_overrides,
+                },
+                catalog_paths,
+            )
+            plan.schedule_json = catalog_payload["schedule_json"]
+            plan.week_overrides = catalog_payload["week_overrides"]
+            server_owned_plan_json = catalog_payload
+
         if updated_fields:
             from apps.pii.store_authoring import author_store_fields
 
@@ -2810,6 +2939,10 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                 receipts=plan.pii_receipts,
                 defer_detection=True,
             )
+            if server_owned_plan_json is not None:
+                for field in ("schedule_json", "week_overrides"):
+                    if field in authored:
+                        authored[field] = reinsert_catalog_refs(authored[field], server_owned_plan_json[field])
             for field, value in authored.items():
                 setattr(plan, field, value)
             if pii_values:
@@ -2896,11 +3029,7 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         resp = _serialize_plan(plan, include_workouts=True, today=today_in_tenant_tz(tenant))
         if superseded:
             resp["superseded_plans"] = superseded
-        _add_unmatched_exercises(
-            resp,
-            plan.schedule_json,
-            plan.week_overrides,
-        )
+        _add_catalog_feedback(resp, catalog_matches, unmatched_exercises)
         return Response(resp)
 
     def delete(self, request, tenant_id, plan_id):

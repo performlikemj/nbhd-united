@@ -9,6 +9,7 @@ from rest_framework.test import APIClient
 from apps.tenants.services import create_tenant
 from apps.tenants.test_utils import seed_internal_key
 
+from .catalog_annotation import annotate_incoming, incoming_name_paths
 from .models import PlanSlot, Workout, WorkoutPlan
 from .runtime_views import _normalize_stored_schedule_keys
 
@@ -25,6 +26,10 @@ _MOBILITY_PRESCRIPTION = {
         {"name": "Hip flexor stretch", "sets": [{"type": "hold_time", "hold_s": 45}]},
     ]
 }
+
+
+def _cataloged(detail):
+    return annotate_incoming(detail, incoming_name_paths(detail))[0]
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
@@ -175,12 +180,12 @@ class RuntimeUpdatePlanMergeTests(TestCase):
                 "activity": "Renamed Heavy Day",
                 "duration_minutes": 65,
                 "target_rpe": 8,
-                "detail_json": _PRESCRIPTION,
+                "detail_json": _cataloged(_PRESCRIPTION),
             },
         )
         monday = Workout.objects.get(plan=plan, date=self.plan_start)
         self.assertEqual(monday.category, "strength")
-        self.assertEqual(monday.detail_json, _PRESCRIPTION)
+        self.assertEqual(monday.detail_json, _cataloged(_PRESCRIPTION))
         self.assertEqual(monday.activity, "Renamed Heavy Day")
         self.assertEqual(monday.duration_minutes, 65)
         self.assertEqual(monday.rpe, 8)
@@ -385,7 +390,7 @@ class RuntimeUpdatePlanMergeTests(TestCase):
         self.assertEqual(plan.schedule_json, original_schedule)
         monday = Workout.objects.get(plan=plan, date=self.plan_start)
         self.assertEqual(monday.category, "strength")
-        self.assertEqual(monday.detail_json, _PRESCRIPTION)
+        self.assertEqual(monday.detail_json, _cataloged(_PRESCRIPTION))
 
     def test_category_flip_with_detail_is_accepted(self):
         plan = self._create_plan(
@@ -416,9 +421,9 @@ class RuntimeUpdatePlanMergeTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         plan.refresh_from_db()
         self.assertEqual(plan.schedule_json["0"]["category"], "strength")
-        self.assertEqual(plan.schedule_json["0"]["detail_json"], _PRESCRIPTION)
+        self.assertEqual(plan.schedule_json["0"]["detail_json"], _cataloged(_PRESCRIPTION))
         monday = Workout.objects.get(plan=plan, date=self.plan_start)
-        self.assertEqual(monday.detail_json, _PRESCRIPTION)
+        self.assertEqual(monday.detail_json, _cataloged(_PRESCRIPTION))
 
     def test_merge_normalizes_legacy_name_keyed_stored_schedule(self):
         plan = self._create_weekday_plan()
