@@ -64,6 +64,14 @@ class RenderWorkspaceRulesTest(TestCase):
         self.assertIn("only if you actually\ncalled a lookup tool THIS turn", memory)
         self.assertIn("worst\nfailure mode", memory)
 
+    def test_fuel_rule_carries_catalog_and_full_day_override_contracts(self):
+        fuel = render_workspace_rules()["fuel.md"]
+        self.assertIn("nbhd_fuel_get_plan", fuel)
+        self.assertIn("has_prescription: false", fuel)
+        self.assertIn("use the returned name verbatim", fuel)
+        self.assertIn("complete day object", fuel)
+        self.assertIn("replaces the whole overrides map", fuel)
+
 
 class SubagentWorkspaceRulesTest(TestCase):
     def setUp(self):
