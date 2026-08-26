@@ -75,6 +75,8 @@ class ConfigGeneratorTest(TestCase):
             {"zdr": True, "data_collection": "deny"},
         )
         self.assertNotIn('"provider": "openai"', json.dumps(config))
+        self.assertNotIn("anthropic:default", config["auth"]["profiles"])
+        self.assertIn("openrouter:default", config["auth"]["profiles"])
 
     def test_starter_tier_has_active_models(self):
         self.tenant.model_tier = "starter"
@@ -100,7 +102,7 @@ class ConfigGeneratorTest(TestCase):
             self.assertEqual(rate["input"], input_rate)
             self.assertEqual(rate["output"], output_rate)
 
-    def test_audio_model_defaults_to_whisper(self):
+    def test_audio_transcription_uses_internal_cli_chokepoint(self):
         self.tenant.model_tier = "starter"
         config = generate_openclaw_config(self.tenant)
         audio = config["tools"]["media"]["audio"]
@@ -109,8 +111,14 @@ class ConfigGeneratorTest(TestCase):
         self.assertEqual(len(models), 1)
         self.assertEqual(
             models[0],
-            {"provider": "openrouter", "model": "openai/whisper-large-v3-turbo"},
+            {
+                "type": "cli",
+                "command": "nbhd-transcribe",
+                "args": ["{{MediaPath}}"],
+                "timeoutSeconds": 60,
+            },
         )
+        self.assertNotIn("provider", models[0])
 
     @override_settings(
         OPENCLAW_IMAGE_GEN_PLUGIN_ID="nbhd-image-gen",

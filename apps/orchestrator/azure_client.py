@@ -1236,18 +1236,6 @@ def create_container_app(
     client = get_container_client()
     secrets = [
         _build_container_secret(
-            "anthropic-key",
-            plain_value=settings.ANTHROPIC_API_KEY,
-            key_vault_secret_name=settings.AZURE_KV_SECRET_ANTHROPIC_API_KEY,
-            identity_id=identity_id,
-        ),
-        _build_container_secret(
-            "openai-key",
-            plain_value=settings.OPENAI_API_KEY,
-            key_vault_secret_name=settings.AZURE_KV_SECRET_OPENAI_API_KEY,
-            identity_id=identity_id,
-        ),
-        _build_container_secret(
             "nbhd-internal-api-key",
             plain_value=internal_plain,
             key_vault_secret_name=internal_kv_secret,
@@ -1310,8 +1298,6 @@ def create_container_app(
                         # probe types omitted here.
                         "probes": [_gateway_readiness_probe_payload()],
                         "env": [
-                            {"name": "ANTHROPIC_API_KEY", "secretRef": "anthropic-key"},
-                            {"name": "OPENAI_API_KEY", "secretRef": "openai-key"},
                             {"name": "NBHD_INTERNAL_API_KEY", "secretRef": "nbhd-internal-api-key"},
                             {"name": "OPENCLAW_GATEWAY_TOKEN", "secretRef": "nbhd-internal-api-key"},
                             {"name": "BRAVE_API_KEY", "secretRef": "brave-key"},
@@ -1627,14 +1613,9 @@ def apply_byo_credentials_to_container(tenant: Any) -> None:
     user just pasted/disconnected and expects the change to take effect.
 
     Phase 1 reconciliation, for Anthropic CLI subscription only:
-      - Active cred → add `CLAUDE_CODE_OAUTH_TOKEN` env (KV-backed)
-        AND remove the `ANTHROPIC_API_KEY` env binding (auth-precedence
-        shadowing — Anthropic's CLI ranks `ANTHROPIC_API_KEY` ABOVE
-        `CLAUDE_CODE_OAUTH_TOKEN`, so the platform key would win and
-        bill against API credits instead of the user's subscription).
-      - No active cred → ensure `ANTHROPIC_API_KEY` is restored
-        (re-bound to the existing `anthropic-key` secret) and
-        `CLAUDE_CODE_OAUTH_TOKEN` is removed.
+      - Active cred → add `CLAUDE_CODE_OAUTH_TOKEN` env (KV-backed).
+      - No active cred → remove `CLAUDE_CODE_OAUTH_TOKEN`.
+      - Always scrub legacy OpenAI/Anthropic platform secret and env bindings.
 
     Idempotent — safe to call repeatedly. No-op for tenants without a
     container_id.
@@ -1670,10 +1651,16 @@ def apply_byo_credentials_to_container(tenant: Any) -> None:
 
     BYO_SECRET = "claude-code-oauth-token"
     BYO_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
-    PLATFORM_ENV = "ANTHROPIC_API_KEY"
+    PLATFORM_SECRETS = {"anthropic-key", "openai-key"}
+    PLATFORM_ENVS = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
 
-    # Reconcile secrets list — drop any stale BYO entry, optionally re-add.
-    secrets = [s for s in (app.configuration.secrets or []) if _entry_name(s) != BYO_SECRET]
+    # Reconcile secrets list — drop stale BYO + platform entries, then
+    # optionally re-add only the tenant's BYO credential.
+    secrets = [
+        secret
+        for secret in (app.configuration.secrets or [])
+        if _entry_name(secret) not in PLATFORM_SECRETS | {BYO_SECRET}
+    ]
     if cred:
         secrets.append(
             _build_container_secret(
@@ -1689,11 +1676,9 @@ def apply_byo_credentials_to_container(tenant: Any) -> None:
     for container in app.template.containers:
         if container.name != "openclaw":
             continue
-        env_list = [e for e in (container.env or []) if _entry_name(e) not in (BYO_ENV, PLATFORM_ENV)]
+        env_list = [env for env in (container.env or []) if _entry_name(env) not in PLATFORM_ENVS | {BYO_ENV}]
         if cred:
             env_list.append({"name": BYO_ENV, "secretRef": BYO_SECRET})
-        else:
-            env_list.append({"name": PLATFORM_ENV, "secretRef": "anthropic-key"})
         container.env = env_list
         break
 

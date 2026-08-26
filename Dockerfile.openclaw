@@ -95,6 +95,7 @@ COPY runtime/openclaw/external-content-wrap.js /opt/nbhd/external-content-wrap.j
 COPY runtime/openclaw/claude-with-token.sh /opt/nbhd/claude-with-token.sh
 COPY runtime/openclaw/claude-settings.json /opt/nbhd/claude-settings.json
 COPY runtime/openclaw/entrypoint.sh /usr/local/bin/nbhd-openclaw-entrypoint
+COPY runtime/openclaw/nbhd-transcribe.js /usr/local/bin/nbhd-transcribe
 
 # Vendor the site-publishing plugin's Azure SDK dependencies at build time.
 # Unlike the other nbhd plugins (Node built-ins only), this one needs
@@ -103,8 +104,8 @@ COPY runtime/openclaw/entrypoint.sh /usr/local/bin/nbhd-openclaw-entrypoint
 RUN npm install --prefix /opt/nbhd/plugins/nbhd-site-publishing --omit=dev --no-audit --no-fund \
     && npm cache clean --force
 
-RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint /opt/nbhd/claude-with-token.sh \
-    && chown -R node:node /opt/nbhd /usr/local/bin/nbhd-openclaw-entrypoint
+RUN chmod +x /usr/local/bin/nbhd-openclaw-entrypoint /usr/local/bin/nbhd-transcribe /opt/nbhd/claude-with-token.sh \
+    && chown -R node:node /opt/nbhd /usr/local/bin/nbhd-openclaw-entrypoint /usr/local/bin/nbhd-transcribe
 
 USER node
 

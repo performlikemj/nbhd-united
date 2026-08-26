@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from django.test import SimpleTestCase, override_settings
 
 from apps.orchestrator.azure_client import (
+    apply_byo_credentials_to_container,
     assign_key_vault_role,
     create_container_app,
     create_tenant_file_share,
@@ -74,14 +75,8 @@ class AzureClientTest(SimpleTestCase):
         payload = call_args[2]
         secrets = payload["properties"]["configuration"]["secrets"]
         secret_map = {entry["name"]: entry for entry in secrets}
-        self.assertEqual(
-            secret_map["anthropic-key"]["keyVaultUrl"],
-            "https://kv-nbhd-prod.vault.azure.net/secrets/anthropic-api-key",
-        )
-        self.assertEqual(
-            secret_map["openai-key"]["keyVaultUrl"],
-            "https://kv-nbhd-prod.vault.azure.net/secrets/openai-api-key",
-        )
+        self.assertNotIn("anthropic-key", secret_map)
+        self.assertNotIn("openai-key", secret_map)
         self.assertEqual(
             secret_map["nbhd-internal-api-key"]["keyVaultUrl"],
             "https://kv-nbhd-prod.vault.azure.net/secrets/nbhd-internal-api-key",
@@ -121,7 +116,8 @@ class AzureClientTest(SimpleTestCase):
         self.assertEqual(env_map["NBHD_API_BASE_URL"]["value"], "https://nbhd-django.example.com")
         self.assertEqual(env_map["OPENCLAW_CONFIG_JSON"]["value"], config_json)
         self.assertEqual(env_map["AZURE_CLIENT_ID"]["value"], "client-123")
-        self.assertEqual(env_map["OPENAI_API_KEY"]["secretRef"], "openai-key")
+        self.assertNotIn("ANTHROPIC_API_KEY", env_map)
+        self.assertNotIn("OPENAI_API_KEY", env_map)
         self.assertEqual(env_map["NBHD_INTERNAL_API_KEY"]["secretRef"], "nbhd-internal-api-key")
         self.assertEqual(env_map["OPENCLAW_GATEWAY_TOKEN"]["secretRef"], "nbhd-internal-api-key")
         self.assertEqual(env_map["OPENROUTER_API_KEY"]["secretRef"], "openrouter-key")
@@ -158,14 +154,100 @@ class AzureClientTest(SimpleTestCase):
         payload = mock_client.container_apps.begin_create_or_update.call_args.args[2]
         secrets = payload["properties"]["configuration"]["secrets"]
         secret_map = {entry["name"]: entry for entry in secrets}
-        self.assertEqual(secret_map["anthropic-key"]["value"], "anthropic-secret")
-        self.assertEqual(secret_map["openai-key"]["value"], "openai-secret")
+        self.assertNotIn("anthropic-key", secret_map)
+        self.assertNotIn("openai-key", secret_map)
         self.assertEqual(secret_map["nbhd-internal-api-key"]["value"], "internal-secret")
         container = payload["properties"]["template"]["containers"][0]
         env_map = {entry["name"]: entry for entry in container["env"]}
 
         # Verify core env vars are present
         self.assertIn("NBHD_TENANT_ID", env_map)
+
+
+@override_settings(AZURE_RESOURCE_GROUP="rg-nbhd-prod")
+class ApplyBYOCredentialsTest(SimpleTestCase):
+    def _tenant(self, credential):
+        query = MagicMock()
+        query.filter.return_value.exclude.return_value.first.return_value = credential
+        return SimpleNamespace(
+            id="tenant-123",
+            container_id="oc-tenant",
+            managed_identity_id="/identities/tenant-123",
+            byo_credentials=query,
+        )
+
+    def _app(self):
+        return SimpleNamespace(
+            configuration=SimpleNamespace(
+                secrets=[
+                    {"name": "anthropic-key", "secretRef": "legacy-anthropic"},
+                    {"name": "openai-key", "secretRef": "legacy-openai"},
+                    {"name": "nbhd-internal-api-key", "secretRef": "internal"},
+                    {"name": "claude-code-oauth-token", "secretRef": "stale-byo"},
+                ]
+            ),
+            template=SimpleNamespace(
+                revision_suffix="old",
+                containers=[
+                    SimpleNamespace(
+                        name="openclaw",
+                        env=[
+                            {"name": "ANTHROPIC_API_KEY", "secretRef": "anthropic-key"},
+                            {"name": "OPENAI_API_KEY", "secretRef": "openai-key"},
+                            {"name": "NBHD_TENANT_ID", "value": "tenant-123"},
+                            {"name": "CLAUDE_CODE_OAUTH_TOKEN", "secretRef": "stale-byo"},
+                        ],
+                    )
+                ],
+            ),
+        )
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_byo_less_reconcile_removes_all_provider_keys(
+        self,
+        mock_get_container_client,
+        _mock_is_mock,
+    ):
+        mock_client = MagicMock()
+        mock_get_container_client.return_value = mock_client
+        app = self._app()
+        mock_client.container_apps.get.return_value = app
+
+        apply_byo_credentials_to_container(self._tenant(None))
+
+        secret_names = {entry["name"] for entry in app.configuration.secrets}
+        env_names = {entry["name"] for entry in app.template.containers[0].env}
+        self.assertEqual(secret_names, {"nbhd-internal-api-key"})
+        self.assertEqual(env_names, {"NBHD_TENANT_ID"})
+        mock_client.container_apps.begin_create_or_update.assert_called_once_with(
+            "rg-nbhd-prod",
+            "oc-tenant",
+            app,
+        )
+        mock_client.container_apps.begin_create_or_update.return_value.result.assert_called_once()
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_active_byo_reconcile_keeps_only_tenant_oauth_credential(
+        self,
+        mock_get_container_client,
+        _mock_is_mock,
+    ):
+        mock_client = MagicMock()
+        mock_get_container_client.return_value = mock_client
+        app = self._app()
+        mock_client.container_apps.get.return_value = app
+        credential = SimpleNamespace(key_vault_secret_name="tenant-byo-secret")
+
+        apply_byo_credentials_to_container(self._tenant(credential))
+
+        secret_names = {entry["name"] for entry in app.configuration.secrets}
+        env_names = {entry["name"] for entry in app.template.containers[0].env}
+        self.assertEqual(secret_names, {"nbhd-internal-api-key", "claude-code-oauth-token"})
+        self.assertEqual(env_names, {"NBHD_TENANT_ID", "CLAUDE_CODE_OAUTH_TOKEN"})
+        self.assertNotIn("ANTHROPIC_API_KEY", env_names)
+        self.assertNotIn("OPENAI_API_KEY", env_names)
 
 
 class AssignKeyVaultRoleTest(SimpleTestCase):
