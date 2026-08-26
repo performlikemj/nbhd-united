@@ -4436,7 +4436,7 @@ class RuntimeWorkspaceListView(APIView):
             name=name,
             slug=slug,
             description=description,
-            description_embedding=_embed_workspace_description(description),
+            description_embedding=_embed_workspace_description(tenant, description),
             is_default=False,
         )
 
@@ -4509,7 +4509,7 @@ class RuntimeWorkspaceDetailView(APIView):
         if "description" in request.data:
             new_description = str(request.data.get("description", "")).strip()
             workspace.description = new_description
-            workspace.description_embedding = _embed_workspace_description(new_description)
+            workspace.description_embedding = _embed_workspace_description(tenant, new_description)
             updated_fields.extend(["description", "description_embedding"])
 
         if updated_fields:

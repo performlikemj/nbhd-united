@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from apps.router.poller import TelegramPoller
 
@@ -15,8 +15,8 @@ class TranscribeVoiceTest(TestCase):
         self.poller.bot_token = "test-token"
         self.poller._http = MagicMock()
 
-    @override_settings(OPENAI_API_KEY="test-key")
-    def test_successful_transcription(self):
+    @patch("apps.router.transcription.transcribe_audio", return_value="Hello world")
+    def test_successful_transcription(self, mock_transcribe):
         """Voice file downloaded and transcribed successfully."""
         # Mock getFile response
         get_file_resp = MagicMock()
@@ -28,18 +28,13 @@ class TranscribeVoiceTest(TestCase):
         dl_resp.is_success = True
         dl_resp.content = b"fake-audio-data"
 
-        # Mock Whisper response
-        whisper_resp = MagicMock()
-        whisper_resp.is_success = True
-        whisper_resp.json.return_value = {"text": "Hello world"}
-
-        self.poller._http.post.side_effect = [get_file_resp, whisper_resp]
+        self.poller._http.post.return_value = get_file_resp
         self.poller._http.get.return_value = dl_resp
 
         result = self.poller._transcribe_voice("file-id-123")
         self.assertEqual(result, "Hello world")
+        mock_transcribe.assert_called_once_with(b"fake-audio-data", audio_format="ogg", tenant=None)
 
-    @override_settings(OPENAI_API_KEY="test-key")
     def test_getfile_fails(self):
         """getFile API failure returns None."""
         resp = MagicMock()
@@ -50,9 +45,9 @@ class TranscribeVoiceTest(TestCase):
         result = self.poller._transcribe_voice("bad-file-id")
         self.assertIsNone(result)
 
-    @override_settings(OPENAI_API_KEY="test-key")
-    def test_whisper_fails(self):
-        """Whisper API failure returns None."""
+    @patch("apps.router.transcription.transcribe_audio", side_effect=RuntimeError("upstream failed"))
+    def test_openrouter_fails(self, mock_transcribe):
+        """OpenRouter transcription failure returns None without fallback."""
         get_file_resp = MagicMock()
         get_file_resp.is_success = True
         get_file_resp.json.return_value = {"result": {"file_path": "voice/file.ogg"}}
@@ -61,30 +56,12 @@ class TranscribeVoiceTest(TestCase):
         dl_resp.is_success = True
         dl_resp.content = b"fake-audio-data"
 
-        whisper_resp = MagicMock()
-        whisper_resp.is_success = False
-        whisper_resp.status_code = 500
-        whisper_resp.text = "Server error"
-
-        self.poller._http.post.side_effect = [get_file_resp, whisper_resp]
+        self.poller._http.post.return_value = get_file_resp
         self.poller._http.get.return_value = dl_resp
 
         result = self.poller._transcribe_voice("file-id-123")
         self.assertIsNone(result)
-
-    @override_settings(OPENAI_API_KEY="")
-    @patch.dict("os.environ", {"OPENAI_API_KEY": ""})
-    def test_no_api_key_returns_none(self):
-        """No OpenAI API key returns None.
-
-        _transcribe_voice reads settings.OPENAI_API_KEY and falls back to
-        os.environ["OPENAI_API_KEY"], so both sources must be cleared. Overriding
-        only the setting left the test depending on the ambient environment — a
-        real key in a dev .env made the code proceed and return a mock instead of
-        None (passes in CI, which has no key; fails locally, which does).
-        """
-        result = self.poller._transcribe_voice("file-id-123")
-        self.assertIsNone(result)
+        mock_transcribe.assert_called_once()
 
 
 class ExtractVoiceMessageTest(TestCase):

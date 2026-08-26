@@ -144,7 +144,7 @@ class ProviderAndRuntimeGuardTests(TestCase):
         self.tenant.save(update_fields=["pii_entity_map"])
 
     @override_settings(OPENROUTER_API_KEY="test-key")
-    @patch("apps.lessons.tutoring.requests.post")
+    @patch("apps.common.openrouter.requests.post")
     def test_tutoring_prompt_is_guarded(self, post):
         response = Mock()
         response.json.return_value = {"choices": [{"message": {"content": "{}"}}], "usage": {}}

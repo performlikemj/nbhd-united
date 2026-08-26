@@ -23,6 +23,10 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings"
+OPENROUTER_TRANSCRIPTIONS_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
+
+_ZDR_PROVIDER = {"zdr": True, "data_collection": "deny"}
 
 
 def normalize_model_id(model_id: str) -> str:
@@ -34,6 +38,25 @@ def normalize_model_id(model_id: str) -> str:
     untouched.
     """
     return model_id.removeprefix("openrouter/")
+
+
+def build_openrouter_body(
+    model: str,
+    messages: list[dict[str, Any]] | None = None,
+    **body_params: Any,
+) -> dict[str, Any]:
+    """Build an OpenRouter body with mandatory per-request ZDR routing.
+
+    ``messages`` is omitted for non-chat endpoints. The provider policy is
+    assigned after caller-supplied parameters so callers cannot weaken or
+    replace it.
+    """
+    body: dict[str, Any] = {"model": normalize_model_id(model)}
+    if messages is not None:
+        body["messages"] = messages
+    body.update(body_params)
+    body["provider"] = dict(_ZDR_PROVIDER)
+    return body
 
 
 def _looks_usable(data: dict) -> bool:
@@ -95,11 +118,7 @@ def chat_completion(
             resp = requests.post(
                 OPENROUTER_CHAT_URL,
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={
-                    "model": normalize_model_id(model_id),
-                    "messages": messages,
-                    **body_params,
-                },
+                json=build_openrouter_body(model_id, messages, **body_params),
                 timeout=timeout,
             )
             resp.raise_for_status()

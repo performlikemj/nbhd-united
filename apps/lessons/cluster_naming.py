@@ -7,7 +7,7 @@ a small, cheap, warm LLM (platform-side Haiku) that turns "Fitness & Health"
 into "Strength Training" when the evidence supports something more concrete.
 
 It mirrors ``apps/lessons/copilot.py`` for the egress machinery on purpose:
-  * Platform OpenRouter key (``OPENROUTER_API_KEY``), one ``requests.post`` with
+  * Platform OpenRouter key (``OPENROUTER_API_KEY``), one shared-client call with
     a timeout, usage attributed ``is_system=True`` so naming never eats a
     tenant's quota.
   * PII never egresses raw: every snippet + the deterministic label + top terms
@@ -35,9 +35,9 @@ import re
 from collections import Counter
 from typing import Any
 
-import requests
 from django.conf import settings
 
+from apps.common.openrouter import chat_completion
 from apps.pii.authoring import truncate_placeholder_safe
 from apps.pii.redactor import RedactionSession, rehydrate_text
 
@@ -174,25 +174,18 @@ def _cluster_naming_request(messages: list[dict], *, tenant_id: str | None = Non
     this directly (set ``.return_value`` to a string).
     """
     model = _cluster_label_model()
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {_resolve_api_key()}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "messages": messages,
-            "temperature": 0.3,
-            "max_tokens": 20,
-        },
+    data, model_used = chat_completion(
+        model,
+        messages,
+        api_key=_resolve_api_key(),
         timeout=20,
+        record_health=False,
+        temperature=0.3,
+        max_tokens=20,
     )
-    resp.raise_for_status()
-    data = resp.json()
 
     if tenant_id:
-        _record_naming_usage(tenant_id, model, data.get("usage", {}) or {})
+        _record_naming_usage(tenant_id, model_used, data.get("usage", {}) or {})
 
     return (data["choices"][0]["message"]["content"] or "").strip()
 

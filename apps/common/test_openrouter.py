@@ -7,7 +7,7 @@ from django.test import TestCase, override_settings  # noqa: F401
 
 from apps.billing.constants import DEEPSEEK_MODEL, MINIMAX_MODEL
 from apps.billing.models import ModelHealth
-from apps.common.openrouter import chat_completion, normalize_model_id
+from apps.common.openrouter import build_openrouter_body, chat_completion, normalize_model_id
 
 
 class _Resp:
@@ -35,6 +35,28 @@ class NormalizeModelIdTest(TestCase):
         self.assertEqual(normalize_model_id("anthropic/claude-haiku-4-5"), "anthropic/claude-haiku-4-5")
 
 
+class OpenRouterBodyTest(TestCase):
+    def test_provider_policy_cannot_be_overridden(self):
+        body = build_openrouter_body(
+            "openrouter/example/model",
+            _MSGS,
+            temperature=0.2,
+            provider={"zdr": False, "data_collection": "allow"},
+        )
+
+        self.assertEqual(body["model"], "example/model")
+        self.assertEqual(body["messages"], _MSGS)
+        self.assertEqual(body["temperature"], 0.2)
+        self.assertEqual(body["provider"], {"zdr": True, "data_collection": "deny"})
+
+    def test_non_chat_body_omits_messages(self):
+        body = build_openrouter_body("openai/text-embedding-3-small", input="hello")
+
+        self.assertNotIn("messages", body)
+        self.assertEqual(body["input"], "hello")
+        self.assertEqual(body["provider"], {"zdr": True, "data_collection": "deny"})
+
+
 @override_settings(OPENROUTER_API_KEY="sk-test")
 class ChatCompletionFallbackTest(TestCase):
     @patch("apps.common.openrouter.requests.post")
@@ -45,6 +67,10 @@ class ChatCompletionFallbackTest(TestCase):
         self.assertEqual(data["choices"][0]["message"]["content"], "hello")
         # bare slug sent to the API, not the openrouter/ form
         self.assertEqual(mock_post.call_args.kwargs["json"]["model"], "deepseek/deepseek-v4-pro")
+        self.assertEqual(
+            mock_post.call_args.kwargs["json"]["provider"],
+            {"zdr": True, "data_collection": "deny"},
+        )
         self.assertEqual(mock_post.call_count, 1)
         self.assertTrue(ModelHealth.objects.get(model_id=DEEPSEEK_MODEL).is_reachable)
 

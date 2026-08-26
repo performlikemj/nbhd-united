@@ -5,10 +5,10 @@ into actionable lessons ("always verify photo dimensions before proceeding").
 Then regenerates embeddings and re-clusters.
 """
 
-import requests
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from apps.common.openrouter import chat_completion
 from apps.lessons.models import Lesson
 from apps.lessons.services import process_approved_lesson
 
@@ -122,20 +122,16 @@ class Command(BaseCommand):
         if context:
             user_msg += f'\nContext: "{context}"'
 
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": REWRITE_MODEL,
-                "messages": [
-                    {"role": "system", "content": REWRITE_SYSTEM},
-                    {"role": "user", "content": user_msg},
-                ],
-                "temperature": 0.2,
-                "max_tokens": 300,
-            },
+        data, _model_used = chat_completion(
+            REWRITE_MODEL,
+            [
+                {"role": "system", "content": REWRITE_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ],
+            api_key=api_key,
             timeout=15,
+            record_health=False,
+            temperature=0.2,
+            max_tokens=300,
         )
-        resp.raise_for_status()
-        data = resp.json()
         return (data["choices"][0]["message"]["content"] or "").strip().strip('"')

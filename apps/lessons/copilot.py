@@ -39,11 +39,11 @@ import re
 from math import hypot
 from typing import Any
 
-import requests
 from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 
+from apps.common.openrouter import chat_completion
 from apps.pii.authoring import truncate_placeholder_safe
 from apps.pii.redactor import RedactionSession, rehydrate_text
 
@@ -412,25 +412,18 @@ def _copilot_request(messages: list[dict], *, tenant_id: str | None = None) -> s
     this directly (set ``.return_value`` to a string).
     """
     model = _copilot_model()
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {_resolve_api_key()}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 120,
-        },
+    data, model_used = chat_completion(
+        model,
+        messages,
+        api_key=_resolve_api_key(),
         timeout=20,
+        record_health=False,
+        temperature=0.7,
+        max_tokens=120,
     )
-    resp.raise_for_status()
-    data = resp.json()
 
     if tenant_id:
-        _record_copilot_usage(tenant_id, model, data.get("usage", {}) or {})
+        _record_copilot_usage(tenant_id, model_used, data.get("usage", {}) or {})
 
     return (data["choices"][0]["message"]["content"] or "").strip()
 

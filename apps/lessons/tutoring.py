@@ -32,11 +32,11 @@ import logging
 import uuid
 from typing import Any
 
-import requests
 from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 
+from apps.common.openrouter import chat_completion
 from apps.pii.authoring import truncate_placeholder_safe
 
 from .models import Lesson, TutoringSession
@@ -179,26 +179,19 @@ def _tutor_request(
                 tenant_id,
                 exc_info=True,
             )
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {_resolve_api_key()}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": 600,
-            "response_format": {"type": "json_object"},
-        },
+    data, model_used = chat_completion(
+        model,
+        messages,
+        api_key=_resolve_api_key(),
         timeout=30,
+        record_health=False,
+        temperature=temperature,
+        max_tokens=600,
+        response_format={"type": "json_object"},
     )
-    resp.raise_for_status()
-    data = resp.json()
 
     if tenant_id:
-        _record_tutoring_usage(tenant_id, model, data.get("usage", {}) or {})
+        _record_tutoring_usage(tenant_id, model_used, data.get("usage", {}) or {})
 
     content = data["choices"][0]["message"]["content"]
     return json.loads(content)

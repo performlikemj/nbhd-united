@@ -73,7 +73,7 @@ def generate_unique_slug(tenant: Tenant, base_slug: str) -> str:
     return slug
 
 
-def embed_workspace_description(description: str):
+def embed_workspace_description(tenant: Tenant, description: str):
     """Generate an embedding for the description, returning None on failure.
 
     Failures are logged and swallowed so workspace creation/update never fails
@@ -86,7 +86,11 @@ def embed_workspace_description(description: str):
     try:
         from apps.lessons.services import generate_embedding
 
-        return generate_embedding(description)
+        return generate_embedding(
+            description,
+            tenant=tenant,
+            seam="workspace_description_embedding",
+        )
     except Exception:
         logger.exception("workspace: failed to embed description")
         return None
@@ -110,6 +114,6 @@ def ensure_default_workspace(tenant: Tenant) -> Workspace:
         name=DEFAULT_WORKSPACE_NAME,
         slug=DEFAULT_WORKSPACE_SLUG,
         description=DEFAULT_WORKSPACE_DESCRIPTION,
-        description_embedding=embed_workspace_description(DEFAULT_WORKSPACE_DESCRIPTION),
+        description_embedding=embed_workspace_description(tenant, DEFAULT_WORKSPACE_DESCRIPTION),
         is_default=True,
     )

@@ -92,9 +92,6 @@ def gather_meditation_signals(tenant: Tenant) -> dict:
       ``apps.lessons.agent_context.build_constellation_context``.
     * recent daily-note snippets — what their week actually held.
 
-    The journal/constellation sources egress to OpenRouter, which is configured for
-    zero-data-retention — the basis for lifting the earlier PII-egress deferral on
-    these signals.
     """
     signals: dict = {"tenant_id": str(tenant.id)}
     try:
