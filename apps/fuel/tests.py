@@ -3238,7 +3238,10 @@ class PlanReconcilerRaceTests(TestCase):
         # Assistant removes Pull from the schedule.
         resp = self.client.patch(
             f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
-            {"schedule_json": {"0": {"activity": "Push", "category": "strength"}}},
+            {
+                "schedule_json": {"0": {"activity": "Push", "category": "strength"}},
+                "replace_schedule": True,
+            },
             format="json",
             **self.headers,
         )
@@ -7049,7 +7052,8 @@ class WeekdayNameScheduleKeyTests(TestCase):
             data={
                 "schedule_json": {
                     "tuesday": {"category": "strength", "activity": "Press Day", "detail_json": new_detail}
-                }
+                },
+                "replace_schedule": True,
             },
             format="json",
             **self.headers,

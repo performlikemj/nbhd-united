@@ -856,7 +856,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_update_plan",
       description:
-        "Update an existing workout plan. Can change name, status (active/paused/completed/archived), notes, or schedule. If schedule_json or weeks change, future planned workouts are regenerated from the new template; per-workout customisations (detail_json, duration_minutes, scheduled_at, notes) are preserved across the regen when the (date, activity) pair still matches. Omit detail_json for a day to leave its existing prescription untouched. If you DO send a strength/calisthenics day's detail_json it must include a non-empty exercises list — the server rejects an explicitly-empty strength/calisthenics prescription with a 400 (design real programming, don't switch category to dodge it). To intentionally clear a day's exercises, rename its activity. Use this for swapping exercises, changing frequency, pausing, or completing a plan.",
+        'Update an existing workout plan. schedule_json MERGES by default: send only the days you want to add or change, and days you omit stay untouched. Example: add weekend mobility without touching weekdays by sending schedule_json: {"saturday":{"category":"mobility","activity":"Mobility"},"sunday":{"category":"mobility","activity":"Recovery Flow"}}. Omit detail_json from an updated day to keep that day\'s existing exercises. Remove days only with remove_days; use replace_schedule:true only when intentionally replacing the entire weekly template. Legacy integer weekday keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls because numbering conventions disagree. If you send strength/calisthenics detail_json, it must contain a non-empty exercises list. Schedule or weeks changes reconcile future planned workouts.',
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -887,7 +887,24 @@ export default function register(api) {
           schedule_json: {
             type: "object",
             description:
-              'New weekly schedule template, keyed by weekday NAME ("monday".."sunday"; "mon".."sun" also accepted). Example: {"tuesday": {"category":"strength","activity":"Push","detail_json":{"exercises":[...]}}}. Legacy integer keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls — the numbering conventions disagree and a wrong index silently moves the session to another day. Triggers workout regeneration for remaining weeks.',
+              'Partial weekly schedule MERGE, keyed by weekday NAME ("monday".."sunday"; "mon".."sun" also accepted). Send only days to add/change; omitted days remain. Omit detail_json on a changed day to keep its exercises. Example adding weekends without touching weekdays: {"saturday":{"category":"mobility","activity":"Mobility"},"sunday":{"category":"mobility","activity":"Recovery Flow"}}. Legacy integer keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls — a wrong convention silently moves the session.',
+          },
+          remove_days: {
+            type: "array",
+            items: {
+              oneOf: [
+                { type: "string" },
+                { type: "integer", minimum: 0, maximum: 6 },
+              ],
+            },
+            uniqueItems: true,
+            description:
+              'Weekday names (preferred) or legacy integer keys to remove explicitly. Removes only these days; all others remain.',
+          },
+          replace_schedule: {
+            type: "boolean",
+            description:
+              "Set true only to make schedule_json replace the entire weekly template. Days omitted from schedule_json are removed.",
           },
           week_overrides: {
             type: "object",
@@ -912,6 +929,8 @@ export default function register(api) {
           if (input.days_per_week !== undefined)
             body.days_per_week = parseInteger(input.days_per_week, { defaultValue: undefined, min: 1, max: 7 });
           if (input.schedule_json) body.schedule_json = asObject(input.schedule_json);
+          if (Array.isArray(input.remove_days)) body.remove_days = input.remove_days;
+          if (input.replace_schedule !== undefined) body.replace_schedule = input.replace_schedule === true;
           if (input.week_overrides) body.week_overrides = asObject(input.week_overrides);
 
           const payload = await callRuntime(api, {
