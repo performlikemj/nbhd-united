@@ -94,6 +94,20 @@ class WorkoutGuideCatalogTests(SimpleTestCase):
         self.assertIsNone(subject.match("unknown-target"))
         self.assertIsNone(subject.match("does not exist"))
 
+    def test_resolve_name_reports_frozen_direct_precedence(self):
+        subject = _fixture_catalog()
+        cases = {
+            "Push-up": ("push-up", "canonical"),
+            "push-up": ("push-up", "canonical"),
+            "pushups": ("push-up", "alias"),
+            "Crunches": ("crunch", "plural"),
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                resolution = subject.resolve_name(name)
+                self.assertIsNotNone(resolution)
+                self.assertEqual((resolution.entry.slug, resolution.matched_by), expected)
+
     def test_image_name_formats_frame(self):
         entry = Entry("push-up", "Push-up", "Bodyweight", "Chest", False, 3)
         self.assertEqual(entry.image_name(2), "wg-push-up-2")
@@ -199,3 +213,82 @@ class WorkoutGuideCatalogIntegrityTests(SimpleTestCase):
 
     def test_loader_is_cached(self):
         self.assertIs(catalog._catalog(), catalog._catalog())
+
+    def test_resolver_preserves_all_prefix_remainder_collisions(self):
+        collisions = (
+            "Dumbbell Bench Press",
+            "Cable Lateral Raise",
+            "Machine Lateral Raise",
+            "Cable Crunch",
+            "Cable Front Raise",
+            "Plate Front Raise",
+            "Cable Rear Delt Fly",
+            "Barbell Glute Bridge",
+            "Dumbbell Glute Bridge",
+            "Dumbbell Hip Thrust",
+            "Dumbbell Romanian Deadlift",
+            "Kettlebell Romanian Deadlift",
+            "Dumbbell Sumo Deadlift",
+            "Dumbbell Lateral Lunge",
+            "Dumbbell Curtsy Lunge",
+            "Dumbbell Overhead Tricep Extension",
+            "Bench Dip",
+            "Chair Dip",
+            "Wall Push-up",
+            "Wall Handstand Push-up",
+            "Towel Pull-up",
+            "Bodyweight Squat",
+            "Dumbbell Bent Over Row",
+            "Dumbbell Shrug",
+            "Wall Walk",
+            "Towel Hamstring Curl",
+            "Stability Ball Hamstring Curl",
+        )
+        for name in collisions:
+            with self.subTest(name=name):
+                direct = catalog.match(name)
+                resolution = catalog.resolve_name(name)
+                self.assertIsNotNone(direct)
+                self.assertIsNotNone(resolution)
+                self.assertEqual(resolution.entry.slug, direct.slug)
+                self.assertNotEqual(resolution.matched_by, "equipment_prefix")
+
+    def test_resolver_weighted_prefix_cases_keep_catalog_identity(self):
+        cases = {
+            "Bodyweight Weighted Push-up": "weighted-push-up",
+            "Bodyweight Weighted Pull-up": "weighted-pull-up",
+            "Bodyweight Weighted Dip": "weighted-dip",
+            "Bodyweight Weighted Chin-up": "weighted-chin-up",
+            "Plate Weighted Crunch": "weighted-crunch",
+            "Pull-up Bar Hanging Knee Raise": "hanging-knee-raise",
+            "Pull-up Bar Active Hang": "active-hang",
+        }
+        for name, slug in cases.items():
+            with self.subTest(name=name):
+                resolution = catalog.resolve_name(name)
+                self.assertIsNotNone(resolution)
+                self.assertEqual((resolution.entry.slug, resolution.matched_by), (slug, "equipment_prefix"))
+
+    def test_resolver_production_near_misses(self):
+        resolved = {
+            "Dumbbell Arnold Press": "arnold-press",
+            "Dumbbell Hammer Curls": "hammer-curl",
+            "Dumbbell Front Raises": "front-raise",
+        }
+        for name, slug in resolved.items():
+            with self.subTest(name=name):
+                resolution = catalog.resolve_name(name)
+                self.assertIsNotNone(resolution)
+                self.assertEqual((resolution.entry.slug, resolution.matched_by), (slug, "equipment_prefix"))
+
+        for name in (
+            "Walking Dumbbell Lunges",
+            "Bent-Over Dumbbell Row",
+            "Dumbbell Russian Twists",
+            "Cat-Cow Flow",
+            "Dumbbell Thrusters",
+            "Spanish Squats",
+            "Pigeon Pose",
+        ):
+            with self.subTest(name=name):
+                self.assertIsNone(catalog.resolve_name(name))
