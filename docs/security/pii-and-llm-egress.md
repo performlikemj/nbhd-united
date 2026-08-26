@@ -42,13 +42,13 @@ The disclosed limits are precise:
   non-ZDR, has zero adopted credentials as of 2026-08-26, defaults off, and the
   rollout disconnect command removes any credential before reconciling config.
 
-Container bindings remain broader than active model egress: tenant containers
-receive `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, and `ANTHROPIC_API_KEY` secret
-references. The direct-provider bindings are currently inert; static guards
-reject new provider-host/SDK/key reads outside explicitly reviewed seams. If
-the parked BYO flag is deliberately re-enabled, the BYO reconciler replaces
-`ANTHROPIC_API_KEY` with `CLAUDE_CODE_OAUTH_TOKEN` for that tenant; that route
-is non-ZDR.
+Newly provisioned tenant containers receive no OpenAI or Anthropic secret
+reference or environment binding: they bind only `openrouter-key` as
+`OPENROUTER_API_KEY`, the internal key, and Brave. Legacy containers provisioned
+before this change retain inert `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` bindings
+until the one-shot fleet scrub runs during rollout; afterward, no tenant
+container holds a platform provider key. If the parked BYO scaffold is ever
+re-enabled, it swaps in `CLAUDE_CODE_OAUTH_TOKEN` (non-ZDR) for that tenant only.
 
 Closed direct-provider paths in the 2026-08-26 sealing pass:
 
