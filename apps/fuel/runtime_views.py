@@ -2209,7 +2209,7 @@ def _author_plan_expansion_inputs(
             category = workout_def.get("category", "other")
             if category not in WorkoutCategory.values:
                 category = "other"
-            authored_workouts[(week_idx, day_int)] = author_store_fields(
+            authored, receipts = author_store_fields(
                 tenant,
                 {
                     "activity": str(workout_def.get("activity", WorkoutCategory(category).label)).strip(),
@@ -2220,6 +2220,11 @@ def _author_plan_expansion_inputs(
                 writer=writer,
                 defer_detection=writer == "runtime",
             )
+            authored["detail_json"] = reinsert_catalog_refs(
+                authored["detail_json"],
+                workout_def.get("detail_json", {}),
+            )
+            authored_workouts[(week_idx, day_int)] = authored, receipts
     return authored_workouts
 
 

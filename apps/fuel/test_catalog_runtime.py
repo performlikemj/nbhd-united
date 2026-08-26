@@ -316,7 +316,7 @@ class CatalogAnnotationRuntimeTests(CatalogRuntimeCase):
                     "loc": ["detail_json", "exercises", 0, "name"],
                     "slug": "hammer-curl",
                     "matched_by": "equipment_prefix",
-                    "name": "Hammer Curl",
+                    "catalog_name": "Hammer Curl",
                 }
             ],
         )
@@ -443,6 +443,7 @@ class CatalogAnnotationRuntimeTests(CatalogRuntimeCase):
         )
         self.assertEqual(created.status_code, 201, created.data)
         self.assertEqual(created.data["catalog_matches"][0]["slug"], "arnold-press")
+        self.assertEqual(created.data["catalog_matches"][0]["catalog_name"], "Arnold Press")
         workout = Workout.objects.get(id=created.data["id"])
         self.assertEqual(workout.detail_json["exercises"][0]["catalog_ref"]["slug"], "arnold-press")
 
@@ -451,6 +452,44 @@ class CatalogAnnotationRuntimeTests(CatalogRuntimeCase):
             fetched.data["detail_json"]["exercises"][0]["catalog_ref"]["slug"],
             "arnold-press",
         )
+
+    @patch("apps.fuel.runtime_views._manage_fuel_cron")
+    def test_child_workout_refs_survive_expansion_and_reconciliation_authoring(self, _cron):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Arnold"}}
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["pii_entity_map", "layer1_placeholder_writes"])
+        start = date.today() + timedelta(days=7)
+        create_body = {
+            "name": "Child ref survival",
+            "start_date": start.isoformat(),
+            "weeks": 2,
+            "days_per_week": 1,
+            "schedule_json": {"monday": self.strength_day(self.exercise("Dumbbell Arnold Press"))},
+        }
+
+        created = self.client.post(self.url("plans/"), create_body, format="json", **self.headers)
+        self.assertEqual(created.status_code, 201, created.data)
+        plan = WorkoutPlan.objects.get(id=created.data["id"])
+        expanded = Workout.objects.filter(plan=plan).order_by("date").first()
+        self.assertEqual(expanded.detail_json["exercises"][0]["catalog_ref"]["slug"], "arnold-press")
+
+        bench = self.client.patch(
+            self.url(f"plans/{plan.id}/"),
+            {"schedule_json": {"monday": self.strength_day(self.exercise("Bench Press"))}},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(bench.status_code, 200, bench.data)
+        reconciled = self.client.patch(
+            self.url(f"plans/{plan.id}/"),
+            {"schedule_json": {"monday": self.strength_day(self.exercise("Dumbbell Arnold Press"))}},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(reconciled.status_code, 200, reconciled.data)
+        self.assertEqual(reconciled.data["catalog_matches"][0]["catalog_name"], "Arnold Press")
+        for workout in Workout.objects.filter(plan=plan):
+            self.assertEqual(workout.detail_json["exercises"][0]["catalog_ref"]["slug"], "arnold-press")
 
     def test_catalog_telemetry_is_shape_only_and_counts_coverage(self):
         response = self.client.post(

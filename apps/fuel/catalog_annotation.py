@@ -9,6 +9,8 @@ from typing import Any
 
 from . import catalog
 
+_MATCHED_BY = frozenset({"canonical", "slug", "alias", "plural", "equipment_prefix"})
+
 
 @dataclass(frozen=True, slots=True)
 class IncomingPath:
@@ -93,22 +95,26 @@ def annotate_incoming(
                 unmatched.append(name)
             continue
 
+        catalog_ref = {
+            "slug": resolution.entry.slug,
+            "version": version,
+            "matched_by": resolution.matched_by,
+        }
         existing = item.get("catalog_ref")
         if isinstance(existing, dict) and existing.get("slug") == resolution.entry.slug:
-            catalog_ref = deepcopy(existing)
-        else:
-            catalog_ref = {
-                "slug": resolution.entry.slug,
-                "version": version,
-                "matched_by": resolution.matched_by,
-            }
+            existing_matched_by = existing.get("matched_by")
+            existing_version = existing.get("version")
+            if existing_matched_by in _MATCHED_BY:
+                catalog_ref["matched_by"] = existing_matched_by
+            if type(existing_version) is int:
+                catalog_ref["version"] = existing_version
         item["catalog_ref"] = catalog_ref
         matches.append(
             {
                 "loc": list(spec.loc),
                 "slug": resolution.entry.slug,
                 "matched_by": str(catalog_ref.get("matched_by") or resolution.matched_by),
-                "name": resolution.entry.name,
+                "catalog_name": resolution.entry.name,
             }
         )
 

@@ -415,7 +415,7 @@ test("write tools render catalog matches from their own local request", async (t
         loc: ["detail_json", "exercises", 0, "name"],
         slug: "hammer-curl",
         matched_by: "equipment_prefix",
-        name: "Hammer Curl",
+        catalog_name: "Hammer Curl",
       }],
     })),
   );

@@ -220,7 +220,7 @@ function renderWritePayload(payload, localRequest = {}) {
   const lines = [JSON.stringify(payload, null, 2)];
   for (const match of matches) {
     const received = valueAtLoc(localRequest, match?.loc);
-    const catalogName = asTrimmedString(match?.name) || asTrimmedString(match?.slug);
+    const catalogName = asTrimmedString(match?.catalog_name) || asTrimmedString(match?.slug);
     if (catalogName && typeof received === "string") {
       lines.push(`figure: ${catalogName} ← ${JSON.stringify(received)}`);
     }
