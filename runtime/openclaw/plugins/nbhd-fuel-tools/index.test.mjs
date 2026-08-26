@@ -190,6 +190,52 @@ test("both new tools preserve compact 4xx errors", async (t) => {
   assert.equal(plan.details.json.error, "NBHD runtime error 400: invalid_filter (bad value)");
 });
 
+test("plan rotation and catalog errors stay structured instead of flattening", async (t) => {
+  setRuntimeEnv(t);
+  const payload = {
+    error: "plan_rotation_required",
+    message: "Rotate recipes",
+    tracks: [{ weekday: "monday", activity: "Push", weeks: [1, 2, 3], max_consecutive_same: 3 }],
+    week_overrides_semantics: "whole_map_replacement",
+    catalog_candidates: [],
+  };
+  t.mock.method(globalThis, "fetch", async () => response(400, JSON.stringify(payload)));
+  const result = await collectTools({ apiBaseUrl: "https://nbhd.example" })
+    .nbhd_fuel_create_plan.execute("call", {
+      name: "Plan",
+      weeks: 8,
+      days_per_week: 1,
+      schedule_json: { monday: {} },
+    });
+  assert.deepEqual(result.details.json, payload);
+  assert.equal(result.content[0].text, JSON.stringify(payload));
+  assert.doesNotMatch(result.content[0].text, /NBHD runtime error/);
+});
+
+test("plan tools expose roles and forward explicit repeat policies", async (t) => {
+  setRuntimeEnv(t);
+  let body;
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    body = JSON.parse(options.body);
+    return response(200, JSON.stringify({ id: "plan-1" }));
+  });
+  const tools = collectTools({ apiBaseUrl: "https://nbhd.example" });
+  assert.match(
+    tools.nbhd_fuel_create_plan.parameters.properties.schedule_json.additionalProperties.properties.detail_json.description,
+    /primary \| accessory \| warmup \| mobility/,
+  );
+  await tools.nbhd_fuel_create_plan.execute("call", {
+    name: "Rehab",
+    weeks: 8,
+    days_per_week: 1,
+    schedule_json: { monday: {} },
+    repeat_policy: "intentional",
+    repeat_reason: "Fixed rehab block",
+  });
+  assert.equal(body.repeat_policy, "intentional");
+  assert.equal(body.repeat_reason, "Fixed rehab block");
+});
+
 test("all four write tools render the unmatched exercise warning line", async (t) => {
   setRuntimeEnv(t);
   t.mock.method(globalThis, "fetch", async () =>

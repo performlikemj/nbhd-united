@@ -56,6 +56,7 @@ class _FuelResponseGuard(KnownValueResponseGuardMixin):
             "unmatched_exercises",
             "skip_reason",
             "reason",
+            "repeat_reason",
             "summary",
         }
     )
@@ -1530,6 +1531,60 @@ class RuntimeSleepView(APIView):
 
 # ── Workout Plan CRUD ────────────────────────────────────────────────
 
+_PLAN_POLICY_KEY = "_plan_policy"
+
+
+def _stored_plan_policy(schedule_json) -> dict:
+    if not isinstance(schedule_json, dict):
+        return {}
+    policy = schedule_json.get(_PLAN_POLICY_KEY)
+    return dict(policy) if isinstance(policy, dict) else {}
+
+
+def _public_schedule(schedule_json) -> dict:
+    return {key: value for key, value in (schedule_json or {}).items() if key != _PLAN_POLICY_KEY}
+
+
+def _attach_plan_policy(schedule_json, policy: dict) -> dict:
+    attached = _public_schedule(schedule_json)
+    if policy:
+        attached[_PLAN_POLICY_KEY] = dict(policy)
+    return attached
+
+
+def _resolve_plan_policy(data, current=None):
+    policy = dict(current or {})
+    for key in ("variation_policy", "repeat_policy", "repeat_reason"):
+        if key not in data:
+            continue
+        value = str(data.get(key) or "").strip()
+        if value:
+            policy[key] = value
+        else:
+            policy.pop(key, None)
+
+    variation = str(policy.get("variation_policy") or "")
+    repeat = str(policy.get("repeat_policy") or "")
+    reason = str(policy.get("repeat_reason") or "").strip()
+    if variation not in {"", "progression_only"}:
+        return None, Response(
+            {"error": "invalid_variation_policy", "allowed": ["progression_only"]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if repeat not in {"", "intentional"}:
+        return None, Response(
+            {"error": "invalid_repeat_policy", "allowed": ["intentional"]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if repeat == "intentional" and not reason:
+        return None, Response(
+            {"error": "invalid_repeat_policy", "message": "repeat_reason is required for an intentional repeat"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if repeat != "intentional":
+        policy.pop("repeat_reason", None)
+    return policy, None
+
 
 def _serialize_plan(plan, include_workouts=False, *, today=None):
     """Serialize a WorkoutPlan with optional workout list.
@@ -1545,6 +1600,7 @@ def _serialize_plan(plan, include_workouts=False, *, today=None):
         today = today_in_tenant_tz(plan.tenant)
     total = Workout.objects.filter(plan=plan).count()
     done = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
+    policy = _stored_plan_policy(plan.schedule_json)
     data = {
         "id": str(plan.id),
         "name": plan.name,
@@ -1552,7 +1608,7 @@ def _serialize_plan(plan, include_workouts=False, *, today=None):
         "start_date": str(plan.start_date),
         "weeks": plan.weeks,
         "days_per_week": plan.days_per_week,
-        "schedule_json": plan.schedule_json,
+        "schedule_json": _public_schedule(plan.schedule_json),
         "objective": plan.objective,
         "week_overrides": plan.week_overrides,
         "notes": plan.notes,
@@ -1562,6 +1618,7 @@ def _serialize_plan(plan, include_workouts=False, *, today=None):
         # (0 once over), current_week (1-based). All off the tenant-local today.
         **plan_progress_fields(plan, today),
     }
+    data.update(policy)
     if include_workouts:
         workouts = Workout.objects.filter(plan=plan).order_by("date", "created_at")
         data["workouts"] = [
@@ -2572,6 +2629,10 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
                 result["superseded_plans"] = superseded
             return Response(result, status=status.HTTP_200_OK)
 
+        plan_policy, policy_err = _resolve_plan_policy(data)
+        if policy_err is not None:
+            return policy_err
+
         incoming_catalog_paths = [
             *_mapped_schedule_paths(schedule_json, payload_root="schedule_json", loc_root="schedule_json"),
             *_mapped_override_paths(data.get("week_overrides")),
@@ -2585,6 +2646,20 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
         )
         normalized_schedule = catalog_payload["schedule_json"]
         normalized_overrides = catalog_payload["week_overrides"]
+
+        from .plan_variety import validate_plan_variety
+
+        rotation_error = validate_plan_variety(
+            normalized_schedule,
+            weeks,
+            normalized_overrides,
+            variation_policy=plan_policy.get("variation_policy", ""),
+            repeat_policy=plan_policy.get("repeat_policy", ""),
+            repeat_reason=plan_policy.get("repeat_reason", ""),
+        )
+        if rotation_error is not None:
+            return Response(rotation_error, status=status.HTTP_400_BAD_REQUEST)
+        normalized_schedule = _attach_plan_policy(normalized_schedule, plan_policy)
 
         from apps.pii.store_authoring import author_store_fields
 
@@ -2711,6 +2786,7 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
             return Response({"error": "plan_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
         data = request.data
+        stored_plan_policy = _stored_plan_policy(plan.schedule_json)
         updated_fields = []
         needs_regeneration = False
         catalog_matches: list[dict] = []
@@ -2902,6 +2978,14 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
             except (TypeError, ValueError):
                 pass
 
+        plan_policy, policy_err = _resolve_plan_policy(data, stored_plan_policy)
+        if policy_err is not None:
+            return policy_err
+        if schedule_supplied or any(key in data for key in ("variation_policy", "repeat_policy", "repeat_reason")):
+            plan.schedule_json = _attach_plan_policy(plan.schedule_json, plan_policy)
+            if "schedule_json" not in updated_fields:
+                updated_fields.append("schedule_json")
+
         catalog_paths: list[IncomingPath] = []
         if schedule_supplied:
             catalog_paths.extend(
@@ -2921,6 +3005,20 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
             plan.schedule_json = catalog_payload["schedule_json"]
             plan.week_overrides = catalog_payload["week_overrides"]
             server_owned_plan_json = catalog_payload
+
+        if any(key in data for key in ("schedule_json", "weeks", "week_overrides")):
+            from .plan_variety import validate_plan_variety
+
+            rotation_error = validate_plan_variety(
+                plan.schedule_json,
+                plan.weeks,
+                plan.week_overrides,
+                variation_policy=plan_policy.get("variation_policy", ""),
+                repeat_policy=plan_policy.get("repeat_policy", ""),
+                repeat_reason=plan_policy.get("repeat_reason", ""),
+            )
+            if rotation_error is not None:
+                return Response(rotation_error, status=status.HTTP_400_BAD_REQUEST)
 
         if updated_fields:
             from apps.pii.store_authoring import author_store_fields

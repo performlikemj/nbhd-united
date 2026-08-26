@@ -71,6 +71,13 @@ function renderTextPayload(payload, text) {
   };
 }
 
+function renderCaughtError(error) {
+  if (error?.runtimePayload && typeof error.runtimePayload === "object") {
+    return renderTextPayload(error.runtimePayload, JSON.stringify(error.runtimePayload));
+  }
+  return renderPayload({ error: error?.message || String(error) });
+}
+
 function valueAtLoc(payload, loc) {
   let current = payload;
   for (const part of Array.isArray(loc) ? loc : []) {
@@ -223,6 +230,11 @@ async function callRuntime(api, { path, method = "GET", query, body }) {
     if (!response.ok) {
       const normalized = asObject(payload);
       const code = asTrimmedString(normalized.error) || "runtime_request_failed";
+      if (code === "plan_rotation_required" || code.startsWith("catalog_")) {
+        const structuredError = new Error(`NBHD runtime error ${response.status}: ${code}`);
+        structuredError.runtimePayload = normalized;
+        throw structuredError;
+      }
       // DRF commonly returns field errors at the top level, e.g.
       // {week_rating: ["..."]}, rather than under `detail`. Preserve that
       // compact validation payload so the model can correct and retry.
@@ -273,7 +285,7 @@ export default function register(api) {
           });
           return renderAudit(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -298,7 +310,7 @@ export default function register(api) {
           });
           return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -337,7 +349,7 @@ export default function register(api) {
           });
           return renderExerciseSearch(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -367,7 +379,7 @@ export default function register(api) {
           });
           return renderPlan(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -402,7 +414,7 @@ export default function register(api) {
           });
           return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -571,7 +583,7 @@ export default function register(api) {
           });
           return renderWritePayload(payload, body);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -639,7 +651,7 @@ export default function register(api) {
           });
           return renderWritePayload(payload, body);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -674,7 +686,7 @@ export default function register(api) {
           });
           return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -716,7 +728,7 @@ export default function register(api) {
         });
         return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -752,7 +764,7 @@ export default function register(api) {
           });
           return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -807,7 +819,7 @@ export default function register(api) {
           });
           return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -904,7 +916,7 @@ export default function register(api) {
           });
           return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -956,7 +968,7 @@ export default function register(api) {
                 detail_json: {
                   type: "object",
                   description:
-                    'Category-specific prescription. Populate every training day, not just strength. Strength/calisthenics: REQUIRED — {"exercises": [{"name": "...", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}, ...]}]} (set type is one of weighted_reps | bodyweight_reps | hold_time). The backend validates every planned category and rejects malformed sets or an empty prescription with a 400 carrying the offending weekday, so design the real programming and self-correct. Cardio: {"distance_km": 5, "pace": "5:30"}. HIIT: {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility uses skills with hold times, e.g. {"skills":[{"name":"Hip flexor stretch","sets":[{"type":"hold_time","hold_s":45}]}]}. Every planned day needs a prescription.',
+                    'Category-specific prescription. Populate every training day, not just strength. Strength/calisthenics: REQUIRED — {"exercises": [{"name": "...", "role":"accessory", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}, ...]}]} (set type is weighted_reps | bodyweight_reps | hold_time; optional role is primary | accessory | warmup | mobility). The backend validates every planned category and rejects malformed sets or an empty prescription with a 400 carrying the offending weekday. Cardio: {"distance_km": 5, "pace": "5:30"}. HIIT: {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility uses skills with hold times and optional roles. Every planned day needs a prescription.',
                 },
                 target_rpe: {
                   type: "integer",
@@ -979,6 +991,20 @@ export default function register(api) {
             description:
               'Optional per-week progression/deload. Keys are 0-indexed week offsets ("0"=first week). Each overridden weekday must be a complete day object with full detail_json because it replaces the base day wholesale. Example: {"3":{"monday":{"category":"strength","activity":"Deload","target_rpe":5,"detail_json":{"exercises":[{"name":"Bench Press","sets":[{"type":"weighted_reps","reps":5,"weight":50}]}]}}}}.',
           },
+          variation_policy: {
+            type: "string",
+            enum: ["progression_only"],
+            description: "Allow a fixed exercise recipe only when at least one dose field changes across that session track.",
+          },
+          repeat_policy: {
+            type: "string",
+            enum: ["intentional"],
+            description: "Declare a deliberate repeated block; requires a non-empty repeat_reason.",
+          },
+          repeat_reason: {
+            type: "string",
+            description: "Required rationale when repeat_policy is intentional, e.g. a fixed rehab or technique block.",
+          },
           notes: {
             type: "string",
             description:
@@ -1000,6 +1026,9 @@ export default function register(api) {
           if (input.notes) body.notes = asTrimmedString(input.notes);
           if (input.objective) body.objective = asTrimmedString(input.objective);
           if (input.week_overrides) body.week_overrides = asObject(input.week_overrides);
+          if (input.variation_policy) body.variation_policy = asTrimmedString(input.variation_policy);
+          if (input.repeat_policy) body.repeat_policy = asTrimmedString(input.repeat_policy);
+          if (input.repeat_reason) body.repeat_reason = asTrimmedString(input.repeat_reason);
 
           const payload = await callRuntime(api, {
             path: fuelPath(api, "/plans/"),
@@ -1008,7 +1037,7 @@ export default function register(api) {
           });
           return renderWritePayload(payload, body);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -1019,7 +1048,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_update_plan",
       description:
-        'Update an existing workout plan. schedule_json MERGES by default: send only the days you want to add or change, and days you omit stay untouched. Example: add weekend mobility without touching weekdays by sending schedule_json: {"saturday":{"category":"mobility","activity":"Mobility"},"sunday":{"category":"mobility","activity":"Recovery Flow"}}. Omit detail_json from an updated day to keep that day\'s existing exercises. Remove days only with remove_days; use replace_schedule:true only when intentionally replacing the entire weekly template. Legacy integer weekday keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls because numbering conventions disagree. If you send strength/calisthenics detail_json, it must contain a non-empty exercises list. Schedule or weeks changes reconcile future planned workouts.',
+        'Update an existing workout plan. schedule_json MERGES by default: send only the days you want to add or change, and days you omit stay untouched. Example: add weekend mobility without touching weekdays by sending schedule_json: {"saturday":{"category":"mobility","activity":"Mobility"},"sunday":{"category":"mobility","activity":"Recovery Flow"}}. Omit detail_json from an updated day to keep that day\'s existing exercises. Remove days only with remove_days; use replace_schedule:true only when intentionally replacing the entire weekly template. Legacy integer weekday keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls because numbering conventions disagree. Item role is optional: primary | accessory | warmup | mobility. If you send strength/calisthenics detail_json, it must contain a non-empty exercises list. Schedule or weeks changes reconcile future planned workouts.',
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1074,6 +1103,20 @@ export default function register(api) {
             description:
               'Replace the plan\'s whole per-week progression/deload map. Keys are 0-indexed ABSOLUTE plan weeks ("0" is always the plan\'s FIRST week) and must be within the plan\'s length. Each overridden weekday must be a complete day object with full detail_json because the override replaces that base day wholesale; null makes it a rest day. Sent as a whole map: it REPLACES the stored one, so include every week you want to keep. Triggers workout regeneration.',
           },
+          variation_policy: {
+            type: "string",
+            enum: ["progression_only"],
+            description: "Allow a fixed recipe only when dose fields change across each repeated session track.",
+          },
+          repeat_policy: {
+            type: "string",
+            enum: ["intentional"],
+            description: "Declare a deliberate repeated block; requires repeat_reason.",
+          },
+          repeat_reason: {
+            type: "string",
+            description: "Required rationale for repeat_policy intentional.",
+          },
         },
         required: ["plan_id"],
       },
@@ -1095,6 +1138,9 @@ export default function register(api) {
           if (Array.isArray(input.remove_days)) body.remove_days = input.remove_days;
           if (input.replace_schedule !== undefined) body.replace_schedule = input.replace_schedule === true;
           if (input.week_overrides) body.week_overrides = asObject(input.week_overrides);
+          if (input.variation_policy) body.variation_policy = asTrimmedString(input.variation_policy);
+          if (input.repeat_policy) body.repeat_policy = asTrimmedString(input.repeat_policy);
+          if (input.repeat_reason !== undefined) body.repeat_reason = asTrimmedString(input.repeat_reason);
 
           const payload = await callRuntime(api, {
             path: fuelPath(api, `/plans/${encodeURIComponent(planId)}/`),
@@ -1103,7 +1149,7 @@ export default function register(api) {
           });
           return renderWritePayload(payload, body);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -1138,7 +1184,7 @@ export default function register(api) {
           });
           return renderPayload({ deleted: true, plan_id: planId });
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
