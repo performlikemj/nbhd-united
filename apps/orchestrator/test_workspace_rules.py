@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
+from apps.orchestrator.config_generator import _prepare_cron_prompt
 from apps.orchestrator.personas import render_workspace_files, render_workspace_rules
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -87,7 +88,7 @@ class SubagentWorkspaceRulesTest(TestCase):
         self.tenant = create_tenant(display_name="Subagent Rules", telegram_chat_id=606061)
 
     @override_settings(SUBAGENT_TENANT_IDS="")
-    def test_disabled_tenant_gets_exact_pre_feature_rule_set_and_agents_index(self):
+    def test_disabled_tenant_gets_exact_pre_feature_rule_set_and_no_chat_or_cron_index_row(self):
         rules = render_workspace_rules(tenant=self.tenant)
         self.assertEqual(
             set(rules),
@@ -107,19 +108,26 @@ class SubagentWorkspaceRulesTest(TestCase):
         )
         self.assertNotIn("rules/subagents.md", rules["messaging.md"])
         agents_md = render_workspace_files("neighbor", tenant=self.tenant)["NBHD_AGENTS_MD"]
+        cron_prompt = _prepare_cron_prompt("Task body", self.tenant)
         self.assertNotIn("| `rules/subagents.md` |", agents_md)
+        self.assertNotIn("| `rules/subagents.md` |", cron_prompt)
 
-    def test_enabled_tenant_gets_subagent_rule_messaging_exception_and_agents_index(self):
+    def test_enabled_tenant_gets_subagent_rule_and_cron_index_but_no_chat_index(self):
         with override_settings(SUBAGENT_TENANT_IDS=str(self.tenant.id)):
             rules = render_workspace_rules(tenant=self.tenant)
             agents_md = render_workspace_files("neighbor", tenant=self.tenant)["NBHD_AGENTS_MD"]
+            cron_prompt = _prepare_cron_prompt("Task body", self.tenant)
 
         self.assertIn("subagents.md", rules)
         self.assertIn(
             "If `rules/subagents.md` is present in your workspace, follow it",
             rules["messaging.md"],
         )
-        self.assertIn("| `rules/subagents.md` |", agents_md)
+        self.assertNotIn("| `rules/subagents.md` |", agents_md)
+        self.assertIn(
+            "| `rules/subagents.md` | Slow-task delegation and app completion delivery |",
+            cron_prompt,
+        )
 
 
 class UpdateTenantConfigUploadsRulesTest(TestCase):

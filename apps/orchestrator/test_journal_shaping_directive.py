@@ -21,7 +21,7 @@ _JOURNAL_SHAPING_GATE = """## Journal shaping
 This user can reshape their journal template through you.
 - `nbhd_journal_template_get` — read the current daily-note sections.
 - `nbhd_journal_template_update` — replace the sections list.
-- Before ANY reshape: read `docs/journal-shaping.md`, then propose the exact sections and get explicit agreement. Never reshape silently.
+- Before ANY reshape: call `nbhd_journal_template_get` to list the current sections, then propose the exact sections and get explicit agreement. Never reshape silently.
 - Template = future structure only; existing notes are never modified by a template change.
 - Pair every section change with its check-in schedule: prefer folding into an existing check-in over creating new ones."""
 

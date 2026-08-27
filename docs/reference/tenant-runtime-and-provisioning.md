@@ -169,6 +169,8 @@ Then it clears `hibernated_at`, stamps `last_wake_at` (`hibernation.py:530`), fo
 
 The sentinel/marker design lets Django own a managed block while the agent grows the rest of the file. All writes go through the sanitize chokepoint.
 
+Chat turns never read workspace files: filesystem `read` is absent from their tool policy. Rules reach chat only through always-loaded prompt text, tool descriptions, tool responses, or server 400 responses that carry the correction. The `rules/*.md` files are for cron/background turns only and their on-demand index is injected into every cron preamble.
+
 ## Action gating (apps/actions)
 
 The approve/deny gate for irreversible tool calls. The agent container asks Django before performing a destructive action; Django prompts the user on their channel and holds the tool call until they tap Approve/Deny (or it expires in 5 min).
