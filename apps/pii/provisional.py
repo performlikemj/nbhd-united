@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.db import transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from apps.pii.entity_registry import canonical_key, get_name, is_denied, is_retired, to_storage_value
 
@@ -125,6 +126,7 @@ def transition_binding(
     event_digest: str | None = None,
     local_date: str | None = None,
     promoted_by: str | None = None,
+    expires_before: datetime | None = None,
 ) -> TransitionResult:
     """Re-read and transition one binding under the tenant row lock.
 
@@ -177,15 +179,19 @@ def transition_binding(
                     retired_reason=None,
                 )
                 changed, outcome = entry != raw, "promoted"
-            elif action == "expire" and not blocked and entry.get("provisional") and not promoted:
-                entry = to_storage_value(
-                    name,
-                    existing=entry,
-                    retired=True,
-                    retired_at=now_iso,
-                    retired_reason="provisional-expired",
-                )
-                changed, outcome = entry != raw, "expired"
+            elif action == "expire" and not owner_retired and entry.get("provisional") and not promoted:
+                last_seen = parse_datetime(str(entry.get("last_seen_at") or ""))
+                if expires_before is not None and (last_seen is None or last_seen >= expires_before):
+                    outcome = "not-expired"
+                else:
+                    entry = to_storage_value(
+                        name,
+                        existing=entry,
+                        retired=True,
+                        retired_at=now_iso,
+                        retired_reason="provisional-expired",
+                    )
+                    changed, outcome = entry != raw, "expired"
             elif action in {"reactivate", "count"} and not blocked:
                 if entry.get("retired_reason") == "provisional-expired":
                     entry = to_storage_value(
