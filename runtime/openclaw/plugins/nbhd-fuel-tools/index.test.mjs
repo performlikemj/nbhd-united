@@ -52,6 +52,44 @@ test("manifest includes both catalog-aware read tools and schemas are strict", (
   assert.equal(tools.nbhd_fuel_search_exercises.parameters.properties.limit.maximum, 100);
 });
 
+test("log_workout description carries natural-language logging defaults", () => {
+  const tool = collectTools().nbhd_fuel_log_workout;
+  assert.match(tool.description, /if unknown, use "other"/);
+  assert.match(tool.description, /Default to today's date and status "done"/);
+  assert.match(tool.description, /do not interrogate the user for missing optional fields/);
+  assert.match(tool.description, /one call for a mixed session containing weighted exercises and holds/);
+  assert.match(tool.parameters.properties.date.description, /relative phrase like 'yesterday'\/'last Tuesday'/);
+});
+
+test("log_body_weight description carries scalar capture and conversion rules", () => {
+  const tool = collectTools().nbhd_fuel_log_body_weight;
+  assert.match(tool.description, /without asking permission/);
+  assert.match(tool.description, /one call per scalar measurement/i);
+  assert.match(tool.description, /Clarify or skip fuzzy ranges/);
+  assert.match(tool.parameters.properties.weight_kg.description, /lbs \/ 2\.2046/);
+  assert.match(tool.parameters.properties.date.description, /relative phrase like 'yesterday'\/'last Tuesday'/);
+});
+
+test("update_profile description carries progressive onboarding completion and decline rules", () => {
+  const description = collectTools().nbhd_fuel_update_profile.description;
+  assert.match(description, /Save answers as they are learned during onboarding/);
+  assert.match(description, /After the onboarding questions, set onboarding_status to 'completed'/);
+  assert.match(description, /set it to 'declined'/);
+  assert.match(description, /never nag them to resume/);
+});
+
+test("plan tool descriptions carry context, rationale, and rest-day rules", () => {
+  const tools = collectTools();
+  for (const name of ["nbhd_fuel_create_plan", "nbhd_fuel_update_plan"]) {
+    const description = tools[name].description;
+    assert.match(description, /nbhd_fuel_summary/);
+    assert.match(description, /nbhd_lesson_search/);
+    assert.match(description, /nbhd_journal_search/);
+    assert.match(description, /contextual programming rationale/);
+    assert.match(description, /omit rest days/);
+  }
+});
+
 test("search tool encodes query fields, forwards limit, and renders names-only rows", async (t) => {
   setRuntimeEnv(t);
   let captured;
