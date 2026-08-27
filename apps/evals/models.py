@@ -41,6 +41,11 @@ class EvalRun(models.Model):
         help_text="OpenClaw image tag under test (null when the suite doesn't exercise the runtime).",
     )
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.RUNNING)
+    scenario_cursor = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Next scenario index for suites that rotate a budget-bounded scenario pack.",
+    )
     started_at = models.DateTimeField(auto_now_add=True)
     finished_at = models.DateTimeField(null=True, blank=True)
 

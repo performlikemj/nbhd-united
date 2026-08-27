@@ -101,6 +101,10 @@ class _ScopedFakeMixin:
     a budget-skipped one). Fakes that need real per-scope memory (e.g. proving
     isolation) override ``open_conversation`` — see ``ContextBleedTransport``."""
 
+    def prewarm(self) -> TurnResult:
+        self.prewarm_calls = getattr(self, "prewarm_calls", 0) + 1
+        return TurnResult(user_text="prewarm", reply_text="ready", ok=True)
+
     def open_conversation(self, *, channel: str = "ios") -> str:
         try:
             scopes = self.opened_scopes
@@ -209,6 +213,9 @@ class ContextBleedTransport:
     def __init__(self):
         self._scopes: dict[str, list[str]] = {}
         self._active: str | None = None
+
+    def prewarm(self) -> TurnResult:
+        return TurnResult(user_text="prewarm", reply_text="ready", ok=True)
 
     def open_conversation(self) -> str:
         sid = f"scope-{len(self._scopes)}"
@@ -412,6 +419,14 @@ class SchemaValidationTest(TestCase):
         # Every fixture references only known hard types + soft dims (parse enforces it).
         for s in scenarios:
             self.assertTrue(s.hard_assertions)
+
+    def test_chart_fixture_targets_platform_backed_mood_chart(self):
+        scenarios = {scenario.id: scenario for scenario in load_all_scenarios()}
+        chart = scenarios["chart_marker_contract"]
+        self.assertEqual(chart.channel, "telegram")
+        self.assertIn("mood", chart.script[0].lower())
+        self.assertIn("mood trend chart", chart.script[0].lower())
+        self.assertNotIn("running distance", chart.script[0].lower())
 
     def test_pii_fixture_marker_gap_is_tracked(self):
         # KNOWN_GAP sentinel: the shipped PII fixture still PLANTS the marker and the
@@ -679,7 +694,7 @@ class RunBehaviorSuiteTest(TestCase):
             hard=(HardAssertion("chart_marker_contract"),),
             channel="telegram",
         )
-        transport = ActionTransport(replies=("Trend [[chart:line]]", "A line chart shows change."))
+        transport = ActionTransport(replies=("Trend [[chart:mood_trend]]", "A line chart shows change."))
         run = run_behavior_suite(scenarios=[scenario], transport=transport, judge=None)
         self.assertEqual(run.status, EvalRun.Status.PASS)
         self.assertEqual(transport.channels, ["telegram"])
@@ -710,7 +725,7 @@ class RunBehaviorSuiteTest(TestCase):
             hard=(HardAssertion("chart_marker_contract"),),
             channel="telegram",
         )
-        transport = ActionTransport(replies=("[[chart:line]]", "Generic [[chart:line]]"))
+        transport = ActionTransport(replies=("[[chart:mood_trend]]", "Generic [[chart:mood_trend]]"))
         run = run_behavior_suite(scenarios=[scenario], transport=transport, judge=None)
         self.assertEqual(run.status, EvalRun.Status.FAIL)
         self.assertEqual(_hard(run)[0].details["code"], "chart_on_generic")
@@ -890,21 +905,96 @@ class RunBehaviorSuiteTest(TestCase):
         self.assertEqual(run.status, EvalRun.Status.FAIL)
         self.assertEqual(_hard(run)[0].details["code"], "forbidden_present")
 
-    def test_first_turn_gets_wake_aware_deadline(self):
-        # The run's very FIRST driven turn may hit a hibernated tenant → wake-aware
-        # deadline (wake-probe SLO); every later turn uses the warm default.
-        from apps.evals.behavior.transport import DEFAULT_DEADLINE_SECONDS, FIRST_TURN_DEADLINE_SECONDS
+    def test_prewarm_finishes_before_budget_anchor_and_scenarios_are_warm(self):
+        # Simulate a fake 190s cold start (the fake intentionally bypasses the real
+        # transport's cap). A budget anchored before pre-warm would be exhausted;
+        # anchoring after it leaves the full 70s and admits the 55s worst-case
+        # one-turn scenario. Scenario turns then use the warm deadline.
+        from apps.evals.behavior.transport import DEFAULT_DEADLINE_SECONDS
 
-        s1 = _scenario(scenario_id="s1", script=("one",))
-        s2 = _scenario(scenario_id="s2", script=("two",))
-        transport = BenignTransport()
-        run = run_behavior_suite(scenarios=[s1, s2], transport=transport, judge=None)
+        clock = [0.0]
+
+        class SlowPrewarmTransport(BenignTransport):
+            def prewarm(self):
+                clock[0] += 190.0
+                return super().prewarm()
+
+        transport = SlowPrewarmTransport()
+        with mock.patch("apps.evals.suites.behavior.time.monotonic", side_effect=lambda: clock[0]):
+            run = run_behavior_suite(
+                scenarios=[_scenario(scenario_id="s1")],
+                transport=transport,
+                judge=None,
+                budget_seconds=70,
+            )
         self.assertEqual(run.status, EvalRun.Status.PASS)
-        self.assertEqual(transport.deadlines, [FIRST_TURN_DEADLINE_SECONDS, DEFAULT_DEADLINE_SECONDS])
+        self.assertEqual(transport.prewarm_calls, 1)
+        self.assertEqual(transport.deadlines, [DEFAULT_DEADLINE_SECONDS])
+
+    def test_prewarm_plus_scenario_allocations_preserve_worker_headroom(self):
+        from apps.evals.behavior.transport import PREWARM_DEADLINE_SECONDS
+        from apps.evals.suites.behavior import SUITE_BUDGET_SECONDS, _scenario_worst_case_seconds
+
+        largest = _scenario(scenario_id="largest", script=("one", "two"), soft=("helpfulness",))
+        # Include the disposable pre-warm thread POST's full HTTP timeout.
+        self.assertEqual(15 + PREWARM_DEADLINE_SECONDS + SUITE_BUDGET_SECONDS, 285)
+        self.assertLessEqual(_scenario_worst_case_seconds(largest, will_judge=True), SUITE_BUDGET_SECONDS)
+
+    def test_prewarm_failure_errors_before_any_scenario(self):
+        class FailedPrewarmTransport(BenignTransport):
+            def prewarm(self):
+                return TurnResult(user_text="prewarm", ok=False, error="timeout")
+
+        transport = FailedPrewarmTransport()
+        with self.assertRaisesRegex(BehaviorConfigError, "pre-warm failed before scenarios"):
+            run_behavior_suite(scenarios=[_scenario()], transport=transport, judge=None)
+        run = EvalRun.objects.filter(suite="behavior").latest("started_at")
+        self.assertEqual(run.status, EvalRun.Status.ERROR)
+        self.assertEqual(transport.calls, [])
+
+    def test_rotation_advances_and_wraps_across_fires(self):
+        # One 55s-worst-case scenario fits each 100s fire. The fake advances the
+        # wall clock by 50s after driving it, leaving only 50s so the rotated tail
+        # is visibly budget-skipped. Four fires prove advance, wrap, then restart.
+        clock = [0.0]
+
+        class ClockTransport(BenignTransport):
+            def send_turn(self, **kwargs):
+                result = super().send_turn(**kwargs)
+                clock[0] += 50.0
+                return result
+
+        scenarios = [
+            _scenario(scenario_id="s1", script=("one",)),
+            _scenario(scenario_id="s2", script=("two",)),
+            _scenario(scenario_id="s3", script=("three",)),
+        ]
+        transport = ClockTransport()
+        runs = []
+        with (
+            mock.patch("apps.evals.suites.behavior.time.monotonic", side_effect=lambda: clock[0]),
+            self.assertLogs("apps.evals.suites.behavior", level="INFO") as captured,
+        ):
+            for _ in range(4):
+                runs.append(
+                    run_behavior_suite(
+                        scenarios=scenarios,
+                        transport=transport,
+                        judge=None,
+                        budget_seconds=100,
+                    )
+                )
+
+        self.assertEqual(transport.calls, ["one", "two", "three", "one"])
+        self.assertEqual([run.scenario_cursor for run in runs], [1, 2, 0, 1])
+        self.assertTrue(all(run.results.filter(details__kind="skipped").count() == 2 for run in runs))
+        logs = "\n".join(captured.output)
+        self.assertIn("rotation cursor before=2 after=0 ran=s3", logs)
+        self.assertIn("rotation cursor before=0 after=1 ran=s1", logs)
 
     def test_budget_skips_remaining_scenarios_with_reason(self):
-        # s1 (1 turn, wake-aware: worst 180s) fits a 200s budget; s2 (4 warm turns:
-        # worst 4x60=240s) cannot — it must be recorded skipped-with-reason, never
+        # s1 (1 warm turn: worst 55s) fits a 200s budget; s2 (4 warm turns:
+        # worst 4x50=200s + scope) cannot — it must be skipped-with-reason, never
         # silently dropped, and the run stays a valid PASS on s1's hard result.
         s1 = _scenario(scenario_id="s1", script=("one",))
         s2 = _scenario(scenario_id="s2", script=("a", "b", "c", "d"))
@@ -1042,22 +1132,27 @@ class _FakeHttpxClient:
     and records each POST's JSON body so a test can assert the active scope's
     thread_id rides the message turn. Never touches the network."""
 
-    def __init__(self, *, threads=None, messages=None, thread_exc=None):
+    def __init__(self, *, threads=None, messages=None, polls=None, thread_exc=None):
         self._threads = threads
         self._messages = messages
+        self._polls = list(polls or [])
         self._thread_exc = thread_exc
         self.post_bodies: list[dict] = []
+        self.get_calls: list[dict] = []
 
-    def post(self, url, json=None, headers=None):
-        self.post_bodies.append({"url": url, "json": json, "headers": headers})
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.post_bodies.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
         if url.endswith("/threads/"):
             if self._thread_exc:
                 raise self._thread_exc
             return self._threads
         return self._messages
 
-    def get(self, url, headers=None):  # terminal-on-post → no polling in these tests
-        raise AssertionError("unexpected GET")
+    def get(self, url, headers=None, timeout=None):
+        self.get_calls.append({"url": url, "headers": headers, "timeout": timeout})
+        if not self._polls:
+            raise AssertionError("unexpected GET")
+        return self._polls.pop(0)
 
     def close(self):
         pass
@@ -1066,6 +1161,37 @@ class _FakeHttpxClient:
 class HttpxBehaviorTransportTest(TestCase):
     def _transport(self, client):
         return HttpxBehaviorTransport(base_url="https://api.test", pat="pat_x", client=client)
+
+    def test_prewarm_uses_normal_chat_post_and_waits_for_ready_reply(self):
+        client = _FakeHttpxClient(
+            threads=_Resp(201, {"id": "thread-warm"}),
+            messages=_Resp(200, {"status": "ready", "reply_text": "awake", "error": ""}),
+        )
+        turn = self._transport(client).prewarm()
+        self.assertTrue(turn.ok)
+        self.assertEqual(
+            [item["url"] for item in client.post_bodies],
+            [
+                "https://api.test/api/v1/chat/threads/",
+                "https://api.test/api/v1/chat/messages/",
+            ],
+        )
+        self.assertEqual(client.post_bodies[1]["json"]["thread_id"], "thread-warm")
+
+    def test_prewarm_final_poll_cannot_overrun_wall_deadline(self):
+        client = _FakeHttpxClient(
+            threads=_Resp(201, {"id": "thread-warm"}),
+            messages=_Resp(200, {"status": "processing"}),
+            polls=[_Resp(200, {"status": "ready", "reply_text": "awake", "error": ""})],
+        )
+        with (
+            mock.patch("apps.evals.behavior.transport.time.monotonic", side_effect=[0.0, 129.0, 129.5]),
+            mock.patch("apps.evals.behavior.transport.time.sleep"),
+        ):
+            turn = self._transport(client).prewarm()
+        self.assertTrue(turn.ok)
+        self.assertEqual(client.post_bodies[1]["timeout"], 15.0)
+        self.assertEqual(client.get_calls[0]["timeout"], 0.5)
 
     def test_open_conversation_mints_and_activates_thread(self):
         client = _FakeHttpxClient(
@@ -1127,7 +1253,7 @@ class HttpxBehaviorTransportTest(TestCase):
                 200,
                 {
                     "choices": [
-                        {"message": {"content": "Trend [[chart:line]]"}},
+                        {"message": {"content": "Trend [[chart:mood_trend]]"}},
                     ]
                 },
             ),
@@ -1141,7 +1267,7 @@ class HttpxBehaviorTransportTest(TestCase):
         transport.open_conversation(channel="telegram")
         turn = transport.send_turn(text="show my trend")
         self.assertTrue(turn.ok)
-        self.assertIn("[[chart:line]]", turn.reply_text)
+        self.assertIn("[[chart:mood_trend]]", turn.reply_text)
         gateway = next(item for item in client.post_bodies if "/v1/chat/completions" in item["url"])
         self.assertEqual(gateway["headers"]["X-Channel"], "telegram")
         self.assertEqual(gateway["headers"]["X-OpenClaw-Message-Channel"], "telegram")
