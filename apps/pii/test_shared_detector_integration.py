@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import math
 import os
+import platform
 import socket
 import struct
 import subprocess
@@ -80,20 +81,27 @@ class _ServerProcess:
         if not fake:
             env["HF_HUB_OFFLINE"] = "1"
         module = "apps.pii.testsupport.fake_shared_detector" if fake else "apps.pii.shared_server"
+        self._stdout = Path(directory, "server.stdout").open("w+", encoding="utf-8")  # noqa: SIM115
+        self._stderr = Path(directory, "server.stderr").open("w+", encoding="utf-8")  # noqa: SIM115
         self.process = subprocess.Popen(
             [sys.executable, "-m", module],
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=self._stdout,
+            stderr=self._stderr,
             text=True,
         )
         self._wait_for_socket()
+
+    def _captured_output(self) -> tuple[str, str]:
+        self._stdout.seek(0)
+        self._stderr.seek(0)
+        return self._stdout.read(), self._stderr.read()
 
     def _wait_for_socket(self, timeout: float = 180.0) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
-                stdout, stderr = self.process.communicate(timeout=1)
+                stdout, stderr = self._captured_output()
                 raise AssertionError(f"shared server exited {self.process.returncode}: {stdout}\n{stderr}")
             if Path(self.socket_path).is_socket():
                 return
@@ -119,13 +127,17 @@ class _ServerProcess:
         raise AssertionError("timed out reading fake backend stats")
 
     def close(self) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
         try:
-            self.process.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.communicate(timeout=5)
+            if self.process.poll() is None:
+                self.process.terminate()
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=5)
+        finally:
+            self._stdout.close()
+            self._stderr.close()
 
 
 @contextmanager
@@ -170,7 +182,7 @@ class SharedDetectorSubprocessIntegrationTests(SimpleTestCase):
             client = SharedPiiPipeline(socket_path=server.socket_path, deadline_s=10)
             with concurrent.futures.ThreadPoolExecutor(max_workers=24) as executor:
                 results = list(executor.map(client, [f"Alice {index}" for index in range(24)]))
-            stats = server.stats()
+            stats = _wait_for_stat(server, "completed", 24)
 
         self.assertEqual(len(results), 24)
         self.assertTrue(all(result[0]["entity_group"] == "FIRSTNAME" for result in results))
@@ -273,6 +285,14 @@ def _memory_mib(pid: int) -> tuple[float, float | None]:
     return int(completed.stdout.strip()) / 1024, None
 
 
+def _sized_realistic_text(size: int) -> str:
+    seed = (
+        "Please review the account notes for the customer before tomorrow's meeting. "
+        "連絡先と予約内容を確認して、必要な変更を担当者へ共有してください。 "
+    )
+    return (seed * math.ceil(size / len(seed)))[:size]
+
+
 @skipUnless(os.environ.get("PII_REAL_MODEL_TESTS") == "1", "Set PII_REAL_MODEL_TESTS=1 for D7 measurements")
 class SharedDetectorRealModelTests(SimpleTestCase):
     def test_d7_parity_latency_and_soak(self):
@@ -288,6 +308,15 @@ class SharedDetectorRealModelTests(SimpleTestCase):
         except RuntimeError:
             pass
         torch.use_deterministic_algorithms(True)
+        model_source = os.environ.get(
+            "PII_MODEL_PATH",
+            "lakshyakh93/deberta_finetuned_pii@a038061af92047b0afbbd5ca07d7aa0521789379",
+        )
+        print(
+            f"D7 PLATFORM platform={platform.platform()} machine={platform.machine()} "
+            f"cpu_count={os.cpu_count()} python={platform.python_version()} "
+            f"torch={torch.__version__} model={model_source}"
+        )
 
         golden_rows = json.loads(Path(golden_check.GOLDEN_PATH).read_text())
         corpus = [row["text"] for row in golden_rows] + [case.text for case in CASES]
@@ -344,41 +373,50 @@ class SharedDetectorRealModelTests(SimpleTestCase):
             ):
                 self.assertEqual(golden_check.main(), 0)
 
-            latency_inputs = {size: "😀" * size for size in (200, 8000, 10000, 20000)}
-            for size, text in latency_inputs.items():
-                sequential = []
-                for _index in range(10):
-                    started = time.perf_counter()
-                    shared(text)
-                    sequential.append((time.perf_counter() - started) * 1000)
-                print(
-                    f"D7 LATENCY size={size} mode=sequential n=10 "
-                    f"p50_ms={_percentile(sequential, 0.50):.3f} "
-                    f"p95_ms={_percentile(sequential, 0.95):.3f} "
-                    f"p99_ms={_percentile(sequential, 0.99):.3f}"
-                )
+            sequential_calls = int(os.environ.get("PII_D7_SEQUENTIAL_CALLS", "50"))
+            burst_rounds = int(os.environ.get("PII_D7_BURST_ROUNDS", "3"))
+            latency_inputs = {
+                "unicode4": {size: "😀" * size for size in (200, 8000, 10000, 20000)},
+                "realistic": {size: _sized_realistic_text(size) for size in (200, 8000, 10000, 20000)},
+            }
+            for input_class, sized_inputs in latency_inputs.items():
+                for size, text in sized_inputs.items():
+                    sequential = []
+                    for _index in range(sequential_calls):
+                        started = time.perf_counter()
+                        shared(text)
+                        sequential.append((time.perf_counter() - started) * 1000)
+                    print(
+                        f"D7 LATENCY class={input_class} size={size} mode=sequential n={sequential_calls} "
+                        f"p50_ms={_percentile(sequential, 0.50):.3f} "
+                        f"p95_ms={_percentile(sequential, 0.95):.3f} "
+                        f"p99_ms={_percentile(sequential, 0.99):.3f}"
+                    )
 
-                barrier = threading.Barrier(24)
+                    burst = []
+                    for _round in range(burst_rounds):
+                        barrier = threading.Barrier(24)
 
-                def burst_call(text=text, barrier=barrier):
-                    barrier.wait()
-                    started = time.perf_counter()
-                    shared(text)
-                    return (time.perf_counter() - started) * 1000
+                        def burst_call(text=text, barrier=barrier):
+                            barrier.wait()
+                            started = time.perf_counter()
+                            shared(text)
+                            return (time.perf_counter() - started) * 1000
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=24) as executor:
-                    burst = list(executor.map(lambda _index: burst_call(), range(24)))
-                print(
-                    f"D7 LATENCY size={size} mode=burst24 n=24 "
-                    f"p50_ms={_percentile(burst, 0.50):.3f} "
-                    f"p95_ms={_percentile(burst, 0.95):.3f} "
-                    f"p99_ms={_percentile(burst, 0.99):.3f}"
-                )
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=24) as executor:
+                            burst.extend(executor.map(lambda _index: burst_call(), range(24)))
+                    print(
+                        f"D7 LATENCY class={input_class} size={size} mode=burst24 "
+                        f"n={len(burst)} rounds={burst_rounds} "
+                        f"p50_ms={_percentile(burst, 0.50):.3f} "
+                        f"p95_ms={_percentile(burst, 0.95):.3f} "
+                        f"p99_ms={_percentile(burst, 0.99):.3f}"
+                    )
 
-            soak_calls = int(os.environ.get("PII_SHARED_SOAK_CALLS", "500"))
+            soak_calls = int(os.environ.get("PII_SHARED_SOAK_CALLS", "2000"))
             samples = []
-            short_text = latency_inputs[200]
-            long_text = latency_inputs[20000]
+            short_text = latency_inputs["realistic"][200]
+            long_text = latency_inputs["realistic"][20000]
             for index in range(1, soak_calls + 1):
                 shared(short_text if index % 2 else long_text)
                 if index % 100 == 0:

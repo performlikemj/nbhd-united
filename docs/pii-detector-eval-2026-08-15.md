@@ -301,8 +301,8 @@ neural call fails. Their Presidio-redacted text remains unchanged.
 
 The 5-second deadline and queue depth 64 are PR1 rollout defaults, not final
 production choices. Fable sets them from the measurements before the transport
-flip. The directive requires the deadline to be at least three times the
-20,000-character burst p99; this run therefore requires at least 21.460 s.
+flip. The fix-round macOS baseline's worst burst p99 was 6.706 s, so three times
+that result is 20.118 s. The production-image rerun decides the final values.
 
 ### Protocol v1
 
@@ -344,36 +344,55 @@ D7 PARITY: raw_spans=IDENTICAL detect_pii=IDENTICAL texts=159
 PII golden-set OK: 54 phrases (34 clean / 20 control) all pass
 ```
 
-Latency inputs consist entirely of four-byte UTF-8 characters. Sequential
-figures use 10 calls per size; burst figures use one simultaneous 24-thread
-burst. Percentiles use nearest rank.
+The gated defaults are 50 sequential calls, three simultaneous 24-thread burst
+rounds with percentiles over all 72 samples, and a 2,000-call soak. This local
+run used 20 sequential calls, two burst rounds (48 combined samples), and 500
+soak calls. Inputs cover both four-byte UTF-8 characters and a high-token mixed
+English/Japanese workload. Percentiles use nearest rank.
 
-| Characters | Mode | n | p50 ms | p95 ms | p99 ms |
-|---:|---|---:|---:|---:|---:|
-| 200 | sequential | 10 | 165.208 | 171.804 | 171.804 |
-| 200 | burst24 | 24 | 1974.161 | 3779.015 | 3941.579 |
-| 8,000 | sequential | 10 | 264.423 | 276.198 | 276.198 |
-| 8,000 | burst24 | 24 | 4698.991 | 7899.775 | 8161.821 |
-| 10,000 | sequential | 10 | 266.794 | 270.170 | 270.170 |
-| 10,000 | burst24 | 24 | 3270.744 | 7698.277 | 8155.833 |
-| 20,000 | sequential | 10 | 343.126 | 492.845 | 492.845 |
-| 20,000 | burst24 | 24 | 3907.159 | 6886.936 | 7153.179 |
+```text
+D7 PLATFORM platform=macOS-27.0-arm64-arm-64bit machine=arm64 cpu_count=14 python=3.12.13 torch=2.13.0 model=lakshyakh93/deberta_finetuned_pii@a038061af92047b0afbbd5ca07d7aa0521789379
+```
+
+| Input class | Characters | Mode | n | p50 ms | p95 ms | p99 ms |
+|---|---:|---|---:|---:|---:|---:|
+| four-byte Unicode | 200 | sequential | 20 | 177.464 | 183.488 | 184.393 |
+| four-byte Unicode | 200 | burst24 × 2 | 48 | 2110.267 | 4029.325 | 4215.586 |
+| four-byte Unicode | 8,000 | sequential | 20 | 268.264 | 274.523 | 275.615 |
+| four-byte Unicode | 8,000 | burst24 × 2 | 48 | 3243.223 | 6201.015 | 6467.926 |
+| four-byte Unicode | 10,000 | sequential | 20 | 271.633 | 281.749 | 281.963 |
+| four-byte Unicode | 10,000 | burst24 × 2 | 48 | 3436.184 | 6433.873 | 6705.759 |
+| four-byte Unicode | 20,000 | sequential | 20 | 275.179 | 279.830 | 279.902 |
+| four-byte Unicode | 20,000 | burst24 × 2 | 48 | 3318.452 | 6334.654 | 6615.474 |
+| realistic EN/JA | 200 | sequential | 20 | 33.596 | 36.204 | 40.100 |
+| realistic EN/JA | 200 | burst24 × 2 | 48 | 415.561 | 796.909 | 830.248 |
+| realistic EN/JA | 8,000 | sequential | 20 | 264.086 | 268.145 | 269.318 |
+| realistic EN/JA | 8,000 | burst24 × 2 | 48 | 3194.286 | 6101.910 | 6369.480 |
+| realistic EN/JA | 10,000 | sequential | 20 | 264.531 | 268.956 | 270.385 |
+| realistic EN/JA | 10,000 | burst24 × 2 | 48 | 3201.166 | 6114.876 | 6380.432 |
+| realistic EN/JA | 20,000 | sequential | 20 | 266.960 | 273.521 | 276.653 |
+| realistic EN/JA | 20,000 | burst24 × 2 | 48 | 3227.729 | 6164.642 | 6434.536 |
+
+These macOS measurements are an attributable development baseline only. The
+production-image run decides the final deadline and queue defaults before the
+transport flip.
 
 ### D7 soak
 
-The initial 2,000-call attempt projected beyond the 20-minute task limit, so the
-specified reduced soak used 500 alternating 200/20,000-character calls.
+The test default is 2,000 calls. This local fix-round run used the specified
+`PII_SHARED_SOAK_CALLS=500` override with alternating realistic
+200/20,000-character calls.
 
 | Calls | RSS MiB | PSS MiB |
 |---:|---:|---:|
-| 100 | 627.969 | unavailable on macOS |
-| 200 | 624.266 | unavailable on macOS |
-| 300 | 634.469 | unavailable on macOS |
-| 400 | 634.469 | unavailable on macOS |
-| 500 | 634.469 | unavailable on macOS |
+| 100 | 685.203 | unavailable on macOS |
+| 200 | 685.203 | unavailable on macOS |
+| 300 | 685.219 | unavailable on macOS |
+| 400 | 685.281 | unavailable on macOS |
+| 500 | 685.281 | unavailable on macOS |
 
 ```text
-D7 SOAK RESULT calls=500 rss_high_mib=634.469 pss_high_mib=NA last_quarter_growth_pct=0.000 plateau=YES
+D7 SOAK RESULT calls=500 rss_high_mib=685.281 pss_high_mib=NA last_quarter_growth_pct=0.000 plateau=YES
 ```
 
 RSS plateaued (last-quarter growth 0.000%). PSS is unavailable on this macOS
