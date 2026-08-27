@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import socket
@@ -13,6 +14,7 @@ from typing import Any
 
 from apps.pii.config import DEFAULT_DETECTOR_ENGINE, resolve_detector_engine
 
+logger = logging.getLogger(__name__)
 PROTOCOL_VERSION = 1
 DEFAULT_SOCKET_PATH = "/run/nbhd/pii-detector.sock"
 DEFAULT_DEADLINE_S = 5.0
@@ -31,6 +33,18 @@ _SERVER_ERRORS = {
     "inference_failed",
 }
 _BREAKER_OUTCOMES = {"timeout", "connect", "protocol", "engine_mismatch", "bad_response"}
+
+
+def _length_bucket(length: int) -> str:
+    if length <= 255:
+        return "0-255"
+    if length <= 1023:
+        return "256-1023"
+    if length <= 8191:
+        return "1024-8191"
+    if length <= 19999:
+        return "8192-19999"
+    return "20000+"
 
 
 class SharedPiiError(Exception):
@@ -172,16 +186,32 @@ class SharedPiiPipeline:
             if half_open or self._consecutive_failures >= _BREAKER_FAILURE_LIMIT:
                 self._open_until = self._clock() + _BREAKER_OPEN_S
 
+    def _log_call(self, *, outcome: str, started: float, text_length: int, span_count: int) -> None:
+        logger.info(
+            "pii_detector_client engine=%s transport=shared outcome=%s latency_ms=%.3f len_bucket=%s span_count=%d",
+            self.engine,
+            outcome,
+            (time.monotonic() - started) * 1000,
+            _length_bucket(text_length),
+            span_count,
+        )
+
     def __call__(self, text: str) -> list[dict[str, Any]]:
+        started = time.monotonic()
+        text_length = len(text) if isinstance(text, str) else 0
         if not isinstance(text, str):
+            self._log_call(outcome="bad_response", started=started, text_length=0, span_count=0)
             raise SharedPiiError("shared detector input must be text", outcome="bad_response")
-        half_open = self._before_call()
+        half_open = False
         try:
+            half_open = self._before_call()
             spans = self._call(text)
         except SharedPiiError as exc:
             self._record_failure(exc.outcome, half_open)
+            self._log_call(outcome=exc.outcome, started=started, text_length=text_length, span_count=0)
             raise
         self._record_success()
+        self._log_call(outcome="ok", started=started, text_length=text_length, span_count=len(spans))
         return spans
 
     def _call(self, text: str) -> list[dict[str, Any]]:

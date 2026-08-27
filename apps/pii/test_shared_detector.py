@@ -131,6 +131,25 @@ class SharedTransportSelectionTests(SimpleTestCase):
 
 
 class SharedPiiClientTests(SimpleTestCase):
+    def test_shape_only_client_telemetry_never_logs_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "pii.sock")
+            response = {
+                "v": 1,
+                "engine": "deberta",
+                "spans": [{"entity_group": "EMAIL", "score": 0.9, "start": 0, "end": 3}],
+            }
+            with (
+                _scripted_server(path, response),
+                self.assertLogs("apps.pii.shared_client", level="INFO") as captured,
+            ):
+                SharedPiiPipeline(socket_path=path)("secret@example.com")
+
+        event = captured.output[-1]
+        self.assertIn("pii_detector_client engine=deberta transport=shared outcome=ok", event)
+        self.assertIn("len_bucket=0-255 span_count=1", event)
+        self.assertNotIn("secret@example.com", event)
+
     def test_success_fully_materializes_spans(self):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "pii.sock")
@@ -275,6 +294,28 @@ class SharedPiiClientTests(SimpleTestCase):
 
 
 class SharedPiiServerTests(SimpleTestCase):
+    def test_shape_only_server_telemetry_never_logs_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "pii.sock")
+            with (
+                _running_server(path, lambda _text: []),
+                self.assertLogs("apps.pii.shared_server", level="INFO") as captured,
+            ):
+                self.assertEqual(SharedPiiPipeline(socket_path=path)("secret@example.com"), [])
+
+        event = next(line for line in captured.output if "pii_detector_server engine=" in line)
+        for field in (
+            "outcome=ok",
+            "queue_ms=",
+            "inference_ms=",
+            "total_ms=",
+            "len_bucket=0-255",
+            "span_count=0",
+            "queue_depth=",
+        ):
+            self.assertIn(field, event)
+        self.assertNotIn("secret@example.com", event)
+
     def test_ping_and_success(self):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "pii.sock")

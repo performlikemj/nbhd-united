@@ -278,3 +278,119 @@ Destroying test database for alias 'default'...
 - The flag is process-wide, not tenant-scoped. A true canary-tenant flip needs
   an isolated canary revision/container and routing rather than changing the
   shared production container's environment in place.
+
+## 2026-08-27 addendum — shared DeBERTa detector process
+
+PR1 adds a transport choice without changing the selected detector engine.
+`PII_DETECTOR_TRANSPORT=local` remains the deploy default; `shared` moves model
+inference into one supervised process per container while Presidio stays in
+each application process. The checked redaction APIs now report
+`reason=neural-unavailable` instead of confirming a receipt whenever the
+neural call fails. Their Presidio-redacted text remains unchanged.
+
+### Flags and defaults
+
+| Environment variable | Default | Purpose |
+|---|---|---|
+| `PII_DETECTOR_ENGINE` | `deberta` | Model loaded locally or by the shared process (`deberta` or `liquid`). |
+| `PII_DETECTOR_TRANSPORT` | `local` | `local` preserves per-process loading; `shared` uses the Unix socket. |
+| `PII_SHARED_SOCKET` | `/run/nbhd/pii-detector.sock` | Unix socket created mode-private by the sidecar. |
+| `PII_SHARED_DEADLINE_S` | `5.0` | One client deadline covering connect, queue, inference, and framing. |
+| `PII_SHARED_QUEUE_MAX` | `64` | Bounded FIFO depth ahead of the single inference thread. |
+| `PII_SHARED_WARM_WAIT_S` | `90` | Gunicorn worker readiness-ping window; failure still binds HTTP and fails open with unconfirmed receipts. |
+
+The 5-second deadline and queue depth 64 are PR1 rollout defaults, not final
+production choices. Fable sets them from the measurements before the transport
+flip. The directive requires the deadline to be at least three times the
+20,000-character burst p99; this run therefore requires at least 21.460 s.
+
+### Protocol v1
+
+The server runs as `python -m apps.pii.shared_server`. Each call opens one Unix
+socket connection, writes one frame, reads one frame, and closes. There are no
+request IDs, persistent connections, pipelining, or database access. A frame is
+a four-byte unsigned big-endian body length followed by UTF-8 JSON. Request and
+response bodies are capped at 1 MiB, and success responses at 4,096 spans.
+
+- Detection request: `{"v":1,"engine":"deberta","text":"…","ttl_ms":N}`.
+- Readiness request: `{"v":1,"ping":true}`.
+- Readiness response: `{"v":1,"ready":true|false,"engine":"…","protocol":1}`.
+- Success response: `{"v":1,"engine":"…","spans":[{"entity_group":"…","score":0.0,"start":0,"end":1}]}`.
+- Error response: `{"v":1,"error":"queue_full|expired|engine_mismatch|bad_request|too_large|not_ready|inference_failed"}`.
+
+The client validates and materializes the complete response before returning.
+Three consecutive transport/protocol failures open its circuit for 30 seconds;
+one half-open probe is allowed after that interval. Both client and server emit
+only shape telemetry. `pii_detector_client` records engine, transport, outcome,
+latency, character-length bucket, and span count. `pii_detector_server` records
+engine, outcome, queue/inference/total times, character-length bucket, span
+count, and queue depth. Buckets are `0-255`, `256-1023`, `1024-8191`,
+`8192-19999`, and `20000+`; neither event contains input text or payloads.
+
+### D7 parity and latency
+
+The offline cached production DeBERTa model was run locally and through a real
+shared-server subprocess. Raw protocol spans and final `_detect_pii` spans were
+identical across 159 golden-plus-eval inputs. The 54-phrase golden check also
+passed through the real shared server.
+
+```text
+D7 PARITY: raw_spans=IDENTICAL detect_pii=IDENTICAL texts=159
+PII golden-set OK: 54 phrases (34 clean / 20 control) all pass
+```
+
+Latency inputs consist entirely of four-byte UTF-8 characters. Sequential
+figures use 10 calls per size; burst figures use one simultaneous 24-thread
+burst. Percentiles use nearest rank.
+
+| Characters | Mode | n | p50 ms | p95 ms | p99 ms |
+|---:|---|---:|---:|---:|---:|
+| 200 | sequential | 10 | 165.208 | 171.804 | 171.804 |
+| 200 | burst24 | 24 | 1974.161 | 3779.015 | 3941.579 |
+| 8,000 | sequential | 10 | 264.423 | 276.198 | 276.198 |
+| 8,000 | burst24 | 24 | 4698.991 | 7899.775 | 8161.821 |
+| 10,000 | sequential | 10 | 266.794 | 270.170 | 270.170 |
+| 10,000 | burst24 | 24 | 3270.744 | 7698.277 | 8155.833 |
+| 20,000 | sequential | 10 | 343.126 | 492.845 | 492.845 |
+| 20,000 | burst24 | 24 | 3907.159 | 6886.936 | 7153.179 |
+
+### D7 soak
+
+The initial 2,000-call attempt projected beyond the 20-minute task limit, so the
+specified reduced soak used 500 alternating 200/20,000-character calls.
+
+| Calls | RSS MiB | PSS MiB |
+|---:|---:|---:|
+| 100 | 627.969 | unavailable on macOS |
+| 200 | 624.266 | unavailable on macOS |
+| 300 | 634.469 | unavailable on macOS |
+| 400 | 634.469 | unavailable on macOS |
+| 500 | 634.469 | unavailable on macOS |
+
+```text
+D7 SOAK RESULT calls=500 rss_high_mib=634.469 pss_high_mib=NA last_quarter_growth_pct=0.000 plateau=YES
+```
+
+RSS plateaued (last-quarter growth 0.000%). PSS is unavailable on this macOS
+executor because `/proc/<pid>/smaps_rollup` does not exist; the gated test reads
+real RSS and PSS from that file automatically when run on Linux and never
+infers PSS from RSS.
+
+### Transport flip and rollback
+
+The flip is a one-line PR changing the workflow's durable
+`PII_DETECTOR_TRANSPORT` value from `local` to `shared`. Inform MJ first, deploy
+the resulting single revision, then force one Telegram, one HTTP/iOS, and one
+LINE redaction. For the first hour require non-`ok` client outcomes below 1%,
+zero `queue_full` plus `expired`, zero sidecar/worker/container restarts, p99
+below half the configured deadline, and at least 800 MiB cgroup headroom. Also
+capture per-process RSS/PSS, run the deployed-image golden check, and send a
+known neural-only PII leak probe through every channel; its receipt must be
+confirmed and its placeholder present.
+
+Rollback owner is Fable with a target under 15 minutes: revert the flip PR. The
+emergency stop-bleeding lever, used only while that revert lands, is:
+
+```sh
+az containerapp update -n <ACA_APP> -g <RG> --set-env-vars PII_DETECTOR_TRANSPORT=local
+```

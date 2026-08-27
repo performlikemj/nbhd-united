@@ -27,6 +27,7 @@ from apps.pii.shared_client import (
     MAX_RESPONSE_BYTES,
     MAX_SPANS,
     PROTOCOL_VERSION,
+    _length_bucket,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,8 @@ class _Job:
     text: str
     deadline: float
     queued_at: float
+    received_at: float
+    queue_depth: int
     done: threading.Event = field(default_factory=threading.Event)
     response: dict[str, Any] | None = None
     cancelled: bool = False
@@ -223,6 +226,37 @@ class SharedDetectorServer:
                 self._fake_stats["completed"] += 1
                 self._write_fake_stats()
 
+    def _log_event(
+        self,
+        *,
+        outcome: str,
+        text_length: int,
+        queue_ms: float = 0.0,
+        inference_ms: float = 0.0,
+        total_ms: float = 0.0,
+        span_count: int = 0,
+        queue_depth: int | None = None,
+        exception_name: str | None = None,
+    ) -> None:
+        fields = (
+            "pii_detector_server engine=%s outcome=%s queue_ms=%.3f inference_ms=%.3f "
+            "total_ms=%.3f len_bucket=%s span_count=%d queue_depth=%d"
+        )
+        values = (
+            self.engine,
+            outcome,
+            queue_ms,
+            inference_ms,
+            total_ms,
+            _length_bucket(text_length),
+            span_count,
+            self._jobs.qsize() if queue_depth is None else queue_depth,
+        )
+        if exception_name:
+            logger.error(fields + " exception=%s", *values, exception_name)
+        else:
+            logger.info(fields, *values)
+
     def _prepare_socket(self) -> socket.socket:
         path = Path(self.socket_path)
         if not path.parent.exists():
@@ -290,8 +324,11 @@ class SharedDetectorServer:
                 _configure_determinism()
             self._pipeline = self.pipeline_loader(self.engine)
         except Exception as exc:
-            logger.error(
-                "pii_detector_server engine=%s outcome=not_ready exception=%s", self.engine, type(exc).__name__
+            self._log_event(
+                outcome="not_ready",
+                text_length=0,
+                total_ms=(time.monotonic() - started) * 1000,
+                exception_name=type(exc).__name__,
             )
             self.stopped.set()
             return
@@ -305,6 +342,8 @@ class SharedDetectorServer:
                 continue
             if job is None:
                 return
+            inference_started = time.monotonic()
+            queue_ms = (inference_started - job.queued_at) * 1000
             disconnected = _client_disconnected(job.connection)
             if job.cancelled or time.monotonic() >= job.deadline or disconnected:
                 if job.cancel_reason == "disconnect" or disconnected:
@@ -313,7 +352,17 @@ class SharedDetectorServer:
                     self._fake_increment("expired")
                 job.response = {"v": PROTOCOL_VERSION, "error": "expired"}
                 job.done.set()
+                self._log_event(
+                    outcome="expired",
+                    text_length=len(job.text),
+                    queue_ms=queue_ms,
+                    total_ms=(time.monotonic() - job.received_at) * 1000,
+                    queue_depth=job.queue_depth,
+                )
                 continue
+            outcome = "ok"
+            span_count = 0
+            exception_name = None
             try:
                 assert self._pipeline is not None
                 raw_spans = list(self._pipeline(job.text))
@@ -324,14 +373,26 @@ class SharedDetectorServer:
                 if len(_encode_response(response)) - 4 > MAX_RESPONSE_BYTES:
                     response = {"v": PROTOCOL_VERSION, "error": "too_large"}
                 job.response = response
+                span_count = len(spans)
             except Exception as exc:
-                logger.error(
-                    "pii_detector_server engine=%s outcome=inference_failed exception=%s",
-                    self.engine,
-                    type(exc).__name__,
-                )
+                outcome = "inference_failed"
+                exception_name = type(exc).__name__
                 job.response = {"v": PROTOCOL_VERSION, "error": "inference_failed"}
             finally:
+                finished = time.monotonic()
+                if job.cancelled:
+                    outcome = "expired"
+                    span_count = 0
+                self._log_event(
+                    outcome=outcome,
+                    text_length=len(job.text),
+                    queue_ms=queue_ms,
+                    inference_ms=(finished - inference_started) * 1000,
+                    total_ms=(finished - job.received_at) * 1000,
+                    span_count=span_count,
+                    queue_depth=job.queue_depth,
+                    exception_name=exception_name,
+                )
                 job.done.set()
 
     @staticmethod
@@ -363,11 +424,17 @@ class SharedDetectorServer:
         return {"entity_group": entity_group, "score": float(score), "start": int(start), "end": int(end)}
 
     def _handle_connection(self, connection: socket.socket) -> None:
+        received_at = time.monotonic()
         try:
             try:
                 request = _read_request(connection)
             except _FrameError as exc:
                 self._send(connection, {"v": PROTOCOL_VERSION, "error": exc.code})
+                self._log_event(
+                    outcome=exc.code,
+                    text_length=0,
+                    total_ms=(time.monotonic() - received_at) * 1000,
+                )
                 return
             if request == {"v": PROTOCOL_VERSION, "ping": True}:
                 self._send(
@@ -380,23 +447,52 @@ class SharedDetectorServer:
                     },
                 )
                 return
+            text_length = len(request.get("text", "")) if isinstance(request.get("text"), str) else 0
             error = self._validate_request(request)
             if error:
                 self._send(connection, {"v": PROTOCOL_VERSION, "error": error})
+                self._log_event(
+                    outcome=error,
+                    text_length=text_length,
+                    total_ms=(time.monotonic() - received_at) * 1000,
+                )
                 return
             if not self.ready.is_set():
                 self._send(connection, {"v": PROTOCOL_VERSION, "error": "not_ready"})
+                self._log_event(
+                    outcome="not_ready",
+                    text_length=text_length,
+                    total_ms=(time.monotonic() - received_at) * 1000,
+                )
                 return
             deadline = time.monotonic() + request["ttl_ms"] / 1000
             if deadline <= time.monotonic():
                 self._send(connection, {"v": PROTOCOL_VERSION, "error": "expired"})
+                self._log_event(
+                    outcome="expired",
+                    text_length=text_length,
+                    total_ms=(time.monotonic() - received_at) * 1000,
+                )
                 return
-            job = _Job(connection=connection, text=request["text"], deadline=deadline, queued_at=time.monotonic())
+            queued_at = time.monotonic()
+            job = _Job(
+                connection=connection,
+                text=request["text"],
+                deadline=deadline,
+                queued_at=queued_at,
+                received_at=received_at,
+                queue_depth=self._jobs.qsize(),
+            )
             try:
                 self._jobs.put_nowait(job)
             except queue.Full:
                 self._fake_increment("queue_full")
                 self._send(connection, {"v": PROTOCOL_VERSION, "error": "queue_full"})
+                self._log_event(
+                    outcome="queue_full",
+                    text_length=text_length,
+                    total_ms=(time.monotonic() - received_at) * 1000,
+                )
                 return
             while not job.done.wait(0.01):
                 if _client_disconnected(connection):
