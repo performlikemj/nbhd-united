@@ -46,15 +46,15 @@ _CANT_DO_HEADING = "## What You Can't Do"
 # email provenance, sautai, tour guide, journal shaping, and Gravity):
 #
 #   cap                                   24,000
-#   template alone                        16,003
-#   MJ-shaped gates + 1,500 extras        22,324
+#   template alone                        15,040
+#   MJ-shaped gates + 1,500 extras        21,361
 #   ALL gates, no extras                  measured by the pin below
 #   ALL gates + 1,500 extras              intentionally pinned as a known gap
 #
 # The ceiling here is therefore the strongest TRUE statement available, not the one we
 # wish were true. Do not "fix" a red test by widening it — that is deleting the alarm.
 # Fund growth with a trim (the cc1602aa / a5fca659 precedent).
-_ALL_GATES_CEILING = 23_950
+_ALL_GATES_CEILING = 22_769
 
 
 def _agents_md(tenant=None) -> str:
@@ -196,6 +196,17 @@ class MaximalTenantBudgetTest(TestCase):
             "TAIL silently, and the tail is always the newest behavioural rule.",
         )
 
+    def test_rules_delivery_r0_all_gates_budget(self):
+        md = _agents_md(self._tenant(all_gates=True))
+        # rules-delivery R0 (2026-08-27): Tier I diet; raise only when funded by a trim or per the P5 size policy
+        self.assertLessEqual(
+            len(md),
+            22_759,
+            "the D5 Reddit fallback plus the pinned subagent anchor costs 56 chars "
+            "above the original 22,703 Tier I-only target; do not raise this measured "
+            "R0 pin without review",
+        )
+
     def test_an_mj_shaped_tenant_fits_under_the_cap(self):
         """The shape actually shipping today: MJ's four gates + his ~1.5K of extras."""
         md = _agents_md(self._tenant(all_gates=False, extras=1500))
@@ -209,7 +220,7 @@ class MaximalTenantBudgetTest(TestCase):
     def test_KNOWN_GAP_all_gates_plus_extras_exceeds_the_cap(self):
         """KNOWN_GAP — arbitrary tenant extras can still overflow the fixed cap.
 
-        A tenant with every gate AND 1,500 chars of prompt_extras renders 25,451
+        A tenant with every gate AND 1,500 chars of prompt_extras renders 24,261
         chars against a 24,000 cap: silently truncated, newest rule first.
 
         Pinned green here so the gap is COUNTED rather than hidden behind an
