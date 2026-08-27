@@ -120,7 +120,7 @@ class ProvisionalMintTests(TestCase):
         self.assertNotIn("provisional", self.tenant.pii_entity_map["[PERSON_1]"])
 
     @override_settings(PII_PROVISIONAL_TENANT_IDS=frozenset())
-    def test_expired_binding_reactivates_before_current_redaction(self):
+    def test_expired_binding_reactivates_only_in_raw_sighting_recorder(self):
         self.tenant.pii_entity_map = {
             "[PERSON_1]": {
                 "name": "Fakenamealpha",
@@ -134,12 +134,31 @@ class ProvisionalMintTests(TestCase):
         self.tenant.save(update_fields=["pii_entity_map"])
         with patch("apps.pii.redactor._detect_pii", return_value=[]):
             redacted = redact_user_message("Fakenamealpha", self.tenant, ingress=self.ingress)
+        self.tenant.refresh_from_db()
+        self.assertEqual(redacted, "Fakenamealpha")
+        self.assertTrue(self.tenant.pii_entity_map["[PERSON_1]"]["retired"])
         record_provisional_sightings(self.tenant, "Fakenamealpha", self.ingress)
         self.tenant.refresh_from_db()
-        self.assertEqual(redacted, "[PERSON_1]")
         self.assertEqual(set(self.tenant.pii_entity_map), {"[PERSON_1]"})
         self.assertFalse(self.tenant.pii_entity_map["[PERSON_1]"].get("retired", False))
         self.assertEqual(len(self.tenant.pii_entity_map["[PERSON_1]"]["seen_events"]), 1)
+
+    def test_quoted_assistant_text_does_not_reactivate(self):
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": {
+                "name": "Fakenamealpha",
+                "provisional": True,
+                "retired": True,
+                "retired_reason": "provisional-expired",
+            }
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+        framed = '[Replying to assistant: "Fakenamealpha"]\n\nOrdinary owner text'
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            redact_user_message(framed, self.tenant, ingress=self.ingress)
+        self.assertEqual(record_provisional_sightings(self.tenant, "Ordinary owner text", self.ingress), [])
+        self.tenant.refresh_from_db()
+        self.assertTrue(self.tenant.pii_entity_map["[PERSON_1]"]["retired"])
 
 
 class SightingRecorderTests(TestCase):
@@ -198,6 +217,21 @@ class SightingRecorderTests(TestCase):
         )
         self.tenant.refresh_from_db()
         self.assertEqual(len(self.tenant.pii_entity_map["[PERSON_1]"]["seen_events"]), 2)
+
+    def test_permanent_sibling_blocks_expired_reactivation(self):
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": {
+                "name": "Fakenamealpha",
+                "provisional": True,
+                "retired": True,
+                "retired_reason": "provisional-expired",
+            },
+            "[PERSON_2]": {"name": "Fakenamealpha"},
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+        self.assertEqual(self._record("event-1", datetime(2026, 8, 28, 1, tzinfo=UTC)), [])
+        self.tenant.refresh_from_db()
+        self.assertTrue(self.tenant.pii_entity_map["[PERSON_1]"]["retired"])
 
     def test_recurrence_telemetry_contains_no_content_identifiers(self):
         ingress = PiiIngress(

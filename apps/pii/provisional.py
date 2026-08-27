@@ -64,94 +64,73 @@ def _event_digest(tenant, ingress: PiiIngress) -> str | None:
     return sha256(material).hexdigest()[:32]
 
 
-def reactivate_provisional_matches(tenant, raw_text: str, ingress: PiiIngress) -> list[TransitionResult]:
-    """Reactivate the deterministic expired binding for each matching value."""
-    if not raw_text:
-        return []
-
-    from apps.pii.redactor import known_value_matches
-
-    grouped: dict[str, list[tuple[str, Any]]] = {}
-    for placeholder, raw in (getattr(tenant, "pii_entity_map", None) or {}).items():
-        name = get_name(raw)
-        key = canonical_key(name)
-        if key and known_value_matches(raw_text, name):
-            grouped.setdefault(key, []).append((placeholder, raw))
-
-    targets: list[str] = []
-    for entries in grouped.values():
-        if any(not is_retired(raw) for _placeholder, raw in entries):
-            continue
-        expired = [
-            item
-            for item in entries
-            if isinstance(item[1], dict) and item[1].get("retired_reason") == "provisional-expired"
-        ]
-        if expired:
-            # Newest last sighting wins; placeholder makes equal timestamps deterministic.
-            targets.append(max(expired, key=lambda item: (item[1].get("last_seen_at") or "", item[0]))[0])
-
-    results = []
-    for placeholder in targets:
-        result = transition_binding(tenant, placeholder, "reactivate", now=ingress.occurred_at)
-        results.append(result)
-        if result.outcome == "reactivated":
-            logging.getLogger(__name__).info("pii_policy_reactivate tenant=%s", tenant.pk)
-    return results
-
-
 def record_provisional_sightings(tenant, raw_owner_text: str, ingress: PiiIngress) -> list[TransitionResult]:
-    """Record one raw provider event against every matching provisional value."""
+    """Record one raw provider event using complete-map selection under lock."""
     digest = _event_digest(tenant, ingress)
     if not digest or not raw_owner_text:
         return []
 
     from apps.pii.redactor import known_value_matches
 
-    grouped: dict[str, list[tuple[str, Any]]] = {}
-    for placeholder, raw in (getattr(tenant, "pii_entity_map", None) or {}).items():
-        name = get_name(raw)
-        key = canonical_key(name)
-        if not key or not known_value_matches(raw_owner_text, name):
-            continue
-        if isinstance(raw, dict) and (raw.get("provisional") or raw.get("retired_reason") == "provisional-expired"):
-            grouped.setdefault(key, []).append((placeholder, raw))
-
-    targets: list[str] = []
-    for entries in grouped.values():
-        active = [(placeholder, raw) for placeholder, raw in entries if not is_retired(raw)]
-        if active:
-            targets.extend(placeholder for placeholder, raw in active if raw.get("provisional"))
-            continue
-        expired = [item for item in entries if item[1].get("retired_reason") == "provisional-expired"]
-        if expired:
-            # Newest last sighting wins; placeholder makes equal timestamps deterministic.
-            targets.append(max(expired, key=lambda item: (item[1].get("last_seen_at") or "", item[0]))[0])
-
     results = []
     local_date = _local_date(tenant, ingress.occurred_at)
-    for placeholder in targets:
-        before = (getattr(tenant, "pii_entity_map", None) or {}).get(placeholder)
-        was_expired = isinstance(before, dict) and before.get("retired_reason") == "provisional-expired"
-        result = transition_binding(
-            tenant,
-            placeholder,
-            "count",
-            now=ingress.occurred_at,
-            event_digest=digest,
-            local_date=local_date,
-        )
-        results.append(result)
-        entry = result.entry or {}
-        logging.getLogger(__name__).info(
-            "pii_policy_recurrence tenant=%s channel=%s seen_events=%d promoted=%d",
-            tenant.pk,
-            ingress.channel,
-            len(entry.get("seen_events") or []),
-            int(result.outcome == "promoted"),
-        )
-        if was_expired and result.outcome in {"reactivated", "counted", "promoted"}:
-            logging.getLogger(__name__).info("pii_policy_reactivate tenant=%s", tenant.pk)
+    with transaction.atomic():
+        locked = type(tenant).objects.select_for_update().filter(pk=tenant.pk).first()
+        if locked is None:
+            return []
+        entity_map = dict(locked.pii_entity_map or {})
+        grouped: dict[str, list[tuple[str, Any]]] = {}
+        for placeholder, raw in entity_map.items():
+            name = get_name(raw)
+            key = canonical_key(name)
+            if key and known_value_matches(raw_owner_text, name):
+                grouped.setdefault(key, []).append((placeholder, raw))
+
+        targets: list[tuple[str, bool]] = []
+        for entries in grouped.values():
+            active = [(placeholder, raw) for placeholder, raw in entries if not is_retired(raw)]
+            if active:
+                targets.extend(
+                    (placeholder, False)
+                    for placeholder, raw in active
+                    if isinstance(raw, dict) and raw.get("provisional")
+                )
+                continue
+            expired = [
+                item
+                for item in entries
+                if isinstance(item[1], dict) and item[1].get("retired_reason") == "provisional-expired"
+            ]
+            if expired:
+                # Newest last sighting wins; placeholder makes equal timestamps deterministic.
+                placeholder, _raw = max(
+                    expired,
+                    key=lambda item: (item[1].get("last_seen_at") or "", item[0]),
+                )
+                targets.append((placeholder, True))
+
+        for placeholder, was_expired in targets:
+            result = transition_binding(
+                locked,
+                placeholder,
+                "count",
+                now=ingress.occurred_at,
+                event_digest=digest,
+                local_date=local_date,
+                block_active_siblings=was_expired,
+            )
+            results.append(result)
+            entry = result.entry or {}
+            logging.getLogger(__name__).info(
+                "pii_policy_recurrence tenant=%s channel=%s seen_events=%d promoted=%d",
+                tenant.pk,
+                ingress.channel,
+                len(entry.get("seen_events") or []),
+                int(result.outcome == "promoted"),
+            )
+            if was_expired and result.outcome in {"reactivated", "counted", "promoted"}:
+                logging.getLogger(__name__).info("pii_policy_reactivate tenant=%s", tenant.pk)
+        tenant.pii_entity_map = locked.pii_entity_map
     return results
 
 
@@ -183,6 +162,7 @@ def transition_binding(
     local_date: str | None = None,
     promoted_by: str | None = None,
     expires_before: datetime | None = None,
+    block_active_siblings: bool = False,
 ) -> TransitionResult:
     """Re-read and transition one binding under the tenant row lock.
 
@@ -207,6 +187,22 @@ def transition_binding(
             entry = to_storage_value(name, existing=raw)
             owner_retired = entry.get("retired_reason") == "owner"
             blocked = is_denied(denylist, name) or owner_retired or _is_globally_blocked(placeholder, name)
+            if block_active_siblings and entry.get("retired_reason") == "provisional-expired":
+                target_key = canonical_key(name)
+                for sibling_placeholder, sibling_raw in entity_map.items():
+                    if sibling_placeholder == placeholder or is_retired(sibling_raw):
+                        continue
+                    if canonical_key(get_name(sibling_raw)) != target_key:
+                        continue
+                    sibling = to_storage_value(get_name(sibling_raw), existing=sibling_raw)
+                    if (
+                        not sibling.get("provisional")
+                        or sibling.get("promoted_at")
+                        or sibling.get("promoted_by")
+                        or sibling.get("reviewed_at")
+                    ):
+                        blocked = True
+                        break
             promoted = bool(entry.get("promoted_at") or entry.get("promoted_by"))
             changed = False
             outcome = "noop"

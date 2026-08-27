@@ -1578,12 +1578,6 @@ def _redact_user_message(
     ingress: PiiIngress | None = None,
 ) -> str:
     """Internal: redact user message with known + new entity detection."""
-    if ingress is not None:
-        # Reactivate before the known-value pass so the current occurrence uses
-        # its historical placeholder even when the neural detector misses it.
-        from apps.pii.provisional import reactivate_provisional_matches
-
-        reactivate_provisional_matches(tenant, text, ingress)
     existing_map = getattr(tenant, "pii_entity_map", None) or {}
     denylist = getattr(tenant, "pii_denylist", None) or {}
 

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from io import StringIO
+from threading import Barrier
 
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.db import close_old_connections
+from django.test import TestCase, TransactionTestCase, override_settings
 
 from apps.pii.junk_sweep import _classify
 from apps.pii.provisional import PiiIngress, record_provisional_sightings
@@ -128,3 +131,56 @@ class ProvisionalExpiryTests(TestCase):
         call_command("expire_provisional_bindings", "--retire-all", stdout=StringIO())
         retired.refresh_from_db()
         self.assertEqual(retired.pii_entity_map["[PERSON_1]"]["retired_reason"], "rollback")
+
+
+class ProvisionalRecorderSweepRaceTests(TransactionTestCase):
+    reset_sequences = True
+
+    def test_concurrent_recorder_and_sweep_leave_binding_active(self):
+        now = datetime(2026, 8, 28, 12, tzinfo=UTC)
+        tenant = _tenant(
+            {
+                "[PERSON_1]": {
+                    "name": "Fakenamealpha",
+                    "provisional": True,
+                    "last_seen_at": "2026-08-20T00:00:00+00:00",
+                    "seen_events": [],
+                    "seen_dates": [],
+                }
+            }
+        )
+        barrier = Barrier(2)
+
+        def record():
+            close_old_connections()
+            try:
+                worker_tenant = Tenant.objects.get(pk=tenant.pk)
+                barrier.wait()
+                return record_provisional_sightings(
+                    worker_tenant,
+                    "Fakenamealpha returned",
+                    PiiIngress(channel="fixture", provider_event_id="race-return", occurred_at=now),
+                )
+            finally:
+                close_old_connections()
+
+        def sweep():
+            close_old_connections()
+            try:
+                worker_tenant = Tenant.objects.get(pk=tenant.pk)
+                barrier.wait()
+                return sweep_tenant(worker_tenant, now=now)
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            record_future = executor.submit(record)
+            sweep_future = executor.submit(sweep)
+            record_future.result(timeout=10)
+            sweep_future.result(timeout=10)
+
+        tenant.refresh_from_db()
+        entry = tenant.pii_entity_map["[PERSON_1]"]
+        self.assertFalse(entry.get("retired", False))
+        self.assertEqual(len(entry["seen_events"]), 1)
+        self.assertEqual(entry["last_seen_at"], now.isoformat())
