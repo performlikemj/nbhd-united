@@ -416,6 +416,31 @@ class SiriRespondTest(TestCase):
 
     @patch("apps.router.pending_queue.httpx.post")
     @patch("apps.router.siri_views._placeholder_snapshot", return_value="STATE")
+    @patch("apps.common.openrouter.chat_completion", return_value=_completion("[[ESCALATE]]"))
+    def test_escalated_siri_mints_without_counting(self, _cc, _snap, mock_post):
+        from apps.pii.redactor import DetectedEntity
+
+        mock_post.return_value = _ok_drain_response()
+        detected = [DetectedEntity("PERSON", 0, 13, 0.99)]
+        with (
+            override_settings(PII_PROVISIONAL_TENANT_IDS=frozenset({str(self.tenant.pk)})),
+            patch("apps.pii.redactor._detect_pii", return_value=detected),
+        ):
+            resp = self.client.post(
+                "/api/v1/siri/respond/",
+                {"intent": "Fakenamealpha", "client_msg_id": "siri-escalated-1"},
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.tenant.refresh_from_db()
+        entry = self.tenant.pii_entity_map["[PERSON_1]"]
+        self.assertTrue(entry["provisional"])
+        self.assertEqual(entry["seen_events"], [])
+        self.assertEqual(entry["seen_dates"], [])
+
+    @patch("apps.router.pending_queue.httpx.post")
+    @patch("apps.router.siri_views._placeholder_snapshot", return_value="STATE")
     @patch("apps.common.openrouter.chat_completion", side_effect=RuntimeError("openrouter down"))
     def test_escalates_on_model_error(self, _cc, _snap, mock_post):
         mock_post.return_value = _ok_drain_response()

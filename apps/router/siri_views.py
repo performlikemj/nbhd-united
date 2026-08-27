@@ -277,6 +277,7 @@ class SiriRespondView(APIView):
             text=intent,
             thread=thread,
             client_msg_id=client_msg_id,
+            ingress_origin="siri",
         )
         return _no_store(
             Response(

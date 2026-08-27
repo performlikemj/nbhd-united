@@ -570,6 +570,7 @@ def enqueue_tenant_turn(
     image_ext: str = "jpg",
     document: bytes | None = None,
     document_ext: str = "pdf",
+    ingress_origin: str = "ios",
 ):
     """Create a PENDING ``AppChatMessage`` and enqueue a Tier-3 OpenClaw turn.
 
@@ -714,9 +715,16 @@ def enqueue_tenant_turn(
     from apps.pii.provisional import PiiIngress, record_provisional_sightings
     from apps.pii.redactor import redact_user_message_checked
 
-    ingress = PiiIngress(channel="ios", provider_event_id=client_msg_id, occurred_at=timezone.now())
+    if ingress_origin not in {"ios", "siri"}:
+        raise ValueError(f"unsupported ingress_origin: {ingress_origin}")
+    ingress = PiiIngress(
+        channel=ingress_origin,
+        provider_event_id=None if ingress_origin == "siri" else client_msg_id,
+        occurred_at=timezone.now(),
+    )
     redaction = redact_user_message_checked(text, tenant, ingress=ingress)
-    record_provisional_sightings(tenant, text, ingress)
+    if ingress.provider_event_id is not None:
+        record_provisional_sightings(tenant, text, ingress)
     redacted_text = redaction.text
     # Per-turn transparency metadata: which of the user's real values were
     # obfuscated behind placeholders before this turn reached the assistant.
