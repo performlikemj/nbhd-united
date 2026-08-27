@@ -8,7 +8,7 @@ from pathlib import Path
 
 import environ
 
-from apps.pii.config import resolve_detector_engine
+from apps.pii.config import resolve_detector_engine, resolve_detector_transport
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -26,6 +26,9 @@ ALLOWED_HOSTS = env("ALLOWED_HOSTS")
 # established DeBERTa engine; Liquid remains available only by explicit opt-in.
 PII_DETECTOR_ENGINE = resolve_detector_engine(
     env("PII_DETECTOR_ENGINE", default="deberta"),
+)
+PII_DETECTOR_TRANSPORT = resolve_detector_transport(
+    env("PII_DETECTOR_TRANSPORT", default="local"),
 )
 
 # Django 6.1 enforces this cap on request.body reads, including DRF JSON
