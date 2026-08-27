@@ -159,6 +159,29 @@ class ProvisionalExpiryTests(TestCase):
         retired.refresh_from_db()
         self.assertEqual(retired.pii_entity_map["[PERSON_1]"]["retired_reason"], "rollback")
 
+    def test_report_includes_both_legacy_shapes_and_excludes_ineligible_rows(self):
+        tenant = _tenant(
+            {
+                "[PERSON_1]": "Fakenamealpha",
+                "[LOCATION_2]": {"name": "Fakeplacebeta", "future_field": "preserved"},
+                "[PERSON_3]": {"name": "Fakenamegamma", "reviewed_at": self.NOW.isoformat()},
+                "[PERSON_4]": {"name": "Fakenamedelta", "retired": True},
+                "[PERSON_5]": {"name": "Fakenameepsilon", "provisional": True},
+                "[PERSON_6]": {"name": "Fakenamezeta"},
+            },
+            denylist={"fakenamezeta": {"reason": "fixture"}},
+        )
+        stdout = StringIO()
+
+        call_command("expire_provisional_bindings", "--report", stdout=stdout)
+
+        report = stdout.getvalue()
+        self.assertIn(f"tenant={tenant.pk} placeholder=[PERSON_1]", report)
+        self.assertIn(f"tenant={tenant.pk} placeholder=[LOCATION_2]", report)
+        for excluded in ("[PERSON_3]", "[PERSON_4]", "[PERSON_5]", "[PERSON_6]"):
+            self.assertNotIn(excluded, report)
+        self.assertIn("affected=2 dry_run=0", report)
+
 
 class ProvisionalRecorderSweepRaceTests(TransactionTestCase):
     reset_sequences = True

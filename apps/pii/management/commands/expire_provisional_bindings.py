@@ -34,10 +34,13 @@ class Command(BaseCommand):
                 if options["report"]:
                     kind = placeholder.removeprefix("[").split("_", 1)[0]
                     name = get_name(entry)
+                    metadata = entry if isinstance(entry, dict) else {}
                     if (
                         kind in {"PERSON", "LOCATION"}
                         and len(name.split()) == 1
-                        and not isinstance(entry, dict)
+                        and not metadata.get("reviewed_at")
+                        and not metadata.get("retired")
+                        and not metadata.get("provisional")
                         and not is_denied(tenant.pii_denylist, name)
                     ):
                         self.stdout.write(f"tenant={tenant.pk} placeholder={placeholder}")
