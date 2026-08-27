@@ -30,6 +30,7 @@ ACCESS_LIFETIME_MINUTES = 15
 REFRESH_LIFETIME_DAYS = 60
 POLL_DEADLINE_SECONDS = 900.0
 READ_DEADLINE_SECONDS = 60.0
+CLEANUP_DEADLINE_SECONDS = 15.0
 
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,189}$")
 _CURSOR_RE = re.compile(r"^[A-Za-z0-9_-]{1,510}={0,2}$")
@@ -328,14 +329,18 @@ class NBHDClient:
         self.access_token, self.refresh_token = access, refresh
         profile = self._tenant_gate(access, deadline=deadline)
         try:
-            keychain.write_credentials(keychain.Credentials(access=access, refresh=refresh))
+            keychain.write_credentials(
+                keychain.Credentials(access=access, refresh=refresh),
+                deadline=deadline,
+                monotonic=self.monotonic,
+            )
         except keychain.KeychainError as exc:
             raise AuthenticationError("could not store credentials in Keychain") from exc
         return profile
 
     def authenticate(self, *, deadline: float) -> dict[str, Any]:
         try:
-            credentials = keychain.read_credentials()
+            credentials = keychain.read_credentials(deadline=deadline, monotonic=self.monotonic)
         except keychain.KeychainError as exc:
             raise AuthenticationError("credentials unavailable; run login") from exc
         self.access_token, self.refresh_token = credentials.access, credentials.refresh
@@ -420,7 +425,8 @@ class NBHDClient:
         finally:
             if thread_id is not None:
                 try:
-                    self.delete_thread(thread_id, deadline=deadline)
+                    cleanup_deadline = self.new_deadline(CLEANUP_DEADLINE_SECONDS)
+                    self.delete_thread(thread_id, deadline=cleanup_deadline)
                 except HarnessError:
                     cleanup_reporter()
                     if primary_error is None:
@@ -652,7 +658,11 @@ class NBHDClient:
         self._tenant_gate(access, deadline=deadline)
         credentials = keychain.Credentials(access=access, refresh=rotated_refresh)
         try:
-            keychain.write_credentials(credentials)
+            keychain.write_credentials(
+                credentials,
+                deadline=deadline,
+                monotonic=self.monotonic,
+            )
         except keychain.KeychainError as exc:
             raise AuthenticationError("could not store refreshed credentials") from exc
         self.refresh_token = rotated_refresh

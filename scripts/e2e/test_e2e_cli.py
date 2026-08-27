@@ -355,6 +355,21 @@ class DeadlineTests(unittest.TestCase):
 
 
 class ManagedThreadTests(unittest.TestCase):
+    def test_cleanup_gets_fresh_bounded_budget_after_command_deadline_expires(self):
+        clock = FakeClock()
+        session = FakeSession(
+            [
+                FakeResponse(201, {"id": THREAD_ID, "is_main": False}),
+                FakeResponse(204),
+            ]
+        )
+        client = NBHDClient(session=session, monotonic=clock.monotonic, sleep=clock.sleep)
+        client.access_token = "access-token"
+        with client.managed_thread("fixture", deadline=101.0, cleanup_reporter=lambda: None):
+            clock.value = 102.0
+        self.assertEqual(session.calls[1]["method"], "DELETE")
+        self.assertEqual(session.calls[1]["timeout"], 15.0)
+
     def test_create_validation_failure_deletes_recorded_thread(self):
         session = FakeSession(
             [
@@ -429,8 +444,9 @@ class AtomicKeychainTests(unittest.TestCase):
     @mock.patch("keychain.subprocess.run")
     def test_credential_pair_is_one_json_item_written_via_stdin(self, run):
         run.return_value = subprocess.CompletedProcess([], 0, "", "")
+        clock = FakeClock()
         credentials = keychain.Credentials(access="memory-access", refresh="memory-refresh")
-        keychain.write_credentials(credentials)
+        keychain.write_credentials(credentials, deadline=200.0, monotonic=clock.monotonic)
 
         self.assertEqual(run.call_count, 1)
         argv = run.call_args.args[0]
@@ -443,33 +459,85 @@ class AtomicKeychainTests(unittest.TestCase):
             {"access": "memory-access", "refresh": "memory-refresh"},
         )
         self.assertTrue(run.call_args.kwargs["capture_output"])
+        self.assertEqual(run.call_args.kwargs["timeout"], 30.0)
 
     @mock.patch("keychain.subprocess.run")
     def test_atomic_item_read_is_captured_in_memory(self, run):
         payload = json.dumps({"access": "memory-access", "refresh": "memory-refresh"})
         run.return_value = subprocess.CompletedProcess([], 0, f"{payload}\n", "")
-        credentials = keychain.read_credentials()
+        clock = FakeClock()
+        credentials = keychain.read_credentials(deadline=105.0, monotonic=clock.monotonic)
         self.assertEqual(credentials, keychain.Credentials("memory-access", "memory-refresh"))
         self.assertEqual(run.call_count, 1)
         self.assertTrue(run.call_args.kwargs["capture_output"])
+        self.assertEqual(run.call_args.kwargs["timeout"], 5.0)
 
     @mock.patch("keychain.subprocess.run")
-    def test_legacy_pair_is_migrated_to_one_atomic_item(self, run):
+    def test_non_missing_read_error_does_not_trigger_legacy_fallback(self, run):
+        run.return_value = subprocess.CompletedProcess([], 1, "", "permission denied")
+        clock = FakeClock()
+        with self.assertRaisesRegex(keychain.KeychainError, "read failed"):
+            keychain.read_credentials(deadline=105.0, monotonic=clock.monotonic)
+        self.assertEqual(run.call_count, 1)
+
+    @mock.patch("keychain.subprocess.run")
+    def test_security_timeout_is_bounded_and_content_free(self, run):
+        run.side_effect = subprocess.TimeoutExpired(
+            cmd=["security", "find-generic-password"],
+            timeout=5.0,
+            output="credential-content",
+        )
+        clock = FakeClock()
+        with self.assertRaisesRegex(keychain.KeychainError, "Keychain operation timed out") as raised:
+            keychain.read_credentials(deadline=105.0, monotonic=clock.monotonic)
+        self.assertNotIn("credential-content", str(raised.exception))
+        self.assertEqual(run.call_args.kwargs["timeout"], 5.0)
+
+    @mock.patch("keychain.subprocess.run")
+    def test_legacy_pair_is_verified_then_both_items_are_deleted(self, run):
+        atomic_payload = json.dumps({"access": "legacy-access", "refresh": "legacy-refresh"})
         run.side_effect = [
             subprocess.CompletedProcess([], 44, "", ""),
             subprocess.CompletedProcess([], 0, "legacy-access\n", ""),
             subprocess.CompletedProcess([], 0, "legacy-refresh\n", ""),
             subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 0, f"{atomic_payload}\n", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
         ]
-        credentials = keychain.read_credentials()
+        clock = FakeClock()
+        credentials = keychain.read_credentials(deadline=200.0, monotonic=clock.monotonic)
         self.assertEqual(credentials, keychain.Credentials("legacy-access", "legacy-refresh"))
-        self.assertEqual(run.call_count, 4)
-        write_argv = run.call_args_list[-1].args[0]
+        self.assertEqual(run.call_count, 7)
+        write_argv = run.call_args_list[3].args[0]
         self.assertIn(keychain.CREDENTIALS_ACCOUNT, write_argv)
         self.assertEqual(
-            json.loads(run.call_args_list[-1].kwargs["input"]),
+            json.loads(run.call_args_list[3].kwargs["input"]),
             {"access": "legacy-access", "refresh": "legacy-refresh"},
         )
+        self.assertIn(keychain.CREDENTIALS_ACCOUNT, run.call_args_list[4].args[0])
+        self.assertIn("access", run.call_args_list[5].args[0])
+        self.assertIn("refresh", run.call_args_list[6].args[0])
+        self.assertTrue(all(0 < call.kwargs["timeout"] <= 30 for call in run.call_args_list))
+
+    @mock.patch("keychain.subprocess.run")
+    def test_partial_legacy_deletion_attempts_both_and_raises(self, run):
+        atomic_payload = json.dumps({"access": "legacy-access", "refresh": "legacy-refresh"})
+        run.side_effect = [
+            subprocess.CompletedProcess([], 44, "", ""),
+            subprocess.CompletedProcess([], 0, "legacy-access\n", ""),
+            subprocess.CompletedProcess([], 0, "legacy-refresh\n", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 0, f"{atomic_payload}\n", ""),
+            subprocess.CompletedProcess([], 1, "", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+        clock = FakeClock()
+        with self.assertRaisesRegex(keychain.KeychainError, "cleanup incomplete"):
+            keychain.read_credentials(deadline=200.0, monotonic=clock.monotonic)
+        self.assertEqual(run.call_count, 7)
+        self.assertEqual(run.call_args_list[5].args[0][1], "delete-generic-password")
+        self.assertEqual(run.call_args_list[6].args[0][1], "delete-generic-password")
 
     @mock.patch("client.keychain.write_credentials")
     def test_rotated_refresh_is_persisted_with_access_after_gate(self, write_credentials):
@@ -480,8 +548,13 @@ class AtomicKeychainTests(unittest.TestCase):
         with allowlist_file() as path:
             client = NBHDClient(session=FakeSession(responses), allowed_tenants_path=path)
             client.refresh_token = "old-refresh"
-            client._refresh_and_gate(deadline=client.new_deadline(100))
-        write_credentials.assert_called_once_with(keychain.Credentials(access="new-access", refresh="rotated-refresh"))
+            deadline = client.new_deadline(100)
+            client._refresh_and_gate(deadline=deadline)
+        write_credentials.assert_called_once_with(
+            keychain.Credentials(access="new-access", refresh="rotated-refresh"),
+            deadline=deadline,
+            monotonic=client.monotonic,
+        )
         self.assertEqual(client.refresh_token, "rotated-refresh")
 
     @mock.patch("client.keychain.write_credentials")
@@ -496,9 +569,14 @@ class AtomicKeychainTests(unittest.TestCase):
             client = NBHDClient(session=FakeSession(responses), allowed_tenants_path=path)
             client.access_token = "old-access"
             client.refresh_token = "old-refresh"
-            result = client.history(deadline=client.new_deadline(100))
+            deadline = client.new_deadline(100)
+            result = client.history(deadline=deadline)
         self.assertEqual(result["count"], 0)
-        write_credentials.assert_called_once_with(keychain.Credentials(access="new-access", refresh="rotated-refresh"))
+        write_credentials.assert_called_once_with(
+            keychain.Credentials(access="new-access", refresh="rotated-refresh"),
+            deadline=deadline,
+            monotonic=client.monotonic,
+        )
 
 
 if __name__ == "__main__":

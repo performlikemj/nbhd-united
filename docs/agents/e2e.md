@@ -36,14 +36,14 @@ Thread deletion removes its control-plane chat rows but does not prove OpenClaw 
 1. Provision a dedicated tenant through the normal operator flow. Set `is_synthetic=True`, `is_eval_sink=False`, `model_tier="starter"`, `is_budget_exempt=False`, `purchased_credit=0`, and a small explicit `monthly_cost_budget`. Do not attach Stripe IDs.
 2. Confirm `/api/v1/tenants/me/` exposes `is_synthetic=true` and `is_eval_sink=false`; every command fails closed if either assertion is unavailable.
 3. Replace both placeholders in `scripts/e2e/allowed-tenants.json` with exactly `{"tenant_id":"<canonical UUID4>","email":"<dedicated account email>"}`. Keep it an owner-controlled regular file; symlinks, extra keys, non-UUID4 IDs, invalid emails, and group/world-writable files are refused.
-4. From the repository root, run `.venv/bin/python scripts/e2e/nbhd_e2e.py login`. Enter the password only at the hidden prompt. The email comes only from the allowlist. The password is never stored; the JWT pair uses one atomic JSON item in Keychain service `org.nbhd.e2e`, account `credentials`. A read of the former `access`/`refresh` items migrates them once.
+4. From the repository root, run `.venv/bin/python scripts/e2e/nbhd_e2e.py login`. Enter the password only at the hidden prompt. The email comes only from the allowlist. The password is never stored; the JWT pair uses one atomic JSON item in Keychain service `org.nbhd.e2e`, account `credentials`. A read of the former `access`/`refresh` items migrates them once, verifies the atomic copy, then deletes both legacy items. Every `security` subprocess is capped at 30 seconds and by the command's remaining deadline.
 5. Run `.venv/bin/python scripts/e2e/nbhd_e2e.py smoke`. Add `--follow-up` only when intentionally exercising the optional post-denylist check.
 
 The first smoke changes durable PII fixture state by stopping the name from being hidden. Repeating the full smoke is not guaranteed to recreate the original two-redaction condition; reset requires an operator-reviewed procedure that does not exist in the public harness.
 
 ## Rate limits and polling
 
-Runs are sequential. Login is limited to 30/minute/IP and 10/minute/email; chat send is 300/hour/user. One absolute monotonic deadline covers authentication, HTTP timeouts, `Retry-After`, polling, and cleanup. A retry delay that cannot fit before the deadline is rejected.
+Runs are sequential. Login is limited to 30/minute/IP and 10/minute/email; chat send is 300/hour/user. One absolute monotonic deadline covers authentication, HTTP timeouts, `Retry-After`, and polling. A retry delay that cannot fit before the deadline is rejected. Disposable-thread deletion receives a separate bounded 15-second cleanup deadline so an exhausted poll budget cannot suppress cleanup.
 
 Reply polling mirrors iOS: every 1.5 seconds until 180 seconds, every 5 seconds until 300 seconds, then every 15 seconds to a 900-second ceiling. A terminal reply must be `status=ready`, `source=tenant`, have an empty error, and contain non-empty reply text in memory.
 

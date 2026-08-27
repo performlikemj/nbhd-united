@@ -44,3 +44,11 @@
 - Threaded one absolute monotonic deadline through authentication, requests, `Retry-After`, polling, and managed-thread cleanup. Managed creation records the thread ID before response validation, cleans up validation failures, and reports cleanup failure without replacing a primary error.
 - Replaced split token items with one atomic JSON Keychain item (`account=credentials`), added migration reads from the former items, and persist rotated refresh tokens with the new access token only after the tenant gate passes.
 - Expanded the pure mocked CLI suite to 28 tests covering all nine findings. `ruff check scripts/e2e`, `ruff format --check scripts/e2e`, `py_compile` for every changed Python file, and `git diff --check` pass. The isolated `/tenants/me/` serializer test also passes against a dedicated test database. No real host was contacted.
+
+## Fix round 2
+
+- Disposable-thread deletion now uses a fresh, bounded 15-second monotonic cleanup deadline, including when the command/poll deadline is already exhausted.
+- Keychain reads treat only macOS `errSecItemNotFound` (`security` exit 44) as migration eligibility. Other read failures remain content-free `KeychainError` failures without probing legacy items.
+- Legacy migration now writes and re-reads the atomic credential pair before attempting deletion of both former items. Both deletions are attempted, and any partial failure is reported explicitly without exposing Keychain output.
+- Every `security` read, write, verification, and deletion subprocess receives a timeout capped at 30 seconds and the command's remaining deadline; `TimeoutExpired` becomes a content-free `KeychainError`.
+- The pure mocked suite now has 32 passing tests, including cleanup after deadline exhaustion, exact Keychain error classification, bounded subprocess timeout, verified migration cleanup, and partial deletion. Ruff check and format check pass for `scripts/e2e`.
