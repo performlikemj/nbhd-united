@@ -15,6 +15,28 @@ MAX_SEEN_ITEMS = 8
 
 
 @dataclass(frozen=True)
+class PiiIngress:
+    channel: str
+    provider_event_id: str | None
+    occurred_at: datetime
+
+
+def provisional_creation_enabled(tenant) -> bool:
+    from django.conf import settings
+
+    return str(tenant.pk) in settings.PII_PROVISIONAL_TENANT_IDS
+
+
+def should_mint_provisional(tenant, entity_type: str, original: str, ingress: PiiIngress | None) -> bool:
+    return bool(
+        ingress is not None
+        and provisional_creation_enabled(tenant)
+        and entity_type in {"PERSON", "LOCATION"}
+        and len(original.split()) == 1
+    )
+
+
+@dataclass(frozen=True)
 class TransitionResult:
     changed: bool
     entry: dict[str, Any] | None

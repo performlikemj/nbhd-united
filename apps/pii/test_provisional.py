@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import secrets
 from datetime import UTC, datetime
+from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
-from apps.pii.provisional import transition_binding
+from apps.pii.provisional import PiiIngress, transition_binding
+from apps.pii.redactor import DetectedEntity, redact_user_message
 from apps.tenants.models import Tenant, User
 
 
@@ -57,6 +59,47 @@ class TransitionBindingTests(TestCase):
         result = transition_binding(tenant, "[PERSON_1]", "reactivate", now=self.NOW)
         self.assertFalse(result.changed)
         self.assertEqual(result.outcome, "blocked")
+
+
+class ProvisionalMintTests(TestCase):
+    NOW = datetime(2026, 8, 28, 1, 2, 3, tzinfo=UTC)
+
+    def setUp(self):
+        self.tenant = _tenant(entry={"name": "Existingfixture"})
+        self.tenant.pii_entity_map = {}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        self.ingress = PiiIngress(channel="fixture", provider_event_id="event-1", occurred_at=self.NOW)
+
+    @override_settings(PII_PROVISIONAL_TENANT_IDS=frozenset())
+    def test_flag_off_mints_permanent(self):
+        detected = [DetectedEntity("PERSON", 0, 13, 0.99)]
+        with patch("apps.pii.redactor._detect_pii", return_value=detected):
+            redact_user_message("Fakenamealpha", self.tenant, ingress=self.ingress)
+        self.tenant.refresh_from_db()
+        self.assertNotIn("provisional", self.tenant.pii_entity_map["[PERSON_1]"])
+
+    def test_allowlisted_single_token_person_mints_provisional(self):
+        detected = [DetectedEntity("PERSON", 0, 13, 0.99)]
+        with (
+            override_settings(PII_PROVISIONAL_TENANT_IDS=frozenset({str(self.tenant.pk)})),
+            patch("apps.pii.redactor._detect_pii", return_value=detected),
+        ):
+            redact_user_message("Fakenamealpha", self.tenant, ingress=self.ingress)
+        self.tenant.refresh_from_db()
+        entry = self.tenant.pii_entity_map["[PERSON_1]"]
+        self.assertTrue(entry["provisional"])
+        self.assertEqual(entry["first_seen_at"], self.NOW.isoformat())
+        self.assertEqual(entry["seen_events"], [])
+
+    def test_multi_token_person_remains_permanent(self):
+        detected = [DetectedEntity("PERSON", 0, 27, 0.99)]
+        with (
+            override_settings(PII_PROVISIONAL_TENANT_IDS=frozenset({str(self.tenant.pk)})),
+            patch("apps.pii.redactor._detect_pii", return_value=detected),
+        ):
+            redact_user_message("Fakenamealpha Fakenamesigma", self.tenant, ingress=self.ingress)
+        self.tenant.refresh_from_db()
+        self.assertNotIn("provisional", self.tenant.pii_entity_map["[PERSON_1]"])
 
     def test_denylist_beats_promotion(self):
         tenant = _tenant(

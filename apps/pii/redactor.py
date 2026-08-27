@@ -37,6 +37,7 @@ from apps.pii.entity_registry import (
 )
 
 if TYPE_CHECKING:
+    from apps.pii.provisional import PiiIngress
     from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -1484,6 +1485,7 @@ def redact_user_message(
     *,
     allow_user_name: bool = True,
     mint: str = MINT_ALL,
+    ingress: PiiIngress | None = None,
 ) -> str:
     """Redact PII in a user's message before forwarding to OpenClaw.
 
@@ -1510,6 +1512,7 @@ def redact_user_message(
         tenant,
         allow_user_name=allow_user_name,
         mint=mint,
+        ingress=ingress,
     ).text
 
 
@@ -1519,6 +1522,7 @@ def redact_user_message_checked(
     *,
     allow_user_name: bool = True,
     mint: str = MINT_ALL,
+    ingress: PiiIngress | None = None,
 ) -> RedactionOutcome:
     """Redact a user message and report whether the engine completed.
 
@@ -1536,7 +1540,14 @@ def redact_user_message_checked(
 
     _reset_neural_detector_outcome()
     try:
-        redacted = _redact_user_message(text, tenant, policy, allow_user_name=allow_user_name, mint=mint)
+        redacted = _redact_user_message(
+            text,
+            tenant,
+            policy,
+            allow_user_name=allow_user_name,
+            mint=mint,
+            ingress=ingress,
+        )
     except Exception:
         logger.exception("User message PII redaction failed — returning original")
         return RedactionOutcome(text=text, confirmed=False, reason="redaction-error")
@@ -1552,6 +1563,7 @@ def _redact_user_message(
     *,
     allow_user_name: bool = True,
     mint: str = MINT_ALL,
+    ingress: PiiIngress | None = None,
 ) -> str:
     """Internal: redact user message with known + new entity detection."""
     existing_map = getattr(tenant, "pii_entity_map", None) or {}
@@ -1774,7 +1786,20 @@ def _redact_user_message(
             locked_counters[etype] = count
             placeholder = f"[{etype}_{count}]"
             replacements.append((start, end, placeholder))
-            entry = _entry_storage(original)
+            from apps.pii.provisional import should_mint_provisional
+
+            if should_mint_provisional(tenant, etype, original, ingress):
+                seen_at = ingress.occurred_at.isoformat()
+                entry = _entry_storage(
+                    original,
+                    provisional=True,
+                    first_seen_at=seen_at,
+                    last_seen_at=seen_at,
+                    seen_events=[],
+                    seen_dates=[],
+                )
+            else:
+                entry = _entry_storage(original)
             new_map_entries[placeholder] = entry
             merged[placeholder] = entry
             if ci_key:

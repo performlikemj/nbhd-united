@@ -7,6 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from django.core.exceptions import ImproperlyConfigured
 
 from apps.pii.config import resolve_detector_engine, resolve_detector_transport
 
@@ -30,6 +31,25 @@ PII_DETECTOR_ENGINE = resolve_detector_engine(
 PII_DETECTOR_TRANSPORT = resolve_detector_transport(
     env("PII_DETECTOR_TRANSPORT", default="local"),
 )
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(env(name, default=default))
+    except (TypeError, ValueError) as exc:
+        raise ImproperlyConfigured(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise ImproperlyConfigured(f"{name} must be greater than zero")
+    return value
+
+
+# Creation and sweep gates are deliberately independent. Existing lifecycle
+# state is processed even after a tenant leaves the creation allowlist.
+PII_PROVISIONAL_TENANT_IDS = frozenset(
+    value.strip() for value in env("PII_PROVISIONAL_TENANT_IDS", default="").split(",") if value.strip()
+)
+PII_PROVISIONAL_SWEEP_ENABLED = env.bool("PII_PROVISIONAL_SWEEP_ENABLED", default=False)
+PII_PROVISIONAL_TTL_HOURS = _positive_int_env("PII_PROVISIONAL_TTL_HOURS", 72)
 
 # Django 6.1 enforces this cap on request.body reads, including DRF JSON
 # parsing. iOS base64 document uploads legitimately reach ~14.1 MB (a 10 MiB
