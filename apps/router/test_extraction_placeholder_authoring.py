@@ -7,6 +7,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from apps.journal.models import Goal, PendingExtraction, Task
+from apps.pii.testsupport import neural_ran
 from apps.router.extraction_callbacks import _approve_goal, _approve_task
 from apps.tenants.models import Tenant, User
 
@@ -49,8 +50,8 @@ class ExtractionPlaceholderAuthoringTests(TestCase):
     def test_flag_on_stores_placeholder_and_receipt(self):
         pending = self._pending(enabled=True)
         with (
-            patch("apps.pii.redactor._detect_pii", return_value=[]),
-            patch("apps.pii.authoring._detect_pii", return_value=[]),
+            patch("apps.pii.redactor._detect_pii", side_effect=neural_ran([])),
+            patch("apps.pii.authoring._detect_pii", side_effect=neural_ran([])),
         ):
             _approve_task(pending)
 

@@ -9,6 +9,7 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
+from apps.pii.testsupport import neural_ran
 from apps.tenants.services import create_tenant
 from apps.tenants.test_utils import seed_internal_key
 
@@ -20,8 +21,8 @@ from .serializers import CoreProfileSerializer, MeditationSessionSerializer
 @contextmanager
 def _checked_detection():
     with (
-        patch("apps.pii.redactor._detect_pii", return_value=[]),
-        patch("apps.pii.authoring._detect_pii", return_value=[]),
+        patch("apps.pii.redactor._detect_pii", side_effect=neural_ran([])),
+        patch("apps.pii.authoring._detect_pii", side_effect=neural_ran([])),
     ):
         yield
 

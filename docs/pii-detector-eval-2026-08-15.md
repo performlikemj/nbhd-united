@@ -278,3 +278,143 @@ Destroying test database for alias 'default'...
 - The flag is process-wide, not tenant-scoped. A true canary-tenant flip needs
   an isolated canary revision/container and routing rather than changing the
   shared production container's environment in place.
+
+## 2026-08-27 addendum — shared DeBERTa detector process
+
+PR1 adds a transport choice without changing the selected detector engine.
+`PII_DETECTOR_TRANSPORT=local` remains the deploy default; `shared` moves model
+inference into one supervised process per container while Presidio stays in
+each application process. The checked redaction APIs now report
+`reason=neural-unavailable` instead of confirming a receipt whenever the
+neural call fails. Their Presidio-redacted text remains unchanged.
+
+### Flags and defaults
+
+| Environment variable | Default | Purpose |
+|---|---|---|
+| `PII_DETECTOR_ENGINE` | `deberta` | Model loaded locally or by the shared process (`deberta` or `liquid`). |
+| `PII_DETECTOR_TRANSPORT` | `local` | `local` preserves per-process loading; `shared` uses the Unix socket. |
+| `PII_SHARED_SOCKET` | `/run/nbhd/pii-detector.sock` | Unix socket created mode-private by the sidecar. |
+| `PII_SHARED_DEADLINE_S` | `5.0` | One client deadline covering connect, queue, inference, and framing. |
+| `PII_SHARED_QUEUE_MAX` | `64` | Bounded FIFO depth ahead of the single inference thread. |
+| `PII_SHARED_WARM_WAIT_S` | `90` | Gunicorn worker readiness-ping window; failure still binds HTTP and fails open with unconfirmed receipts. |
+
+The 5-second deadline and queue depth 64 are PR1 rollout defaults, not final
+production choices. Fable sets them from the measurements before the transport
+flip. The fix-round macOS baseline's worst burst p99 was 6.706 s, so three times
+that result is 20.118 s. The production-image rerun decides the final values.
+
+### Protocol v1
+
+The server runs as `python -m apps.pii.shared_server`. Each call opens one Unix
+socket connection, writes one frame, reads one frame, and closes. There are no
+request IDs, persistent connections, pipelining, or database access. A frame is
+a four-byte unsigned big-endian body length followed by UTF-8 JSON. Request and
+response bodies are capped at 1 MiB, and success responses at 4,096 spans.
+
+- Detection request: `{"v":1,"engine":"deberta","text":"…","ttl_ms":N}`.
+- Readiness request: `{"v":1,"ping":true}`.
+- Readiness response: `{"v":1,"ready":true|false,"engine":"…","protocol":1}`.
+- Success response: `{"v":1,"engine":"…","spans":[{"entity_group":"…","score":0.0,"start":0,"end":1}]}`.
+- Error response: `{"v":1,"error":"queue_full|expired|engine_mismatch|bad_request|too_large|not_ready|inference_failed"}`.
+
+The client validates and materializes the complete response before returning.
+Three consecutive transport/protocol failures open its circuit for 30 seconds;
+one half-open probe is allowed after that interval. Both client and server emit
+only shape telemetry. `pii_detector_client` records engine, transport, outcome,
+latency, character-length bucket, and span count. `pii_detector_server` records
+engine, outcome, queue/inference/total times, character-length bucket, span
+count, and queue depth. Buckets are `0-255`, `256-1023`, `1024-8191`,
+`8192-19999`, and `20000+`; neither event contains input text or payloads.
+
+Client outcomes are `ok`, `timeout`, `connect`, `not_ready`, `queue_full`,
+`expired`, `too_large`, `protocol`, `engine_mismatch`, `bad_response`, and
+`circuit_open`. An oversized request is rejected before connection and does not
+advance the circuit breaker.
+
+### D7 parity and latency
+
+The offline cached production DeBERTa model was run locally and through a real
+shared-server subprocess. Raw protocol spans and final `_detect_pii` spans were
+identical across 159 golden-plus-eval inputs. The 54-phrase golden check also
+passed through the real shared server.
+
+```text
+D7 PARITY: raw_spans=IDENTICAL detect_pii=IDENTICAL texts=159
+PII golden-set OK: 54 phrases (34 clean / 20 control) all pass
+```
+
+The gated defaults are 50 sequential calls, three simultaneous 24-thread burst
+rounds with percentiles over all 72 samples, and a 2,000-call soak. This local
+run used 20 sequential calls, two burst rounds (48 combined samples), and 500
+soak calls. Inputs cover both four-byte UTF-8 characters and a high-token mixed
+English/Japanese workload. Percentiles use nearest rank.
+
+```text
+D7 PLATFORM platform=macOS-27.0-arm64-arm-64bit machine=arm64 cpu_count=14 python=3.12.13 torch=2.13.0 model=lakshyakh93/deberta_finetuned_pii@a038061af92047b0afbbd5ca07d7aa0521789379
+```
+
+| Input class | Characters | Mode | n | p50 ms | p95 ms | p99 ms |
+|---|---:|---|---:|---:|---:|---:|
+| four-byte Unicode | 200 | sequential | 20 | 177.464 | 183.488 | 184.393 |
+| four-byte Unicode | 200 | burst24 × 2 | 48 | 2110.267 | 4029.325 | 4215.586 |
+| four-byte Unicode | 8,000 | sequential | 20 | 268.264 | 274.523 | 275.615 |
+| four-byte Unicode | 8,000 | burst24 × 2 | 48 | 3243.223 | 6201.015 | 6467.926 |
+| four-byte Unicode | 10,000 | sequential | 20 | 271.633 | 281.749 | 281.963 |
+| four-byte Unicode | 10,000 | burst24 × 2 | 48 | 3436.184 | 6433.873 | 6705.759 |
+| four-byte Unicode | 20,000 | sequential | 20 | 275.179 | 279.830 | 279.902 |
+| four-byte Unicode | 20,000 | burst24 × 2 | 48 | 3318.452 | 6334.654 | 6615.474 |
+| realistic EN/JA | 200 | sequential | 20 | 33.596 | 36.204 | 40.100 |
+| realistic EN/JA | 200 | burst24 × 2 | 48 | 415.561 | 796.909 | 830.248 |
+| realistic EN/JA | 8,000 | sequential | 20 | 264.086 | 268.145 | 269.318 |
+| realistic EN/JA | 8,000 | burst24 × 2 | 48 | 3194.286 | 6101.910 | 6369.480 |
+| realistic EN/JA | 10,000 | sequential | 20 | 264.531 | 268.956 | 270.385 |
+| realistic EN/JA | 10,000 | burst24 × 2 | 48 | 3201.166 | 6114.876 | 6380.432 |
+| realistic EN/JA | 20,000 | sequential | 20 | 266.960 | 273.521 | 276.653 |
+| realistic EN/JA | 20,000 | burst24 × 2 | 48 | 3227.729 | 6164.642 | 6434.536 |
+
+These macOS measurements are an attributable development baseline only. The
+production-image run decides the final deadline and queue defaults before the
+transport flip.
+
+### D7 soak
+
+The test default is 2,000 calls. This local fix-round run used the specified
+`PII_SHARED_SOAK_CALLS=500` override with alternating realistic
+200/20,000-character calls.
+
+| Calls | RSS MiB | PSS MiB |
+|---:|---:|---:|
+| 100 | 685.203 | unavailable on macOS |
+| 200 | 685.203 | unavailable on macOS |
+| 300 | 685.219 | unavailable on macOS |
+| 400 | 685.281 | unavailable on macOS |
+| 500 | 685.281 | unavailable on macOS |
+
+```text
+D7 SOAK RESULT calls=500 rss_high_mib=685.281 pss_high_mib=NA last_quarter_growth_pct=0.000 plateau=YES
+```
+
+RSS plateaued (last-quarter growth 0.000%). PSS is unavailable on this macOS
+executor because `/proc/<pid>/smaps_rollup` does not exist; the gated test reads
+real RSS and PSS from that file automatically when run on Linux and never
+infers PSS from RSS.
+
+### Transport flip and rollback
+
+The flip is a one-line PR changing the workflow's durable
+`PII_DETECTOR_TRANSPORT` value from `local` to `shared`. Inform MJ first, deploy
+the resulting single revision, then force one Telegram, one HTTP/iOS, and one
+LINE redaction. For the first hour require non-`ok` client outcomes below 1%,
+zero `queue_full` plus `expired`, zero sidecar/worker/container restarts, p99
+below half the configured deadline, and at least 800 MiB cgroup headroom. Also
+capture per-process RSS/PSS, run the deployed-image golden check, and send a
+known neural-only PII leak probe through every channel; its receipt must be
+confirmed and its placeholder present.
+
+Rollback owner is Fable with a target under 15 minutes: revert the flip PR. The
+emergency stop-bleeding lever, used only while that revert lands, is:
+
+```sh
+az containerapp update -n <ACA_APP> -g <RG> --set-env-vars PII_DETECTOR_TRANSPORT=local
+```

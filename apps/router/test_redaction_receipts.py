@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from django.test import TestCase, override_settings
 
 from apps.pii.redactor import RedactionOutcome, redaction_receipt
+from apps.pii.testsupport import neural_ran
 from apps.router.chat_views import enqueue_tenant_turn
 from apps.router.line_webhook import LineWebhookView
 from apps.router.models import BufferedMessage, ChatThread, PendingMessage
@@ -35,7 +36,7 @@ def _tenant(user: User, *, hibernated=False) -> Tenant:
 
 class PendingMessageReceiptTest(TestCase):
     @patch("apps.router.chat_views.enqueue_message_for_tenant")
-    @patch("apps.pii.redactor._redact_user_message", return_value="masked ios")
+    @patch("apps.pii.redactor._redact_user_message", side_effect=neural_ran("masked ios"))
     def test_ios_enqueue_writes_confirmed_receipt(self, _redact, enqueue):
         user = _user(suffix="ios")
         tenant = _tenant(user)
@@ -75,7 +76,7 @@ class PendingMessageReceiptTest(TestCase):
         self.assertEqual(enqueue.call_args.kwargs["user_text_excerpt"], "raw telegram")
 
     @patch("apps.router.pending_queue.enqueue_message_for_tenant")
-    @patch("apps.pii.redactor._redact_user_message", return_value="masked line")
+    @patch("apps.pii.redactor._redact_user_message", side_effect=neural_ran("masked line"))
     def test_line_enqueue_writes_receipt_and_webhook_event_id(self, _redact, enqueue):
         user = _user(suffix="line", line_user_id="Ureceipt")
         tenant = _tenant(user)

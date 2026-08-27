@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -58,6 +59,21 @@ class RedactionOutcome:
     text: str
     confirmed: bool
     reason: str
+
+
+class NeuralDetectorUnavailable(Exception):
+    """The neural detector did not complete, although deterministic checks may have."""
+
+
+_neural_detector_outcome = threading.local()
+
+
+def _reset_neural_detector_outcome() -> None:
+    _neural_detector_outcome.available = None
+
+
+def _neural_detector_available() -> bool | None:
+    return getattr(_neural_detector_outcome, "available", None)
 
 
 _CONFIRMED_REDACTION_TOKEN = object()
@@ -1518,11 +1534,14 @@ def redact_user_message_checked(
     if not policy.get("enabled", False):
         return RedactionOutcome(text=text, confirmed=False, reason="redaction-disabled")
 
+    _reset_neural_detector_outcome()
     try:
         redacted = _redact_user_message(text, tenant, policy, allow_user_name=allow_user_name, mint=mint)
     except Exception:
         logger.exception("User message PII redaction failed — returning original")
         return RedactionOutcome(text=text, confirmed=False, reason="redaction-error")
+    if _neural_detector_available() is not True:
+        return RedactionOutcome(text=redacted, confirmed=False, reason="neural-unavailable")
     return RedactionOutcome(text=redacted, confirmed=True, reason="redacted")
 
 
@@ -1967,7 +1986,9 @@ def _detect_pii(
     try:
         pii_pipeline = get_pii_pipeline()
         model_results = pii_pipeline(detect_text)
+        _neural_detector_outcome.available = True
     except Exception:
+        _neural_detector_outcome.available = False
         model_results = []
 
     for ent in model_results:

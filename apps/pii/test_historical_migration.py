@@ -16,6 +16,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.journal.models import JournalEntry, NoteTemplate, Task
+from apps.pii import redactor as pii_redactor
 from apps.pii.historical_migration import (
     MAX_CHANGED_RECHAINS,
     BatchResult,
@@ -33,6 +34,7 @@ from apps.tenants.models import PlaceholderMigrationCursor, Tenant, User
 
 
 def _detect_names(text, _entities, _threshold):
+    pii_redactor._neural_detector_outcome.available = True
     results = []
     for match in re.finditer(r"Dana Whitfield", text, re.IGNORECASE):
         results.append(DetectedEntity("PERSON", match.start(), match.end(), 0.99))

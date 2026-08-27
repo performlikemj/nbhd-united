@@ -15,6 +15,7 @@ from apps.crypto import box
 from apps.crypto.keys import mint_and_wrap_dek
 from apps.orchestrator.azure_client import _MOCK_KEK_REGISTRY
 from apps.pii.redactor import DetectedEntity, RedactionOutcome, as_confirmed
+from apps.pii.testsupport import neural_ran
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
 from apps.router.pending_queue import (
     DeliveryState,
@@ -490,7 +491,7 @@ class RouterTranscriptLedgerTest(TestCase):
             ]
 
         with (
-            patch("apps.pii.redactor._detect_pii", side_effect=detect) as ner,
+            patch("apps.pii.redactor._detect_pii", side_effect=neural_ran(detect)) as ner,
             patch("apps.router.conversation_capture.schedule_user_md_refresh"),
         ):
             response = client.post(

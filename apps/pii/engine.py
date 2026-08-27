@@ -24,6 +24,7 @@ from apps.pii.config import (
     DEFAULT_DETECTOR_ENGINE,
     SUPPORTED_DETECTOR_ENGINES,
     resolve_detector_engine,
+    resolve_detector_transport,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ _pipeline_load_error: Exception | None = None
 _pattern_recognizers = None
 
 _DETECTOR_ENGINE_ENV = "PII_DETECTOR_ENGINE"
+_DETECTOR_TRANSPORT_ENV = "PII_DETECTOR_TRANSPORT"
 _warned_unknown_detector_engines: set[str] = set()
 
 # HuggingFace repo for the PII model. ``lakshyakh93/deberta_finetuned_pii``
@@ -138,6 +140,10 @@ def get_pii_pipeline():
     error. A selected model failure is therefore re-raised until process
     restart; callers can continue with the shared Presidio recognizers.
     """
+    if resolve_detector_transport(os.environ.get(_DETECTOR_TRANSPORT_ENV)) == "shared":
+        from apps.pii.shared_client import get_shared_pii_pipeline
+
+        return get_shared_pii_pipeline()
     if get_pii_detector_engine() == "liquid":
         from apps.pii.liquid_engine import get_liquid_pii_pipeline
 

@@ -20,8 +20,11 @@ from apps.pii.redactor import (
     MINT_ALL,
     MINT_NEVER,
     MINT_VALIDATED,
+    NeuralDetectorUnavailable,
     _detect_pii,
     _filter_results,
+    _neural_detector_available,
+    _reset_neural_detector_outcome,
     redact_user_message,
     redact_user_message_checked,
 )
@@ -186,11 +189,14 @@ def _residual_summary(
     """
     tier = getattr(tenant, "model_tier", "starter")
     policy = TIER_POLICIES.get(tier, TIER_POLICIES["starter"])
+    _reset_neural_detector_outcome()
     results = _detect_pii(
         text,
         policy.get("entities", []),
         policy.get("score_threshold", 0.7),
     )
+    if _neural_detector_available() is not True:
+        raise NeuralDetectorUnavailable
     denylist = getattr(tenant, "pii_denylist", None) or {}
     results = _filter_results(results, text, set(), denylist=denylist, tenant=tenant)
     placeholder_ranges = [(match.start(), match.end()) for match in _PLACEHOLDER_RE.finditer(text)]
@@ -456,10 +462,11 @@ def author_text(
             live=live,
         )
     if outcome is None or not outcome.confirmed:
-        stored = _redact_active_known_values(tenant, text, seam=f"{seam}:known-fallback")
+        fallback_text = outcome.text if reason == "neural-unavailable" else text
+        stored = _redact_active_known_values(tenant, fallback_text, seam=f"{seam}:known-fallback")
         receipt = {
             "state": "unconfirmed",
-            "reason": "redaction-error",
+            "reason": reason if reason == "neural-unavailable" else "redaction-error",
             "redactions": [],
         }
         return _finalize(
@@ -493,6 +500,12 @@ def author_text(
     if _require_no_residual:
         try:
             residual_spans = _residual_summary(tenant, stored, kinds_to_count=None)
+        except NeuralDetectorUnavailable:
+            receipt = {
+                "state": "unconfirmed",
+                "reason": "neural-unavailable",
+                "redactions": [],
+            }
         except Exception:
             logger.exception(
                 "pii_authoring_residual_detection_error tenant=%s seam=%s field=%s",
@@ -516,6 +529,13 @@ def author_text(
         # unconfirmed/residual.
         try:
             residual_spans = _residual_summary(tenant, stored)
+        except NeuralDetectorUnavailable:
+            stored = _redact_active_known_values(tenant, stored, seam=f"{seam}:known-fallback")
+            receipt = {
+                "state": "unconfirmed",
+                "reason": "neural-unavailable",
+                "redactions": [],
+            }
         except Exception:
             logger.exception(
                 "pii_authoring_residual_detection_error tenant=%s seam=%s field=%s",

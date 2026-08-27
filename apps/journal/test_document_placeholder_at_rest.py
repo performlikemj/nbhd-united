@@ -29,6 +29,7 @@ from rest_framework.test import APIClient
 from apps.journal.document_authoring import as_fts_phrase, merge_field_receipt
 from apps.journal.document_views import _default_markdown
 from apps.journal.models import Document, DocumentChunk, DocumentIngestion, DocumentIngestionArtifact
+from apps.pii.testsupport import neural_ran
 from apps.tenants.models import Tenant, User
 from apps.tenants.test_utils import seed_internal_key
 
@@ -68,7 +69,7 @@ class OwnerDocumentWriteTests(_DocumentPiiBase):
         while PATCH and append both re-redacted, so a document CREATED with a
         real name handed that name to the agent.
         """
-        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+        with patch("apps.pii.redactor._detect_pii", side_effect=neural_ran([])):
             resp = self.client.post(
                 "/api/v1/journal/documents/",
                 {"kind": "project", "slug": "reno", "title": "Alice reno", "markdown": "Call Alice today"},
@@ -163,7 +164,7 @@ class OwnerDocumentWriteTests(_DocumentPiiBase):
                 }
             },
         )
-        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+        with patch("apps.pii.redactor._detect_pii", side_effect=neural_ran([])):
             resp = self.client.post(
                 "/api/v1/journal/documents/daily/2026-08-08/append/",
                 {"content": "Alice again", "time": "10:00"},
@@ -521,7 +522,7 @@ class BackgroundDocumentWriteTests(_DocumentPiiBase):
             text="Call Alice back",
             expires_at=dj_timezone.now(),
         )
-        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+        with patch("apps.pii.redactor._detect_pii", side_effect=neural_ran([])):
             _approve_task(pending)
 
         doc = Document.objects.get(tenant=self.tenant, kind=Document.Kind.TASKS)
