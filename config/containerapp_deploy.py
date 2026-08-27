@@ -14,7 +14,12 @@ import argparse
 import json
 from pathlib import Path
 
-from apps.pii.config import DEFAULT_DETECTOR_ENGINE, SUPPORTED_DETECTOR_ENGINES
+from apps.pii.config import (
+    DEFAULT_DETECTOR_ENGINE,
+    DEFAULT_DETECTOR_TRANSPORT,
+    SUPPORTED_DETECTOR_ENGINES,
+    SUPPORTED_DETECTOR_TRANSPORTS,
+)
 
 _READINESS_PROBE = {
     "failureThreshold": 48,
@@ -57,6 +62,11 @@ def prepare_deployment(
             if value not in SUPPORTED_DETECTOR_ENGINES:
                 supported = ", ".join(sorted(SUPPORTED_DETECTOR_ENGINES))
                 raise ValueError(f"unsupported PII_DETECTOR_ENGINE {value!r}; expected one of: {supported}")
+        if name == "PII_DETECTOR_TRANSPORT":
+            value = value.strip().lower()
+            if value not in SUPPORTED_DETECTOR_TRANSPORTS:
+                supported = ", ".join(sorted(SUPPORTED_DETECTOR_TRANSPORTS))
+                raise ValueError(f"unsupported PII_DETECTOR_TRANSPORT {value!r}; expected one of: {supported}")
         matching_entries = [entry for entry in env_entries if entry.get("name") == name]
         if len(matching_entries) > 1:
             raise ValueError(f"environment variable {name!r} is defined more than once")
@@ -86,6 +96,11 @@ def main() -> None:
         choices=sorted(SUPPORTED_DETECTOR_ENGINES),
         default=DEFAULT_DETECTOR_ENGINE,
     )
+    parser.add_argument(
+        "--pii-detector-transport",
+        choices=sorted(SUPPORTED_DETECTOR_TRANSPORTS),
+        default=DEFAULT_DETECTOR_TRANSPORT,
+    )
     args = parser.parse_args()
 
     app = json.loads(args.spec.read_text())
@@ -98,6 +113,7 @@ def main() -> None:
             "SENTRY_RELEASE": args.sentry_release,
             "DJANGO_BASE_URL": args.django_base_url,
             "PII_DETECTOR_ENGINE": args.pii_detector_engine,
+            "PII_DETECTOR_TRANSPORT": args.pii_detector_transport,
         },
     )
     args.spec.write_text(json.dumps(app, separators=(",", ":")))

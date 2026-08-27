@@ -51,6 +51,7 @@ env:
   ACA_APP: ${{ vars.ACA_APP }}
   SWA_NAME: nbhd-united-frontend
   PII_DETECTOR_ENGINE: deberta
+  PII_DETECTOR_TRANSPORT: local
 
 # Serialize the pipeline so concurrent merges can never race the production
 # deploy. The app runs in single-revision mode (Telegram poller 409 avoidance),
@@ -639,7 +640,8 @@ jobs:
             --openclaw-image-tag ${{ env.OC_IMAGE_TAG }} \
             --sentry-release ${{ github.sha }} \
             --django-base-url https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io \
-            --pii-detector-engine ${{ env.PII_DETECTOR_ENGINE }}
+            --pii-detector-engine ${{ env.PII_DETECTOR_ENGINE }} \
+            --pii-detector-transport ${{ env.PII_DETECTOR_TRANSPORT }}
           az containerapp update \
             --name ${{ env.ACA_APP }} \
             --resource-group ${{ env.AZURE_RG }} \
