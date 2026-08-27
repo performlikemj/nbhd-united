@@ -1,13 +1,14 @@
 """Idle hibernation service — scale-to-zero for inactive tenants.
 
-Tenants whose containers have been idle for 2+ hours get their revisions
-deactivated (0 replicas, 0 cost). When a message arrives, the container
-wakes and buffered messages are auto-forwarded via QStash.
+Tenants whose containers pass the configured idle cutoff get their
+revisions deactivated (0 replicas, 0 cost). When a message arrives, the
+container wakes and buffered messages are auto-forwarded via QStash.
 
 Cron-aware wake: before hibernating, we capture the tenant's cron
 schedules and schedule a QStash task to wake the container just before
-the next cron fires. After 30 minutes, if no user messages arrived, the
-container is re-hibernated (and the next cron wake is scheduled again).
+the next cron fires. After the configured cron-wake idle window, if no user
+messages arrived, the container is re-hibernated (and the next cron wake is
+scheduled again).
 
 This is distinct from billing-based SUSPENDED status — hibernated tenants
 remain status=ACTIVE with a non-null ``hibernated_at`` timestamp.
@@ -20,6 +21,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -42,27 +44,29 @@ logger = logging.getLogger(__name__)
 # user-visible.
 _CRON_WAKE_LEAD_SECONDS = 240
 
-# How long (seconds) to keep a cron-woken container alive before
-# re-hibernating if no user messages arrive.
-_CRON_WAKE_IDLE_SECONDS = 1800  # 30 minutes
-
 # Look-ahead window used by ``check_cron_wake_idle_task`` to decide whether
 # to defer re-hibernation. If another cron is due to fire within this
 # window from "now" (i.e. when the idle check fires), keep the container
 # awake instead of re-hibernating just to cold-start again for the next
-# fire. 90 min covers typical morning patterns (e.g. 7 AM Morning
-# Briefing + 8:30 AM Project Check-in) without holding tenants awake
-# unnecessarily for sparse cron schedules.
-_CRON_LOOKAHEAD_WINDOW_SECONDS = 5400  # 90 minutes
+# fire. The window is configured by ``TENANT_CRON_HOLD_MINUTES``.
 
-# Defer-window used by ``_cron_active_or_imminent`` for hourly sweeps
+# Defer-window used by ``_cron_active_or_imminent`` for periodic sweeps
 # (hibernate-idle, image-bump). Catches the common "sweep fires at :00,
 # user cron fires at :00" race. Wider than the gateway's worst-case
 # response time so a slow cron.list call doesn't accidentally race past
-# the deferral. Smaller than the 90 min look-ahead because that one is
-# about keeping a warm container warm; this one is about not killing
-# a cron mid-fire.
+# the deferral. This fixed five-minute safety guard is distinct from the
+# configurable cron hold window: it prevents killing a cron mid-fire.
 _CRON_DEFER_WINDOW_SECONDS = 300  # 5 minutes
+
+
+def _cron_hold_seconds() -> int:
+    """Configured warm-container hold after a cron wake, in seconds."""
+    return settings.TENANT_CRON_HOLD_MINUTES * 60
+
+
+def _cron_wake_idle_seconds() -> int:
+    """Configured idle re-check delay after a cron-triggered wake, in seconds."""
+    return settings.TENANT_CRON_WAKE_IDLE_MINUTES * 60
 
 
 def hibernate_idle_tenant(tenant: Tenant) -> bool:
@@ -306,7 +310,7 @@ def _next_run_from_expr(expr: str, tz_name: str) -> int | None:
 def _next_cron_within_window(
     tenant: Tenant,
     *,
-    window_seconds: int = _CRON_LOOKAHEAD_WINDOW_SECONDS,
+    window_seconds: int | None = None,
 ) -> int | None:
     """Return ``state.nextRunAtMs`` of the earliest enabled cron firing within
     ``[now, now + window_seconds]``, or ``None`` if no qualifying cron exists.
@@ -338,6 +342,9 @@ def _next_cron_within_window(
     """
     from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.orchestrator.services import _extract_cron_jobs
+
+    if window_seconds is None:
+        window_seconds = _cron_hold_seconds()
 
     jobs: list | None = None
 
@@ -386,7 +393,7 @@ def _cron_active_or_imminent(
     """Return a skip reason if ``tenant`` has a cron mid-flight or about to
     fire within ``window_seconds`` — else ``None``.
 
-    Used by the hourly sweeps (``hibernate_idle_tenants_task``,
+    Used by the periodic sweeps (``hibernate_idle_tenants_task``,
     ``apply_pending_configs``'s image batch) to defer a tenant when killing
     the container right now would interrupt a user-visible cron run. The
     existing backward-looking ``cron_wake_at`` guard only catches tenants
@@ -403,8 +410,8 @@ def _cron_active_or_imminent(
 
     Single live ``cron.list`` services both checks. Conservative on
     failure: returns ``None`` (don't block the sweep) if the gateway is
-    unreachable — the 2h idle cutoff and ``cron_wake_at`` still act as
-    backstops, and the next sweep will retry.
+    unreachable — the configured idle cutoff and ``cron_wake_at`` still
+    act as backstops, and the next sweep will retry.
     """
     from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.orchestrator.services import _extract_cron_jobs
@@ -697,9 +704,9 @@ def _write_deferred_state(tenant: Tenant, *, label: str) -> None:
 def wake_for_cron_task(tenant_id: str) -> dict:
     """Wake a hibernated tenant's container for a scheduled cron job.
 
-    Called by QStash ~2 minutes before the tenant's next cron is due.
-    After 30 minutes, if no user messages arrived, the container is
-    re-hibernated via ``check_cron_wake_idle_task``.
+    Called by QStash about four minutes before the tenant's next cron is due.
+    After the configured cron-wake idle window, if no user messages arrived,
+    the container is re-hibernated via ``check_cron_wake_idle_task``.
     """
     tenant = Tenant.objects.filter(id=tenant_id).first()
     if not tenant:
@@ -744,14 +751,14 @@ def wake_for_cron_task(tenant_id: str) -> dict:
     # Mark this as a cron-triggered wake
     Tenant.objects.filter(id=tenant.id).update(cron_wake_at=timezone.now())
 
-    # Schedule idle check — if no user messages in 30 min, re-hibernate
+    # Schedule the configured idle check; re-hibernate if no user messages arrive.
     try:
         from apps.cron.publish import publish_task
 
         publish_task(
             "check_cron_wake_idle",
             str(tenant.id),
-            delay_seconds=_CRON_WAKE_IDLE_SECONDS,
+            delay_seconds=_cron_wake_idle_seconds(),
         )
     except Exception:
         logger.exception(
@@ -766,10 +773,10 @@ def wake_for_cron_task(tenant_id: str) -> dict:
 def check_cron_wake_idle_task(tenant_id: str) -> dict:
     """Check if a cron-woken tenant should be re-hibernated.
 
-    Called 30 minutes after a cron wake. If no user messages were sent
-    during the wake window, hibernate immediately (which also schedules
-    the next cron wake). If the user messaged, clear ``cron_wake_at``
-    and let normal idle detection handle it.
+    Called after the configured cron-wake idle window. If no user messages
+    were sent during the wake window, hibernate immediately (which also
+    schedules the next cron wake). If the user messaged, clear
+    ``cron_wake_at`` and let normal idle detection handle it.
     """
     tenant = Tenant.objects.filter(id=tenant_id).first()
     if not tenant:
@@ -793,7 +800,7 @@ def check_cron_wake_idle_task(tenant_id: str) -> dict:
     user_messaged = tenant.last_message_at and tenant.last_message_at > tenant.cron_wake_at
 
     if user_messaged:
-        # User is active — hand off to normal idle detection (2h threshold)
+        # User is active — hand off to normal configured idle detection.
         Tenant.objects.filter(id=tenant.id).update(cron_wake_at=None)
         logger.info(
             "check_cron_wake_idle: tenant %s has user activity, staying awake",
@@ -809,10 +816,9 @@ def check_cron_wake_idle_task(tenant_id: str) -> dict:
     upcoming_cron_ms = _next_cron_within_window(tenant)
     if upcoming_cron_ms is not None:
         now_ms = int(timezone.now().timestamp() * 1000)
-        # Re-check 30 min after the upcoming cron fires. If by then no
-        # further cron is due and the user hasn't messaged, we'll
-        # re-hibernate then.
-        delay_seconds = (upcoming_cron_ms - now_ms) // 1000 + _CRON_WAKE_IDLE_SECONDS
+        # Re-check one configured idle window after the upcoming cron fires.
+        # If no further cron is due and the user hasn't messaged, re-hibernate.
+        delay_seconds = (upcoming_cron_ms - now_ms) // 1000 + _cron_wake_idle_seconds()
         try:
             from apps.cron.publish import publish_task
 

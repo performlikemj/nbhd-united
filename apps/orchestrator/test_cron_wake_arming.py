@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.orchestrator import hibernation
@@ -156,3 +156,34 @@ class WakeForCronAlreadyAwakeTests(TestCase):
         # the bug because idle-hibernation arms the next wake.
         mock_capture.assert_not_called()
         mock_schedule.assert_not_called()
+
+    @override_settings(TENANT_CRON_WAKE_IDLE_MINUTES=10)
+    def test_hibernated_path_schedules_ten_minute_idle_check(self):
+        self.tenant.hibernated_at = timezone.now()
+        self.tenant.save(update_fields=["hibernated_at"])
+
+        with (
+            patch.object(hibernation, "wake_hibernated_tenant", return_value=True),
+            patch("apps.cron.publish.publish_task") as mock_publish,
+        ):
+            result = wake_for_cron_task(str(self.tenant.id))
+
+        self.assertEqual(result["status"], "woken_for_cron")
+        mock_publish.assert_called_once_with(
+            "check_cron_wake_idle",
+            str(self.tenant.id),
+            delay_seconds=10 * 60,
+        )
+
+    @override_settings(TENANT_CRON_WAKE_IDLE_MINUTES=7)
+    def test_hibernated_path_uses_idle_check_setting_override(self):
+        self.tenant.hibernated_at = timezone.now()
+        self.tenant.save(update_fields=["hibernated_at"])
+
+        with (
+            patch.object(hibernation, "wake_hibernated_tenant", return_value=True),
+            patch("apps.cron.publish.publish_task") as mock_publish,
+        ):
+            wake_for_cron_task(str(self.tenant.id))
+
+        self.assertEqual(mock_publish.call_args.kwargs["delay_seconds"], 7 * 60)

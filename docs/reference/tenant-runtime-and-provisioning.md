@@ -24,7 +24,7 @@ stateDiagram-v2
     [*] --> PROVISIONING: provision_tenant_task
     PROVISIONING --> ACTIVE: identity+share+container up, status=ACTIVE
     PROVISIONING --> PENDING: any error (retryable, no teardown)
-    ACTIVE --> hibernated: idle >=2h sweep (hibernated_at set, still ACTIVE)
+    ACTIVE --> hibernated: idle >=30m sweep (hibernated_at set, still ACTIVE)
     hibernated --> ACTIVE: drain/cron/API wake (self-heals image)
     ACTIVE --> SUSPENDED: billing lapse
     SUSPENDED --> ACTIVE: invoice.paid reactivation
@@ -133,7 +133,7 @@ Two apply paths, chosen by the fleet router `apply_pending_configs` (referenced,
 
 **Fleet bumps.** `bump_openclaw_atomic_per_tenant_task` (`tasks.py:33`) is the QStash fan-out target for a version+image+DB bump; it delegates to `services.bump_openclaw_version_for_tenant(tenant, target_version, image_tag, registry)` (`services.py:466`), which: snapshots current config bytes for restore (`services.py:516`) → sets `openclaw_version` → `update_tenant_config` (regenerates+pushes config, `services.py:545`) → `update_container_image` (`services.py:549`); **on image-push failure it restores the snapshotted config** so the still-running old image doesn't crash-loop on the new schema (`services.py:560`), then re-raises. `container_image_tag` and any `hibernated_at` clear are set on success (`services.py:573–578`). `image_tag`↔`openclaw_version` lockstep is the single most repeated safety theme in this subsystem.
 
-**Idle sweep entrypoint.** `hibernate_idle_tenants_task` (`tasks.py:807`) is the hourly QStash task; it delegates the decision/action to `hibernation.py` (`hibernate_idle_tenant`, `_cron_active_or_imminent`). USER.md staleness is bounded by the hourly `refresh_user_md_fleet_task` (`tasks.py:916`, `force=True`, includes hibernated tenants since the share is always mounted).
+**Idle sweep entrypoint.** `hibernate_idle_tenants_task` (`tasks.py:807`) is the every-10-minute QStash task; its cutoff comes from `TENANT_IDLE_HIBERNATE_MINUTES` (default 30), and it delegates the decision/action to `hibernation.py` (`hibernate_idle_tenant`, `_cron_active_or_imminent`). USER.md staleness is bounded by the hourly `refresh_user_md_fleet_task` (`tasks.py:916`, `force=True`, includes hibernated tenants since the share is always mounted).
 
 ## Hibernation & wake
 
@@ -147,7 +147,7 @@ Two apply paths, chosen by the fleet router `apply_pending_configs` (referenced,
 
 Then it clears `hibernated_at`, stamps `last_wake_at` (`hibernation.py:530`), forces a config regen if the version synced or `config_version==0` (`hibernation.py:544–563`), and schedules buffered-message delivery (+45s) and cron resume (+60s). **A hibernated tenant is never assumed to be on the fleet image** — it self-heals at wake.
 
-**Cron-wake lookahead.** Constants (`hibernation.py:41–63`): wake lead 240s, post-wake idle 1800s, lookahead window 5400s, sweep-defer window 300s. `wake_for_cron_task` (`hibernation.py:695`) wakes ~2 min before a cron; if already awake it re-arms idempotently and returns `already_awake`. `check_cron_wake_idle_task` (`hibernation.py:764`) 30 min later decides re-hibernate vs. defer (if another cron is imminent). The idle sweep also defers via `_cron_active_or_imminent` (`hibernation.py:379`) if a cron is in-flight or fires within 5 min. This is how a hibernated (zero-cost) tenant still runs scheduled crons.
+**Cron-wake lookahead.** `hibernation.py` wakes 240s before a cron, runs its idle re-check after `TENANT_CRON_WAKE_IDLE_MINUTES` (default 10), and holds a warm container only when another cron is due within `TENANT_CRON_HOLD_MINUTES` (default 20). `wake_for_cron_task` re-arms idempotently when the tenant is already awake. The idle sweep separately defers via `_cron_active_or_imminent` if a cron is in-flight or fires within the fixed 5-minute safety window. This is how a hibernated (zero-cost) tenant still runs scheduled crons without letting sparse schedules hold it awake.
 
 **Idempotency (invariant #5).** `activate_revision`/`deactivate_revision` raise `ResourceExistsError` when a stale `list_revisions` read races a no-op; `_is_already_in_requested_state` (`azure_client.py:1429`) matches only `RevisionAlreadyInRequestedState`/"already active|inactive" and treats it as success — other 409s still propagate. Caller-side guards (`hibernation.py:707`, `:783`) short-circuit double-wake/double-hibernate before any Azure call.
 

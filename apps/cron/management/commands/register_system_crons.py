@@ -74,8 +74,8 @@ SYSTEM_CRONS = [
     # :00 so it doesn't collide with hibernate-idle-tenants or
     # apply-pending-configs (both at :00).
     ("refresh-user-md-fleet", "25 * * * *", "/api/cron/trigger/refresh_user_md_fleet/"),
-    # Every hour — hibernate idle tenants (no messages in 2h)
-    ("hibernate-idle-tenants", "0 * * * *", "/api/cron/trigger/hibernate_idle_tenants/"),
+    # Every 10 min — hibernate tenants past the configured idle cutoff
+    ("hibernate-idle-tenants", "*/10 * * * *", "/api/cron/trigger/hibernate_idle_tenants/"),
     # Daily at 07:00 UTC — clean up delivered message buffers older than 7 days
     # (residual sweeper; delivered/undelivered BufferedMessage rows). Also
     # deletes undelivered raw webhooks older than 30 days (dead-tenant buffers).
