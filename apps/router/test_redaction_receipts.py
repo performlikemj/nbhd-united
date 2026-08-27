@@ -159,7 +159,7 @@ class CoalescedReceiptIntegrityTest(TestCase):
 class TelegramWebhookCaptureReceiptTest(TestCase):
     @patch("apps.router.conversation_capture.record_conversation_turn")
     @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
-    def test_live_webhook_marks_raw_capture_unconfirmed(self, forward, record):
+    def test_live_webhook_reuses_ingress_receipt_for_capture(self, forward, record):
         user = _user(suffix="webhook", telegram_chat_id=8822)
         tenant = _tenant(user)
         forward.return_value = {"choices": [{"message": {"content": "ok"}}]}
@@ -180,6 +180,6 @@ class TelegramWebhookCaptureReceiptTest(TestCase):
             record.call_args.kwargs["source_payload"],
             {
                 "provider_event_id": 6655,
-                "redaction": {"confirmed": False, "reason": "seam-unredacted"},
+                "redaction": {"confirmed": True, "reason": "redacted"},
             },
         )
