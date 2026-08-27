@@ -1540,7 +1540,7 @@ def redact_user_message_checked(
     except Exception:
         logger.exception("User message PII redaction failed — returning original")
         return RedactionOutcome(text=text, confirmed=False, reason="redaction-error")
-    if _neural_detector_available() is False:
+    if _neural_detector_available() is not True:
         return RedactionOutcome(text=redacted, confirmed=False, reason="neural-unavailable")
     return RedactionOutcome(text=redacted, confirmed=True, reason="redacted")
 

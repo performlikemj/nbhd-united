@@ -469,6 +469,13 @@ class AuthorTextTests(TestCase):
         ):
             _residual_summary(self.tenant, "No known private values")
 
+    def test_residual_summary_rejects_unset_neural_outcome(self):
+        with (
+            patch("apps.pii.authoring._detect_pii", return_value=[]),
+            self.assertRaises(NeuralDetectorUnavailable),
+        ):
+            _residual_summary(self.tenant, "No known private values")
+
     def test_empty_and_disabled_reason_codes_are_not_errors(self):
         self.tenant.layer1_placeholder_writes = True
         self.tenant.save(update_fields=["layer1_placeholder_writes"])

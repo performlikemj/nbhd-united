@@ -195,7 +195,7 @@ def _residual_summary(
         policy.get("entities", []),
         policy.get("score_threshold", 0.7),
     )
-    if _neural_detector_available() is False:
+    if _neural_detector_available() is not True:
         raise NeuralDetectorUnavailable
     denylist = getattr(tenant, "pii_denylist", None) or {}
     results = _filter_results(results, text, set(), denylist=denylist, tenant=tenant)

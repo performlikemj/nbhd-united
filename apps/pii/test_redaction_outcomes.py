@@ -1,5 +1,7 @@
+import concurrent.futures
 import os
 import tempfile
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -23,11 +25,61 @@ class RedactionOutcomeTest(SimpleTestCase):
     def setUp(self):
         self.tenant = SimpleNamespace(model_tier="starter")
 
-    @patch("apps.pii.redactor._redact_user_message", return_value="hello [PERSON_1]")
-    def test_completed_redaction_is_confirmed(self, _redact):
-        outcome = redact_user_message_checked("hello Alice", self.tenant)
+    def test_completed_redaction_is_confirmed(self):
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=lambda _text: []),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+        ):
+            outcome = redact_user_message_checked("hello world", self.tenant)
 
-        self.assertEqual(outcome, RedactionOutcome("hello [PERSON_1]", True, "redacted"))
+        self.assertEqual(outcome, RedactionOutcome("hello world", True, "redacted"))
+
+    @patch("apps.pii.redactor._redact_user_message", return_value="hello world")
+    def test_unset_neural_outcome_is_unavailable(self, _redact):
+        outcome = redact_user_message_checked("hello world", self.tenant)
+
+        self.assertEqual(outcome, RedactionOutcome("hello world", False, "neural-unavailable"))
+
+    def test_same_thread_success_failure_success_resets_outcome(self):
+        calls = iter((True, False, True))
+
+        def pipeline(_text):
+            if next(calls):
+                return []
+            raise RuntimeError("synthetic unavailable")
+
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=pipeline),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+        ):
+            outcomes = [redact_user_message_checked(f"message {index}", self.tenant) for index in range(3)]
+
+        self.assertEqual([outcome.confirmed for outcome in outcomes], [True, False, True])
+        self.assertEqual([outcome.reason for outcome in outcomes], ["redacted", "neural-unavailable", "redacted"])
+
+    def test_thread_local_outcomes_do_not_leak_across_threads(self):
+        barrier = threading.Barrier(8)
+
+        def pipeline(text):
+            barrier.wait()
+            if text.startswith("failure"):
+                raise RuntimeError("synthetic unavailable")
+            return []
+
+        def redact(index):
+            kind = "failure" if index % 2 else "success"
+            return kind, redact_user_message_checked(f"{kind} {index}", self.tenant)
+
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=pipeline),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+            concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor,
+        ):
+            outcomes = list(executor.map(redact, range(8)))
+
+        for kind, outcome in outcomes:
+            self.assertEqual(outcome.confirmed, kind == "success")
+            self.assertEqual(outcome.reason, "redacted" if kind == "success" else "neural-unavailable")
 
     def test_disabled_redaction_is_unconfirmed_and_fail_open(self):
         disabled = {"enabled": False, "entities": []}
