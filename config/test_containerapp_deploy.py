@@ -157,7 +157,7 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
         self.assertIn("python3 -m config.containerapp_deploy", workflow)
         self.assertIn('--yaml "$DEPLOY_SPEC"', workflow)
         self.assertIn("PII_DETECTOR_ENGINE: deberta", workflow)
-        self.assertIn("PII_DETECTOR_TRANSPORT: local", workflow)
+        self.assertIn("PII_DETECTOR_TRANSPORT: shared", workflow)
         self.assertIn("PII_MODEL_TAG=deberta-only-a038061af92047b0", workflow)
         self.assertIn("--build-arg INCLUDE_LIQUID=false", workflow)
         self.assertIn("shelved Liquid bundle present in serving image", workflow)

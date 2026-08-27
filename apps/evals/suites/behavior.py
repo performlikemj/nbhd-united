@@ -141,11 +141,17 @@ def _drive_scenario(scenario: Scenario, transport: BehaviorTransport, *, wake_aw
     for i, line in enumerate(scenario.script):
         text = line.replace(MARKER_TOKEN, marker) if marker else line
         deadline = FIRST_TURN_DEADLINE_SECONDS if (wake_aware_first_turn and i == 0) else DEFAULT_DEADLINE_SECONDS
+        turn_started_at = now()
         try:
-            turn = transport.send_turn(text=text, deadline_seconds=deadline)
+            kwargs = {"text": text, "deadline_seconds": deadline}
+            if i in scenario.document_turns:
+                kwargs["document"] = True
+            turn = transport.send_turn(**kwargs)
         except Exception:  # noqa: BLE001 — a transport blip is a failed turn, not a run ERROR
             logger.warning("behavior: transport raised on scenario %s (recorded as failed turn)", scenario.id)
             turn = TurnResult(user_text=text, ok=False, error="transport_exception")
+        turn.started_at = turn_started_at
+        turn.completed_at = now()
         run.turns.append(turn)
     return run
 
@@ -322,7 +328,10 @@ def run_behavior_suite(
             # scenario's transcript. A failure to open raises → record_run closes
             # the run ERROR (INVARIANT #3): we never drive a scenario into a prior
             # scenario's (contaminated) scope and quietly report green.
-            active_transport.open_conversation()
+            if scenario.channel == "ios":
+                active_transport.open_conversation()
+            else:
+                active_transport.open_conversation(channel=scenario.channel)
 
             scenario_run = _drive_scenario(scenario, active_transport, wake_aware_first_turn=first_turn_pending)
             first_turn_pending = False

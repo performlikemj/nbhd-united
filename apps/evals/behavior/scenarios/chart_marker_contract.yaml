@@ -1,0 +1,14 @@
+# Raw Telegram-channel replies are inspected before provider relay. Numeric
+# history needs a chart marker; a following generic chart question does not.
+id: chart_marker_contract
+persona: >
+  A Telegram user asking first about their own numeric trend, then a generic
+  conceptual question that should not trigger a personal chart.
+channel: telegram
+script:
+  - "My weekly running distances over the last four weeks were 3 km, 5 km, 4 km, and 7 km. Show me how that changed over time."
+  - "Generally speaking, what does a line chart help people understand?"
+hard_assertions:
+  - type: chart_marker_contract
+  - type: reply_nonempty
+soft_dimensions: []
