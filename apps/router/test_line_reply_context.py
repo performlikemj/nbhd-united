@@ -242,3 +242,30 @@ class HandleMessagePrependsReplyContextTests(TestCase):
         self.assertIn("i guess writing in japanese", forwarded_text)
         # raw_user_text must not include the prefix (used for the dropped-message apology)
         self.assertEqual(kwargs.get("raw_user_text"), "i guess writing in japanese. and she wants to do roblox")
+
+    def test_quote_forward_records_raw_segment_once(self):
+        from apps.pii.redactor import RedactionOutcome
+        from apps.router.line_webhook import LineWebhookView
+
+        tenant = _make_tenant()
+        view = LineWebhookView()
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("masked", True, "redacted"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+            patch("apps.router.pending_queue.enqueue_message_for_tenant"),
+        ):
+            view._forward_to_container(
+                "U_fixture",
+                tenant,
+                '[Replying to: "Fixture quote"]\n\nFakenamealpha arrived',
+                raw_user_text="Fakenamealpha arrived",
+                webhook_event_id="line-event-1",
+            )
+
+        self.assertEqual(redact.call_count, 2)
+        ingress = redact.call_args_list[0].kwargs["ingress"]
+        self.assertEqual(redact.call_args_list[1].kwargs["ingress"], ingress)
+        record.assert_called_once_with(tenant, "Fakenamealpha arrived", ingress)

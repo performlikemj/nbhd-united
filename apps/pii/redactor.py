@@ -1183,6 +1183,21 @@ def _known_name_edge_anchor(edge_char: str) -> str:
     return "" if contains_cjk(edge_char) else r"\b"
 
 
+def known_name_pattern(original: str) -> re.Pattern:
+    """Compile the exact conditional-boundary matcher used for substitution."""
+    esc = re.escape(original)
+    left = _known_name_edge_anchor(original[:1])
+    right = _known_name_edge_anchor(original[-1:])
+    return re.compile(left + esc + right, re.IGNORECASE)
+
+
+def known_value_matches(text: str, original: str) -> bool:
+    """Whether raw text contains a value exactly where substitution would."""
+    if not text or not original or _is_degenerate_span(original):
+        return False
+    return bool(known_name_pattern(original).search(text))
+
+
 def _replace_known_only(
     text: str,
     inverted_ci: dict[str, tuple[str, str]],
@@ -1215,10 +1230,7 @@ def _replace_known_only(
             continue
         if _is_degenerate_span(original):
             continue
-        esc = re.escape(original)
-        left = _known_name_edge_anchor(original[:1])
-        right = _known_name_edge_anchor(original[-1:])
-        pattern = re.compile(left + esc + right, re.IGNORECASE)
+        pattern = known_name_pattern(original)
         out = _sub_outside_placeholders(out, pattern, placeholder)
     return out
 
@@ -1833,9 +1845,11 @@ def _redact_user_message(
             )
 
     # Update in-memory too, mirroring the persisted write.
-    if new_map_entries:
-        tenant.pii_entity_map = merged
-        tenant.pii_type_counters = locked_counters
+    # Install the locked snapshot even when every requested mint collapsed onto
+    # a concurrent writer's binding. The post-redaction ingress recorder must
+    # see that binding to close the first-appearance mint/count race.
+    tenant.pii_entity_map = merged
+    tenant.pii_type_counters = locked_counters
 
     # Apply replacements (after the lock — string slicing needs no DB). Numbers
     # baked here match the persisted map because they were assigned under lock.

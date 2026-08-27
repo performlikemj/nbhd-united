@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from hashlib import sha256
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.db import transaction
 from django.utils import timezone
 
-from apps.pii.entity_registry import get_name, is_denied, to_storage_value
+from apps.pii.entity_registry import canonical_key, get_name, is_denied, is_retired, to_storage_value
 
 MAX_SEEN_ITEMS = 8
 
@@ -34,6 +36,66 @@ def should_mint_provisional(tenant, entity_type: str, original: str, ingress: Pi
         and entity_type in {"PERSON", "LOCATION"}
         and len(original.split()) == 1
     )
+
+
+def _local_date(tenant, occurred_at: datetime) -> str:
+    timezone_name = getattr(getattr(tenant, "user", None), "timezone", None) or "UTC"
+    try:
+        local_tz = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        local_tz = ZoneInfo("UTC")
+    return occurred_at.astimezone(local_tz).date().isoformat()
+
+
+def _event_digest(tenant, ingress: PiiIngress) -> str | None:
+    if ingress.provider_event_id is None:
+        return None
+    material = f"{tenant.pk}:{ingress.channel}:{ingress.provider_event_id}".encode()
+    return sha256(material).hexdigest()[:32]
+
+
+def record_provisional_sightings(tenant, raw_owner_text: str, ingress: PiiIngress) -> list[TransitionResult]:
+    """Record one raw provider event against every matching provisional value."""
+    digest = _event_digest(tenant, ingress)
+    if not digest or not raw_owner_text:
+        return []
+
+    from apps.pii.redactor import known_value_matches
+
+    grouped: dict[str, list[tuple[str, Any]]] = {}
+    for placeholder, raw in (getattr(tenant, "pii_entity_map", None) or {}).items():
+        name = get_name(raw)
+        key = canonical_key(name)
+        if not key or not known_value_matches(raw_owner_text, name):
+            continue
+        if isinstance(raw, dict) and (raw.get("provisional") or raw.get("retired_reason") == "provisional-expired"):
+            grouped.setdefault(key, []).append((placeholder, raw))
+
+    targets: list[str] = []
+    for entries in grouped.values():
+        active = [(placeholder, raw) for placeholder, raw in entries if not is_retired(raw)]
+        if active:
+            targets.extend(placeholder for placeholder, raw in active if raw.get("provisional"))
+            continue
+        expired = [item for item in entries if item[1].get("retired_reason") == "provisional-expired"]
+        if expired:
+            # Newest last sighting wins; placeholder makes equal timestamps deterministic.
+            targets.append(max(expired, key=lambda item: (item[1].get("last_seen_at") or "", item[0]))[0])
+
+    results = []
+    local_date = _local_date(tenant, ingress.occurred_at)
+    for placeholder in targets:
+        results.append(
+            transition_binding(
+                tenant,
+                placeholder,
+                "count",
+                now=ingress.occurred_at,
+                event_digest=digest,
+                local_date=local_date,
+            )
+        )
+    return results
 
 
 @dataclass(frozen=True)

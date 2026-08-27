@@ -148,6 +148,30 @@ class IOSChatRoutingTest(TestCase):
         self.assertIn("I know you", poll.data["reply_text"])
 
     @patch("apps.router.pending_queue.httpx.post")
+    def test_provisional_sighting_uses_client_message_id(self, mock_post):
+        from apps.pii.redactor import RedactionOutcome
+
+        mock_post.return_value = _ok_chat_response("fixture reply")
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("masked", True, "redacted"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+        ):
+            response = self.client.post(
+                "/api/v1/chat/messages/",
+                {"text": "Fakenamealpha arrived", "client_msg_id": "ios-event-1"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        ingress = redact.call_args.kwargs["ingress"]
+        self.assertEqual(ingress.channel, "ios")
+        self.assertEqual(ingress.provider_event_id, "ios-event-1")
+        record.assert_called_once_with(self.tenant, "Fakenamealpha arrived", ingress)
+
+    @patch("apps.router.pending_queue.httpx.post")
     def test_idempotent_on_client_msg_id(self, mock_post):
         mock_post.return_value = _ok_chat_response("hi")
 

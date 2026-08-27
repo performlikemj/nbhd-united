@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
-from apps.pii.provisional import PiiIngress, transition_binding
+from apps.pii.provisional import PiiIngress, record_provisional_sightings, transition_binding
 from apps.pii.redactor import DetectedEntity, redact_user_message
 from apps.tenants.models import Tenant, User
 
@@ -60,6 +60,15 @@ class TransitionBindingTests(TestCase):
         self.assertFalse(result.changed)
         self.assertEqual(result.outcome, "blocked")
 
+    def test_denylist_beats_promotion(self):
+        tenant = _tenant(
+            entry={"name": "Fakenamealpha", "provisional": True},
+            denylist={"fakenamealpha": {"reason": "fixture"}},
+        )
+        result = transition_binding(tenant, "[PERSON_1]", "promote", now=self.NOW)
+        self.assertFalse(result.changed)
+        self.assertEqual(result.outcome, "blocked")
+
 
 class ProvisionalMintTests(TestCase):
     NOW = datetime(2026, 8, 28, 1, 2, 3, tzinfo=UTC)
@@ -101,11 +110,60 @@ class ProvisionalMintTests(TestCase):
         self.tenant.refresh_from_db()
         self.assertNotIn("provisional", self.tenant.pii_entity_map["[PERSON_1]"])
 
-    def test_denylist_beats_promotion(self):
-        tenant = _tenant(
-            entry={"name": "Fakenamealpha", "provisional": True},
-            denylist={"fakenamealpha": {"reason": "fixture"}},
+
+class SightingRecorderTests(TestCase):
+    def setUp(self):
+        self.tenant = _tenant(
+            entry={
+                "name": "Fakenamealpha",
+                "provisional": True,
+                "first_seen_at": "2026-08-27T00:00:00+00:00",
+                "last_seen_at": "2026-08-27T00:00:00+00:00",
+                "seen_events": [],
+                "seen_dates": [],
+            }
         )
-        result = transition_binding(tenant, "[PERSON_1]", "promote", now=self.NOW)
-        self.assertFalse(result.changed)
-        self.assertEqual(result.outcome, "blocked")
+
+    def _record(self, event_id: str, occurred_at: datetime, text: str = "Fakenamealpha arrived"):
+        return record_provisional_sightings(
+            self.tenant,
+            text,
+            PiiIngress(channel="fixture", provider_event_id=event_id, occurred_at=occurred_at),
+        )
+
+    def test_dedupes_one_provider_event(self):
+        now = datetime(2026, 8, 28, 1, tzinfo=UTC)
+        self._record("event-1", now)
+        self._record("event-1", now)
+        self.tenant.refresh_from_db()
+        entry = self.tenant.pii_entity_map["[PERSON_1]"]
+        self.assertEqual(len(entry["seen_events"]), 1)
+        self.assertEqual(entry["seen_dates"], ["2026-08-28"])
+
+    def test_promotes_at_three_events_across_two_local_dates(self):
+        self._record("event-1", datetime(2026, 8, 28, 1, tzinfo=UTC))
+        self._record("event-2", datetime(2026, 8, 28, 2, tzinfo=UTC))
+        results = self._record("event-3", datetime(2026, 8, 29, 1, tzinfo=UTC))
+        self.assertEqual(results[0].outcome, "promoted")
+        self.tenant.refresh_from_db()
+        entry = self.tenant.pii_entity_map["[PERSON_1]"]
+        self.assertFalse(entry["provisional"])
+        self.assertEqual(entry["promoted_by"], "recurrence")
+
+    def test_uses_substitution_boundary_rules(self):
+        self.assertEqual(self._record("event-1", datetime(2026, 8, 28, 1, tzinfo=UTC), "XFakenamealphaY"), [])
+
+    def test_channel_participates_in_event_digest(self):
+        occurred_at = datetime(2026, 8, 28, 1, tzinfo=UTC)
+        record_provisional_sightings(
+            self.tenant,
+            "Fakenamealpha",
+            PiiIngress(channel="telegram", provider_event_id="same", occurred_at=occurred_at),
+        )
+        record_provisional_sightings(
+            self.tenant,
+            "Fakenamealpha",
+            PiiIngress(channel="ios", provider_event_id="same", occurred_at=occurred_at),
+        )
+        self.tenant.refresh_from_db()
+        self.assertEqual(len(self.tenant.pii_entity_map["[PERSON_1]"]["seen_events"]), 2)

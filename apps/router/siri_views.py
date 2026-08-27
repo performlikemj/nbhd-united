@@ -30,6 +30,7 @@ import re
 import uuid
 
 from django.conf import settings
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -121,13 +122,13 @@ def _placeholder_snapshot(tenant, *, max_chars: int) -> str:
     )
 
 
-def _placeholder_intent(tenant, intent: str) -> str:
+def _placeholder_intent(tenant, intent: str, ingress=None) -> str:
     """Redact a spoken ask for model egress, with a deterministic fallback."""
     from apps.pii.egress import redact_known_values
     from apps.pii.redactor import redact_user_message_checked
 
     try:
-        outcome = redact_user_message_checked(intent, tenant)
+        outcome = redact_user_message_checked(intent, tenant, ingress=ingress)
     except Exception:
         logger.warning("siri respond: intent redaction failed; using known-values guard", exc_info=True)
     else:
@@ -206,8 +207,11 @@ class SiriRespondView(APIView):
         if len(intent) > _MAX_ASK_CHARS:
             return Response({"error": "intent_too_long"}, status=status.HTTP_400_BAD_REQUEST)
 
+        from apps.pii.provisional import PiiIngress
+
+        ingress = PiiIngress(channel="siri", provider_event_id=None, occurred_at=timezone.now())
         snapshot = _placeholder_snapshot(tenant, max_chars=_SIRI_CONTEXT_CHARS)
-        model_intent = _placeholder_intent(tenant, intent)
+        model_intent = _placeholder_intent(tenant, intent, ingress=ingress)
 
         answer = self._fast_answer(tenant, model_intent, snapshot)
         if answer is not None:

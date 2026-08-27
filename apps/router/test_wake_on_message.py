@@ -231,11 +231,19 @@ class BufferWriteRedactsAndMinimizesTest(TestCase):
                 "from": {"id": 44556677, "first_name": "Bob", "last_name": "Lee", "username": "bob_x"},
             },
         }
-        with patch(
-            "apps.pii.redactor.redact_user_message_checked",
-            return_value=RedactionOutcome("call me", False, "test-noop"),
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("call me", False, "test-noop"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
         ):
             handle_hibernated_message(tenant, "telegram", raw_update, "call me")
+
+        ingress = redact.call_args.kwargs["ingress"]
+        self.assertEqual(ingress.channel, "telegram")
+        self.assertEqual(ingress.provider_event_id, "5")
+        record.assert_called_once_with(tenant, "call me", ingress)
 
         row = BufferedMessage.objects.filter(tenant=tenant).latest("created_at")
         self.assertEqual(

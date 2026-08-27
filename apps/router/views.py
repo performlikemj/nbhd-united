@@ -45,6 +45,7 @@ def _capture_telegram_webhook_transcript(
         return
 
     try:
+        from apps.pii.provisional import PiiIngress, record_provisional_sightings
         from apps.pii.redactor import (
             RedactionOutcome,
             as_confirmed,
@@ -66,7 +67,13 @@ def _capture_telegram_webhook_transcript(
             source_event_id,
         )
         occurred_at = timezone.now()
-        user_outcome = redact_user_message_checked(raw_user_text, tenant)
+        ingress = PiiIngress(
+            channel="telegram-webhook",
+            provider_event_id=str(update_id) if update_id is not None else None,
+            occurred_at=occurred_at,
+        )
+        user_outcome = redact_user_message_checked(raw_user_text, tenant, ingress=ingress)
+        record_provisional_sightings(tenant, raw_user_text, ingress)
         confirmed_user = as_confirmed(user_outcome)
         if confirmed_user is not None:
             capture_transcript_event(

@@ -711,9 +711,12 @@ def enqueue_tenant_turn(
     # Outbound rehydration is already wired in the drain path, so [PERSON_N]
     # placeholders round-trip. The checked wrapper preserves fail-open delivery
     # text while recording whether redaction genuinely completed for this row.
+    from apps.pii.provisional import PiiIngress, record_provisional_sightings
     from apps.pii.redactor import redact_user_message_checked
 
-    redaction = redact_user_message_checked(text, tenant)
+    ingress = PiiIngress(channel="ios", provider_event_id=client_msg_id, occurred_at=timezone.now())
+    redaction = redact_user_message_checked(text, tenant, ingress=ingress)
+    record_provisional_sightings(tenant, text, ingress)
     redacted_text = redaction.text
     # Per-turn transparency metadata: which of the user's real values were
     # obfuscated behind placeholders before this turn reached the assistant.

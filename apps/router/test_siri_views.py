@@ -360,7 +360,11 @@ class SiriRespondTest(TestCase):
             self.assertNotIn("Theo Smith", message["content"])
         self.assertIn(ENTITY_LEGEND_HEADER, messages[-1]["content"])
         self.assertIn("[PERSON_1]: project lead", messages[-1]["content"])
-        mock_redact.assert_called_once_with("Will Theo Smith join?", self.tenant)
+        mock_redact.assert_called_once()
+        redact_args, redact_kwargs = mock_redact.call_args
+        self.assertEqual(redact_args, ("Will Theo Smith join?", self.tenant))
+        self.assertEqual(redact_kwargs["ingress"].channel, "siri")
+        self.assertIsNone(redact_kwargs["ingress"].provider_event_id)
 
     @patch("apps.orchestrator.workspace_envelope.render_context_digest", return_value="STATE")
     @patch(

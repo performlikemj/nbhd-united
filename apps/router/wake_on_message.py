@@ -65,9 +65,16 @@ def handle_hibernated_message(
     # same at-rest posture. ``user_text`` stays untruncated (redacted) so the
     # hibernated-drain coalesce path can stitch full user texts together
     # (apologies + log lines slice locally where they need a short excerpt).
+    from apps.pii.provisional import PiiIngress
     from apps.router.buffer_envelope import build_buffer_envelope, redact_for_buffer_checked
 
-    redaction = redact_for_buffer_checked(tenant, user_text or "")
+    provider_event_id = payload.get("update_id") if channel == "telegram" else payload.get("webhookEventId")
+    ingress = PiiIngress(
+        channel=channel,
+        provider_event_id=str(provider_event_id) if provider_event_id is not None else None,
+        occurred_at=timezone.now(),
+    )
+    redaction = redact_for_buffer_checked(tenant, user_text or "", ingress=ingress)
     buffer_payload = build_buffer_envelope(channel, payload)
     buffer_payload["redaction"] = {
         "confirmed": redaction.confirmed,

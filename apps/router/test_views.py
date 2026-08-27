@@ -21,6 +21,33 @@ class TelegramWebhookViewTest(TestCase):
         clear_cache()
         clear_rate_limits()
 
+    def test_capture_uses_update_id_for_provisional_sighting(self):
+        from apps.pii.redactor import RedactionOutcome
+        from apps.router.views import _capture_telegram_webhook_transcript
+
+        tenant = create_tenant(display_name="Fixture User", telegram_chat_id=999000113)
+        tenant.recall_capture_enabled = True
+        tenant.save(update_fields=["recall_capture_enabled", "updated_at"])
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("masked", False, "fixture"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+            patch("apps.transcripts.capture.quarantine_transcript_event"),
+        ):
+            _capture_telegram_webhook_transcript(
+                tenant,
+                update_id=4321,
+                raw_user_text="Fakenamealpha arrived",
+                result={},
+            )
+
+        ingress = redact.call_args.kwargs["ingress"]
+        self.assertEqual(ingress.channel, "telegram-webhook")
+        self.assertEqual(ingress.provider_event_id, "4321")
+        record.assert_called_once_with(tenant, "Fakenamealpha arrived", ingress)
+
     def _post_update(self, payload: dict, secret: str = "test-secret"):
         extra_headers = {}
         if secret is not None:
