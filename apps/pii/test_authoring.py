@@ -7,8 +7,20 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
-from apps.pii.authoring import author_json_paths, author_text, resolve_receipt_values, truncate_placeholder_safe
-from apps.pii.redactor import MINT_ALL, MINT_NEVER, MINT_VALIDATED, RedactionOutcome
+from apps.pii.authoring import (
+    _residual_summary,
+    author_json_paths,
+    author_text,
+    resolve_receipt_values,
+    truncate_placeholder_safe,
+)
+from apps.pii.redactor import (
+    MINT_ALL,
+    MINT_NEVER,
+    MINT_VALIDATED,
+    NeuralDetectorUnavailable,
+    RedactionOutcome,
+)
 from apps.pii.repair_sweep import REPAIR_STATES
 from apps.pii.store_registry import registered_store
 from apps.tenants.models import Tenant, User
@@ -399,6 +411,63 @@ class AuthorTextTests(TestCase):
         self.assertEqual(authored.text, "[PERSON_1] emailed [EMAIL_ADDRESS_2]")
         self.assertEqual(authored.receipt["state"], "unconfirmed")
         self.assertNotIn("private@example.com", authored.text)
+
+    def test_residual_neural_unavailable_has_specific_receipt_and_known_fallback(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(
+                    text="[PERSON_1] emailed [EMAIL_ADDRESS_2]",
+                    confirmed=True,
+                    reason="redacted",
+                ),
+            ),
+            patch("apps.pii.authoring._residual_summary", side_effect=NeuralDetectorUnavailable),
+        ):
+            authored = author_text(
+                self.tenant,
+                "Alice emailed private@example.com",
+                seam="test.neural-unavailable",
+                writer="background",
+                field="description",
+            )
+
+        self.assertEqual(authored.text, "[PERSON_1] emailed [EMAIL_ADDRESS_2]")
+        self.assertEqual(authored.receipt["state"], "unconfirmed")
+        self.assertEqual(authored.receipt["reason"], "neural-unavailable")
+        self.assertNotIn("private@example.com", authored.text)
+
+    def test_checked_neural_unavailable_reason_reaches_authoring_receipt(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        with patch(
+            "apps.pii.authoring.redact_user_message_checked",
+            return_value=RedactionOutcome(
+                text="[PERSON_1] emailed [EMAIL_ADDRESS_2]",
+                confirmed=False,
+                reason="neural-unavailable",
+            ),
+        ):
+            authored = author_text(
+                self.tenant,
+                "Alice emailed private@example.com",
+                seam="test.checked-neural-unavailable",
+                writer="background",
+                field="description",
+            )
+
+        self.assertEqual(authored.text, "[PERSON_1] emailed [EMAIL_ADDRESS_2]")
+        self.assertEqual(authored.receipt["state"], "unconfirmed")
+        self.assertEqual(authored.receipt["reason"], "neural-unavailable")
+
+    def test_residual_summary_raises_when_neural_detector_did_not_run(self):
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", side_effect=RuntimeError("synthetic unavailable")),
+            self.assertRaises(NeuralDetectorUnavailable),
+        ):
+            _residual_summary(self.tenant, "No known private values")
 
     def test_empty_and_disabled_reason_codes_are_not_errors(self):
         self.tenant.layer1_placeholder_writes = True

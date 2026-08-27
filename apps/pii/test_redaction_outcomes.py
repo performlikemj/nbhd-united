@@ -1,7 +1,10 @@
+import os
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from apps.pii.redactor import (
     ConfirmedRedaction,
@@ -13,6 +16,7 @@ from apps.pii.redactor import (
     redact_user_message_checked,
     redaction_receipt,
 )
+from apps.tenants.models import Tenant, User
 
 
 class RedactionOutcomeTest(SimpleTestCase):
@@ -58,6 +62,54 @@ class RedactionOutcomeTest(SimpleTestCase):
             }
         )
         self.assertFalse(outcome.confirmed)
+        self.assertEqual(outcome.reason, "redacted")
+
+
+class NeuralUnavailableOutcomeTest(TestCase):
+    def setUp(self):
+        user = User.objects.create_user(username="neural-outcome", password="x")
+        self.tenant = Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE)
+
+    def test_checked_api_preserves_presidio_text_but_is_unconfirmed_for_both_transports(self):
+        text = "Email private@example.com today"
+        for transport in ("local", "shared"):
+            with self.subTest(transport=transport), tempfile.TemporaryDirectory() as directory:
+                self.tenant.pii_entity_map = {}
+                self.tenant.pii_type_counters = {}
+                self.tenant.save(update_fields=["pii_entity_map", "pii_type_counters"])
+                environment = {
+                    "PII_DETECTOR_TRANSPORT": transport,
+                    "PII_DETECTOR_ENGINE": "deberta",
+                    "PII_SHARED_SOCKET": str(Path(directory) / "missing.sock"),
+                }
+                with patch.dict(os.environ, environment):
+                    if transport == "local":
+                        model = patch(
+                            "apps.pii.engine.get_deberta_pii_pipeline",
+                            side_effect=RuntimeError("synthetic unavailable"),
+                        )
+                    else:
+                        model = patch("apps.pii.engine.get_deberta_pii_pipeline")
+                    with model as local_loader:
+                        outcome = redact_user_message_checked(text, self.tenant)
+                        legacy_text = redact_user_message(text, self.tenant)
+
+                self.assertEqual(outcome.text, "Email [EMAIL_ADDRESS_1] today")
+                self.assertEqual(legacy_text, outcome.text)
+                self.assertFalse(outcome.confirmed)
+                self.assertEqual(outcome.reason, "neural-unavailable")
+                if transport == "shared":
+                    local_loader.assert_not_called()
+
+    def test_successful_neural_call_keeps_confirmed_receipt(self):
+        with (
+            patch.dict(os.environ, {"PII_DETECTOR_TRANSPORT": "local"}),
+            patch("apps.pii.engine.get_deberta_pii_pipeline", return_value=lambda _text: []),
+        ):
+            outcome = redact_user_message_checked("Email private@example.com", self.tenant)
+
+        self.assertEqual(outcome.text, "Email [EMAIL_ADDRESS_1]")
+        self.assertTrue(outcome.confirmed)
         self.assertEqual(outcome.reason, "redacted")
 
 
