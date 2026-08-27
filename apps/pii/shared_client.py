@@ -258,7 +258,7 @@ class SharedPiiPipeline:
                 except OSError:
                     pass
 
-        if response.get("v") != PROTOCOL_VERSION:
+        if type(response.get("v")) is not int or response["v"] != PROTOCOL_VERSION:
             raise SharedPiiError("shared detector protocol version mismatch", outcome="protocol")
         if "error" in response:
             if set(response) != {"v", "error"} or response["error"] not in _SERVER_ERRORS:
@@ -319,7 +319,9 @@ def ping_shared_detector(*, timeout_s: float = 1.0, socket_path: str | None = No
                 pass
     return (
         set(response) == {"v", "ready", "engine", "protocol"}
+        and type(response["v"]) is int
         and response["v"] == PROTOCOL_VERSION
+        and type(response["protocol"]) is int
         and response["protocol"] == PROTOCOL_VERSION
         and response["engine"] == engine
         and response["ready"] is True

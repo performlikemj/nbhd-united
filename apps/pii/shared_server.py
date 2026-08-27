@@ -87,7 +87,7 @@ def _read_request(connection: socket.socket) -> dict[str, Any]:
         request = json.loads(body.decode("utf-8"))
     except _FrameError:
         raise
-    except (TimeoutError, UnicodeDecodeError, json.JSONDecodeError, OSError, struct.error) as exc:
+    except (TimeoutError, UnicodeDecodeError, RecursionError, ValueError, OSError, struct.error) as exc:
         raise _FrameError("bad_request") from exc
     if not isinstance(request, dict):
         raise _FrameError("bad_request")
@@ -417,7 +417,12 @@ class SharedDetectorServer:
                     total_ms=(time.monotonic() - received_at) * 1000,
                 )
                 return
-            if request == {"v": PROTOCOL_VERSION, "ping": True}:
+            if (
+                set(request) == {"v", "ping"}
+                and type(request.get("v")) is int
+                and request["v"] == PROTOCOL_VERSION
+                and request.get("ping") is True
+            ):
                 self._send(
                     connection,
                     {
@@ -494,7 +499,7 @@ class SharedDetectorServer:
                 self._handlers.discard(threading.current_thread())
 
     def _validate_request(self, request: dict[str, Any]) -> str | None:
-        if request.get("v") != PROTOCOL_VERSION:
+        if type(request.get("v")) is not int or request["v"] != PROTOCOL_VERSION:
             return "bad_request"
         if set(request) != {"v", "engine", "text", "ttl_ms"}:
             return "bad_request"
@@ -503,7 +508,7 @@ class SharedDetectorServer:
         if not isinstance(request["text"], str):
             return "bad_request"
         ttl_ms = request["ttl_ms"]
-        if isinstance(ttl_ms, bool) or not isinstance(ttl_ms, int) or ttl_ms <= 0:
+        if type(ttl_ms) is not int or not 0 < ttl_ms <= 600_000:
             return "bad_request"
         return None
 

@@ -113,6 +113,17 @@ def _raw_request(path: str, payload: dict, *, timeout: float = 2.0):
         connection.close()
 
 
+def _raw_body_request(path: str, body: bytes, *, timeout: float = 2.0):
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(timeout)
+    connection.connect(path)
+    connection.sendall(struct.pack("!I", len(body)) + body)
+    try:
+        return _read_frame(connection)
+    finally:
+        connection.close()
+
+
 class SharedTransportSelectionTests(SimpleTestCase):
     def test_transport_defaults_to_local(self):
         self.assertEqual(settings.PII_DETECTOR_TRANSPORT, "local")
@@ -370,6 +381,7 @@ class SharedPiiClientTests(SimpleTestCase):
     def test_protocol_and_engine_mismatch(self):
         cases = [
             ({"v": 2, "engine": "deberta", "spans": []}, "protocol"),
+            ({"v": True, "engine": "deberta", "spans": []}, "protocol"),
             ({"v": 1, "engine": "liquid", "spans": []}, "engine_mismatch"),
         ]
         for response, outcome in cases:
@@ -395,6 +407,23 @@ class SharedPiiClientTests(SimpleTestCase):
 
 
 class SharedPiiServerTests(SimpleTestCase):
+    def test_adversarial_protocol_values_are_bad_requests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "pii.sock")
+            with _running_server(path, lambda _text: []):
+                requests = (
+                    {"v": True, "engine": "deberta", "text": "x", "ttl_ms": 1000},
+                    {"v": 1, "ping": 1},
+                    {"v": 1, "engine": "deberta", "text": "x", "ttl_ms": 10**9},
+                )
+                for request in requests:
+                    with self.subTest(request=request):
+                        self.assertEqual(_raw_request(path, request), {"v": 1, "error": "bad_request"})
+
+                nested = b'{"v":1,"extra":' + b"[" * 5000 + b"0" + b"]" * 5000 + b"}"
+                self.assertLess(len(nested), 1024 * 1024)
+                self.assertEqual(_raw_body_request(path, nested), {"v": 1, "error": "bad_request"})
+
     def test_stale_socket_is_replaced(self):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "pii.sock")
