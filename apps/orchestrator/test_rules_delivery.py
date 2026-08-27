@@ -15,7 +15,6 @@ _CHAT_FILE_POINTER = re.compile(r"(?:rules|docs)/[a-z_-]+\.md")
 _CRON_INDEX_ROWS = (
     ("rules/journal-capture.md", "Journal capture"),
     ("rules/lessons-constellation.md", "Lessons"),
-    ("rules/onboarding.md", "Onboarding"),
     ("rules/messaging.md", "Cron delivery, check-in windows, automated routines"),
     ("rules/week-ahead.md", "Weekly review"),
     ("rules/fuel.md", "Fuel"),
@@ -64,6 +63,7 @@ class RulesDeliveryTest(TestCase):
         self.assertNotIn("| `rules/memory.md` |", cron_prompt)
         self.assertNotIn("| `rules/document-ingestion.md` |", cron_prompt)
         self.assertNotIn("| `rules/reply-markers.md` |", cron_prompt)
+        self.assertNotIn("| `rules/onboarding.md` |", cron_prompt)
 
     def test_all_gates_render_within_pin(self):
         prompt = render_workspace_files("neighbor", tenant=self._all_gates_tenant())["NBHD_AGENTS_MD"]

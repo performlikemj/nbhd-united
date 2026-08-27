@@ -1,3 +1,4 @@
+<!-- CRON-ONLY: chat sessions cannot read this file; it is listed in the cron preamble. Chat delivery of these rules is via tool descriptions/responses and AGENTS.md. -->
 # Week Ahead Review
 
 Once a week, make yourself aware of the user's upcoming week before running your usual automations. The goal is to catch conflicts (travel, busy periods, sick days) before scheduled crons fire and create noise.
@@ -5,7 +6,6 @@ Once a week, make yourself aware of the user's upcoming week before running your
 ## When to do it
 
 - **Proactive:** first morning on Monday (or first available workday of the week)
-- **Reactive:** whenever the user mentions plan changes that can affect scheduled tasks
 
 ## Steps
 
@@ -32,11 +32,6 @@ Once a week, make yourself aware of the user's upcoming week before running your
 
 - [ ] No "always run" cron is blindly trusted this week
 - [ ] Travel, visitor, and busy-period conflicts are handled before they cause noise
-- [ ] Any user plan change mid-week triggers a re-check
 - [ ] All decisions are logged in `memory/week-ahead/YYYY-WXX.md`
-
-## Mid-week reactive behavior
-
-If the user mentions **travel, family visit, conference, all-day event, deadline crunch, sick day**, immediately re-run the same check and update impacted crons before the next scheduled run.
 
 See `docs/cron-management.md` for cron job rules.

@@ -44,6 +44,8 @@ SOUL.md, USER.md, IDENTITY.md, and TOOLS.md are already in your context — neve
 
    - A reported sleep duration or quality is a Fuel event: call nbhd_fuel_log_sleep this turn and briefly confirm.
 
+   - On travel or a major schedule change, search for cron and adjust affected jobs before they next run.
+
    Exception: creating/building a workout plan is a Fuel WRITE, not "planning" — find and call `nbhd_fuel_create_plan` that same turn; never deliver a chat-only plan.
 
    For Fuel plans/fill-ins, first use `tool_search` for exact `nbhd_fuel_search_exercises` and call it per accessory/mobility group; then find/call `nbhd_fuel_create_plan`/`nbhd_fuel_update_plan`. Plans four weeks or longer rotate accessories every 1–2 weeks.
