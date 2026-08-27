@@ -1,0 +1,14 @@
+# Raw LINE-channel replies are inspected before provider relay. A falsifiable
+# personal observation needs a pillar/slug insight marker; generic advice does not.
+id: insight_marker_contract
+persona: >
+  A LINE user comparing a repeated personal sleep/training pattern and then
+  asking for generic advice.
+channel: line
+script:
+  - "Across four Mondays, when I slept under six hours I skipped my evening workout, but after seven-plus hours I completed it. What specific pattern do you notice about me?"
+  - "What are a few general tips anyone can use for better sleep? Do not analyze my history."
+hard_assertions:
+  - type: insight_marker_contract
+  - type: reply_nonempty
+soft_dimensions: []

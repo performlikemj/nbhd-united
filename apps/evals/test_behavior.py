@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import secrets
 import tempfile
+from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
@@ -41,6 +43,10 @@ from apps.evals.behavior.transport import (
 from apps.evals.models import EvalResult, EvalRun
 from apps.evals.suites.behavior import run_behavior_suite
 from apps.evals.tasks import eval_behavior_task
+from apps.fuel.models import SleepLog, Workout, WorkoutCategory, WorkoutPlan, WorkoutSource, WorkoutStatus
+from apps.journal.models import Document
+from apps.lessons.models import Lesson
+from apps.platform_logs.telemetry import emit_tool_event
 from apps.tenants.models import Tenant, User
 from apps.tenants.pat_models import PersonalAccessToken, generate_pat
 
@@ -95,7 +101,7 @@ class _ScopedFakeMixin:
     a budget-skipped one). Fakes that need real per-scope memory (e.g. proving
     isolation) override ``open_conversation`` — see ``ContextBleedTransport``."""
 
-    def open_conversation(self) -> str:
+    def open_conversation(self, *, channel: str = "ios") -> str:
         try:
             scopes = self.opened_scopes
         except AttributeError:
@@ -118,6 +124,34 @@ class BenignTransport(_ScopedFakeMixin):
         self.calls.append(text)
         self.deadlines.append(deadline_seconds)
         return TurnResult(user_text=text, reply_text=self._reply, ok=True)
+
+
+class ActionTransport(_ScopedFakeMixin):
+    """Run a deterministic DB-side action before each scripted reply."""
+
+    def __init__(self, *, actions=(), replies=("Done.",)):
+        self.actions = list(actions)
+        self.replies = list(replies)
+        self.calls: list[dict] = []
+        self.channels: list[str] = []
+
+    def open_conversation(self, *, channel: str = "ios") -> str:
+        self.channels.append(channel)
+        return super().open_conversation(channel=channel)
+
+    def send_turn(
+        self,
+        *,
+        text: str,
+        deadline_seconds: float | None = None,
+        document: bool = False,
+    ) -> TurnResult:
+        index = len(self.calls)
+        self.calls.append({"text": text, "document": document})
+        if index < len(self.actions) and self.actions[index] is not None:
+            self.actions[index]()
+        reply = self.replies[index] if index < len(self.replies) else self.replies[-1]
+        return TurnResult(user_text=text, reply_text=reply, ok=True)
 
 
 class EchoTransport(_ScopedFakeMixin):
@@ -236,9 +270,17 @@ def _scenario(
     hard=_DEFAULT_HARD,
     soft=(),
     persona="a test persona",
+    channel="ios",
+    document_turns=(),
 ) -> Scenario:
     return Scenario(
-        id=scenario_id, persona=persona, script=tuple(script), hard_assertions=tuple(hard), soft_dimensions=tuple(soft)
+        id=scenario_id,
+        persona=persona,
+        script=tuple(script),
+        hard_assertions=tuple(hard),
+        soft_dimensions=tuple(soft),
+        channel=channel,
+        document_turns=tuple(document_turns),
     )
 
 
@@ -272,6 +314,26 @@ class SchemaValidationTest(TestCase):
         self.assertEqual(s.id, "ok")
         self.assertEqual(s.hard_assertions[0].type, "reply_nonempty")
         self.assertFalse(s.uses_marker)
+        self.assertEqual(s.channel, "ios")
+        self.assertEqual(s.document_turns, ())
+
+    def test_channel_and_document_turns_parse(self):
+        doc = self._valid_doc() | {"document_turns": [0]}
+        scenario = parse_scenario(doc, source="document.yaml")
+        self.assertEqual(scenario.document_turns, (0,))
+
+        channel_doc = self._valid_doc() | {"channel": "telegram"}
+        scenario = parse_scenario(channel_doc, source="channel.yaml")
+        self.assertEqual(scenario.channel, "telegram")
+
+    def test_document_turn_requires_ios_and_valid_index(self):
+        with self.assertRaises(ScenarioValidationError):
+            parse_scenario(self._valid_doc() | {"document_turns": [1]}, source="bad-index.yaml")
+        with self.assertRaises(ScenarioValidationError):
+            parse_scenario(
+                self._valid_doc() | {"channel": "line", "document_turns": [0]},
+                source="bad-channel.yaml",
+            )
 
     def test_unknown_top_key_rejected(self):
         doc = self._valid_doc() | {"bogus": 1}
@@ -330,9 +392,23 @@ class SchemaValidationTest(TestCase):
 
     def test_shipped_fixtures_load(self):
         scenarios = load_all_scenarios()
-        self.assertGreaterEqual(len(scenarios), 4)
+        self.assertGreaterEqual(len(scenarios), 14)
         ids = [s.id for s in scenarios]
         self.assertEqual(len(ids), len(set(ids)))  # unique
+        self.assertTrue(
+            {
+                "reminder_registers_cron",
+                "workout_logged_yesterday",
+                "workout_plan_search_first",
+                "document_propose_then_save",
+                "chart_marker_contract",
+                "insight_marker_contract",
+                "lesson_capture",
+                "redacted_identity",
+                "unchecked_claim",
+                "sleep_logged",
+            }.issubset(ids)
+        )
         # Every fixture references only known hard types + soft dims (parse enforces it).
         for s in scenarios:
             self.assertTrue(s.hard_assertions)
@@ -484,6 +560,231 @@ class RunBehaviorSuiteTest(TestCase):
         run = run_behavior_suite(scenarios=[scenario], transport=BenignTransport(), judge=None)
         self.assertEqual(run.status, EvalRun.Status.PASS)
         self.assertEqual(_hard(run)[0].details["code"], "marker_absent")
+
+    def test_stated_workout_is_logged_with_relative_date(self):
+        from apps.common.llm_contracts import resolve_relative_date
+
+        def create_workout():
+            Workout.objects.create(
+                tenant=self.tenant,
+                date=resolve_relative_date(self.tenant, "yesterday"),
+                status=WorkoutStatus.DONE,
+                source=WorkoutSource.ASSISTANT,
+                category=WorkoutCategory.CARDIO,
+                activity="Run",
+            )
+
+        scenario = _scenario(
+            scenario_id="workout",
+            hard=(HardAssertion("workout_logged_relative_date"),),
+        )
+        run = run_behavior_suite(
+            scenarios=[scenario],
+            transport=ActionTransport(actions=(create_workout,)),
+            judge=None,
+        )
+        self.assertEqual(run.status, EvalRun.Status.PASS)
+        self.assertEqual(_hard(run)[0].details["code"], "workout_logged_yesterday")
+
+    def test_plan_requires_observed_exercise_search_before_write(self):
+        from apps.common.llm_contracts import today_in_tenant_tz
+
+        def create_plan_after_search():
+            today = today_in_tenant_tz(self.tenant)
+            next_monday = today + timedelta(days=(7 - today.weekday()) % 7 or 7)
+            emit_tool_event(
+                tool_name="runtime-fuel-exercises",
+                outcome="accepted",
+                tenant_id=self.tenant.id,
+            )
+            WorkoutPlan.objects.create(
+                tenant=self.tenant,
+                name="R3 plan",
+                start_date=next_monday,
+                weeks=2,
+                days_per_week=3,
+                schedule_json={"monday": {"category": "strength"}},
+            )
+            emit_tool_event(
+                namespace="fuel",
+                tool_name="runtime-fuel-plans",
+                outcome="accepted",
+                reason_code="catalog_annotation",
+                tenant_id=self.tenant.id,
+                detail={"searched_before_write": True},
+            )
+
+        scenario = _scenario(scenario_id="plan", hard=(HardAssertion("plan_search_before_write"),))
+        run = run_behavior_suite(
+            scenarios=[scenario],
+            transport=ActionTransport(actions=(create_plan_after_search,)),
+            judge=None,
+        )
+        self.assertEqual(run.status, EvalRun.Status.PASS)
+        self.assertEqual(_hard(run)[0].details["code"], "search_then_plan")
+
+    def test_plan_without_search_marker_fails(self):
+        def create_unsearched_plan():
+            from apps.common.llm_contracts import today_in_tenant_tz
+
+            today = today_in_tenant_tz(self.tenant)
+            next_monday = today + timedelta(days=(7 - today.weekday()) % 7 or 7)
+            WorkoutPlan.objects.create(
+                tenant=self.tenant,
+                name="Unsearched",
+                start_date=next_monday,
+                weeks=1,
+                days_per_week=1,
+                schedule_json={"monday": {"category": "strength"}},
+            )
+
+        scenario = _scenario(scenario_id="plan", hard=(HardAssertion("plan_search_before_write"),))
+        run = run_behavior_suite(
+            scenarios=[scenario],
+            transport=ActionTransport(actions=(create_unsearched_plan,)),
+            judge=None,
+        )
+        self.assertEqual(run.status, EvalRun.Status.FAIL)
+        self.assertEqual(_hard(run)[0].details["code"], "no_exercise_search")
+
+    def test_document_waits_for_approval_and_saves_exact_items(self):
+        def save_approved_document():
+            Document.objects.create(
+                tenant=self.tenant,
+                kind=Document.Kind.PROJECT,
+                slug="r3-atlas-eval",
+                title="R3 Atlas",
+                markdown="- R3 Atlas Alpha\n- R3 Atlas Beta",
+            )
+
+        scenario = _scenario(
+            scenario_id="document",
+            script=("review this", "yes, save alpha and beta"),
+            hard=(HardAssertion("document_propose_then_save"),),
+            document_turns=(0,),
+        )
+        transport = ActionTransport(
+            actions=(None, save_approved_document), replies=("I propose Alpha and Beta.", "Saved.")
+        )
+        run = run_behavior_suite(scenarios=[scenario], transport=transport, judge=None)
+        self.assertEqual(run.status, EvalRun.Status.PASS)
+        self.assertTrue(transport.calls[0]["document"])
+        self.assertFalse(transport.calls[1]["document"])
+        self.assertEqual(_hard(run)[0].details["code"], "proposed_then_saved_exactly")
+
+    def test_chart_marker_is_positive_only_on_telegram(self):
+        scenario = _scenario(
+            scenario_id="chart",
+            script=("numbers over time", "generic question"),
+            hard=(HardAssertion("chart_marker_contract"),),
+            channel="telegram",
+        )
+        transport = ActionTransport(replies=("Trend [[chart:line]]", "A line chart shows change."))
+        run = run_behavior_suite(scenarios=[scenario], transport=transport, judge=None)
+        self.assertEqual(run.status, EvalRun.Status.PASS)
+        self.assertEqual(transport.channels, ["telegram"])
+        self.assertEqual(_hard(run)[0].details["code"], "chart_scoped")
+
+    def test_insight_marker_is_positive_only_on_line(self):
+        scenario = _scenario(
+            scenario_id="insight",
+            script=("my repeated pattern", "generic advice"),
+            hard=(HardAssertion("insight_marker_contract"),),
+            channel="line",
+        )
+        transport = ActionTransport(
+            replies=(
+                "[[insight:fuel/sleep_training]]You skip training after short sleep.[[/insight]]",
+                "A regular bedtime can help.",
+            )
+        )
+        run = run_behavior_suite(scenarios=[scenario], transport=transport, judge=None)
+        self.assertEqual(run.status, EvalRun.Status.PASS)
+        self.assertEqual(transport.channels, ["line"])
+        self.assertEqual(_hard(run)[0].details["code"], "insight_scoped")
+
+    def test_marker_on_generic_reply_fails(self):
+        scenario = _scenario(
+            scenario_id="chart",
+            script=("numbers", "generic"),
+            hard=(HardAssertion("chart_marker_contract"),),
+            channel="telegram",
+        )
+        transport = ActionTransport(replies=("[[chart:line]]", "Generic [[chart:line]]"))
+        run = run_behavior_suite(scenarios=[scenario], transport=transport, judge=None)
+        self.assertEqual(run.status, EvalRun.Status.FAIL)
+        self.assertEqual(_hard(run)[0].details["code"], "chart_on_generic")
+
+    def test_lesson_searches_then_adds_approved_and_reports_it(self):
+        def capture_lesson():
+            emit_tool_event(
+                tool_name="runtime-lessons-search",
+                outcome="accepted",
+                tenant_id=self.tenant.id,
+            )
+            Lesson.objects.create(
+                tenant=self.tenant,
+                text="The R3 Lantern Pause improves feedback decisions.",
+                context="conversation",
+                tags=["feedback", "decisions"],
+                source_type="conversation",
+                status="approved",
+                approved_at=dj_timezone.now(),
+            )
+            emit_tool_event(
+                tool_name="runtime-lessons",
+                outcome="accepted",
+                tenant_id=self.tenant.id,
+            )
+
+        scenario = _scenario(scenario_id="lesson", hard=(HardAssertion("lesson_capture_contract"),))
+        run = run_behavior_suite(
+            scenarios=[scenario],
+            transport=ActionTransport(actions=(capture_lesson,), replies=("Added to your constellation.",)),
+            judge=None,
+        )
+        self.assertEqual(run.status, EvalRun.Status.PASS)
+        self.assertEqual(_hard(run)[0].details["code"], "lesson_searched_added")
+
+    def test_redacted_identity_and_unchecked_claim_reply_contracts(self):
+        redacted = _scenario(
+            scenario_id="redacted",
+            hard=(HardAssertion("redacted_identity_clarified"),),
+        )
+        run = run_behavior_suite(
+            scenarios=[redacted],
+            transport=ActionTransport(replies=("That is a redacted placeholder. Who does it refer to?",)),
+            judge=None,
+        )
+        self.assertEqual(run.status, EvalRun.Status.PASS)
+
+        unchecked = _scenario(
+            scenario_id="unchecked",
+            hard=(HardAssertion("unchecked_claim_honest"),),
+        )
+        run = run_behavior_suite(
+            scenarios=[unchecked],
+            transport=ActionTransport(replies=("I haven't checked that.",)),
+            judge=None,
+        )
+        self.assertEqual(run.status, EvalRun.Status.PASS)
+
+    def test_stated_sleep_is_logged_this_turn(self):
+        def log_sleep():
+            SleepLog.objects.create(
+                tenant=self.tenant,
+                date=dj_timezone.localdate(),
+                duration_hours=Decimal("5.00"),
+            )
+
+        scenario = _scenario(scenario_id="sleep", hard=(HardAssertion("sleep_logged_5h"),))
+        run = run_behavior_suite(
+            scenarios=[scenario],
+            transport=ActionTransport(actions=(log_sleep,)),
+            judge=None,
+        )
+        self.assertEqual(run.status, EvalRun.Status.PASS)
+        self.assertEqual(_hard(run)[0].details["code"], "sleep_logged")
 
     def test_judge_off_skips_soft_with_reason(self):
         scenario = _scenario(
@@ -748,7 +1049,7 @@ class _FakeHttpxClient:
         self.post_bodies: list[dict] = []
 
     def post(self, url, json=None, headers=None):
-        self.post_bodies.append({"url": url, "json": json})
+        self.post_bodies.append({"url": url, "json": json, "headers": headers})
         if url.endswith("/threads/"):
             if self._thread_exc:
                 raise self._thread_exc
@@ -801,6 +1102,50 @@ class HttpxBehaviorTransportTest(TestCase):
         client = _FakeHttpxClient(messages=_Resp(200, {"status": "ready", "reply_text": "hi", "error": ""}))
         self._transport(client).send_turn(text="hello")
         self.assertNotIn("thread_id", client.post_bodies[0]["json"])
+
+    def test_document_turn_uses_real_attachment_field(self):
+        client = _FakeHttpxClient(
+            threads=_Resp(201, {"id": "thread-doc"}),
+            messages=_Resp(200, {"status": "ready", "reply_text": "proposal", "error": ""}),
+        )
+        transport = self._transport(client)
+        transport.open_conversation()
+        turn = transport.send_turn(text="review", document=True)
+        self.assertTrue(turn.ok)
+        message = next(item for item in client.post_bodies if item["url"].endswith("/messages/"))
+        self.assertTrue(message["json"]["document"])
+        self.assertEqual(message["json"]["thread_id"], "thread-doc")
+
+    @mock.patch("apps.cron.gateway_client.get_gateway_token_for_tenant", return_value="gateway-token")
+    def test_telegram_channel_returns_raw_gateway_reply_without_relay(self, _mock_token):
+        tenant = _synthetic_tenant()
+        tenant.container_fqdn = "oc-eval.example.com"
+        tenant.save(update_fields=["container_fqdn"])
+        client = _FakeHttpxClient(
+            threads=_Resp(201, {"id": "thread-tg"}),
+            messages=_Resp(
+                200,
+                {
+                    "choices": [
+                        {"message": {"content": "Trend [[chart:line]]"}},
+                    ]
+                },
+            ),
+        )
+        transport = HttpxBehaviorTransport(
+            base_url="https://api.test",
+            pat="pat_x",
+            client=client,
+            tenant=tenant,
+        )
+        transport.open_conversation(channel="telegram")
+        turn = transport.send_turn(text="show my trend")
+        self.assertTrue(turn.ok)
+        self.assertIn("[[chart:line]]", turn.reply_text)
+        gateway = next(item for item in client.post_bodies if "/v1/chat/completions" in item["url"])
+        self.assertEqual(gateway["headers"]["X-Channel"], "telegram")
+        self.assertEqual(gateway["headers"]["X-OpenClaw-Message-Channel"], "telegram")
+        self.assertEqual(gateway["json"]["user"], "thread:thread-tg")
 
     def test_open_conversation_non_2xx_raises(self):
         client = _FakeHttpxClient(threads=_Resp(500, {}))
@@ -869,15 +1214,21 @@ class BehaviorTaskTest(TestCase):
         self.addCleanup(self.ctx.disable)
 
     def test_nonpass_run_raises_into_dlq(self):
-        # Benign transport creates no cron → the shipped cron_registered fixture FAILS
-        # → finalize alerts (owner unset → skipped) then raises into the DLQ.
-        with self.assertRaises(RuntimeError):
+        # Benign transport creates no cron → cron_registered FAILS → finalize
+        # alerts (owner unset → skipped) then raises into the DLQ.
+        scenario = _scenario(scenario_id="cron", hard=(HardAssertion("cron_registered"),))
+        with (
+            mock.patch("apps.evals.suites.behavior.load_all_scenarios", return_value=[scenario]),
+            self.assertRaises(RuntimeError),
+        ):
             eval_behavior_task(transport=BenignTransport(), judge=FakeJudge())
 
     def test_pass_run_returns_summary(self):
-        # Typed-cron transport satisfies cron_registered; benign replies satisfy
-        # forbidden_absent / reply_nonempty across all shipped fixtures.
-        out = eval_behavior_task(transport=CronCreatingTransport(self.tenant), judge=FakeJudge())
+        # Keep this wrapper test scoped to one known-pass case; the fixture pack's
+        # per-rule effects are covered independently above.
+        scenario = _scenario(scenario_id="cron", hard=(HardAssertion("cron_registered"),))
+        with mock.patch("apps.evals.suites.behavior.load_all_scenarios", return_value=[scenario]):
+            out = eval_behavior_task(transport=CronCreatingTransport(self.tenant), judge=FakeJudge())
         self.assertEqual(out["suite"], "behavior")
         self.assertEqual(out["status"], EvalRun.Status.PASS)
         self.assertGreater(out["cases"], 0)

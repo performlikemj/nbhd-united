@@ -25,8 +25,25 @@ SCENARIOS_DIR = Path(__file__).resolve().parent / "scenarios"
 
 # Deterministic hard-assertion types (implemented in assertions.py). A fixture
 # naming any other type is rejected at load.
-VALID_HARD_TYPES: frozenset[str] = frozenset({"reply_nonempty", "marker_absent", "cron_registered", "forbidden_absent"})
+VALID_HARD_TYPES: frozenset[str] = frozenset(
+    {
+        "reply_nonempty",
+        "marker_absent",
+        "cron_registered",
+        "forbidden_absent",
+        "workout_logged_relative_date",
+        "plan_search_before_write",
+        "document_propose_then_save",
+        "chart_marker_contract",
+        "insight_marker_contract",
+        "lesson_capture_contract",
+        "redacted_identity_clarified",
+        "unchecked_claim_honest",
+        "sleep_logged_5h",
+    }
+)
 VALID_SOFT_DIMENSIONS: frozenset[str] = frozenset(rubric_v1.DIMENSIONS)
+VALID_CHANNELS: frozenset[str] = frozenset({"ios", "telegram", "line"})
 
 # The placeholder a scenario script uses to plant a fresh per-run marker.
 MARKER_TOKEN = "{{marker}}"
@@ -34,7 +51,9 @@ MARKER_TOKEN = "{{marker}}"
 # Bound the id so ``<id>::hard:<type>`` / ``<id>::soft:<dim>`` case ids stay under
 # the chassis' 64-char cap without truncation-collisions (record() truncates).
 _MAX_ID_LEN = 32
-_ALLOWED_TOP_KEYS = frozenset({"id", "persona", "script", "hard_assertions", "soft_dimensions"})
+_ALLOWED_TOP_KEYS = frozenset(
+    {"id", "persona", "script", "hard_assertions", "soft_dimensions", "channel", "document_turns"}
+)
 
 
 class ScenarioValidationError(ValueError):
@@ -60,6 +79,8 @@ class Scenario:
     script: tuple[str, ...]
     hard_assertions: tuple[HardAssertion, ...]
     soft_dimensions: tuple[str, ...]
+    channel: str = "ios"
+    document_turns: tuple[int, ...] = ()
 
     @property
     def uses_marker(self) -> bool:
@@ -143,6 +164,35 @@ def parse_scenario(data: object, *, source: str) -> Scenario:
     )
     script = [str(line) for line in raw_script]
 
+    channel = data.get("channel", "ios")
+    _require(
+        isinstance(channel, str) and channel in VALID_CHANNELS,
+        source,
+        f"'channel' must be one of {sorted(VALID_CHANNELS)}, got {channel!r}",
+    )
+    assert isinstance(channel, str)
+
+    raw_document_turns = data.get("document_turns", [])
+    _require(isinstance(raw_document_turns, list), source, "'document_turns' must be a list of zero-based indices")
+    assert isinstance(raw_document_turns, list)
+    _require(
+        all(isinstance(index, int) and not isinstance(index, bool) for index in raw_document_turns),
+        source,
+        "'document_turns' entries must be integers",
+    )
+    document_turns = tuple(int(index) for index in raw_document_turns)
+    _require(len(document_turns) == len(set(document_turns)), source, "duplicate document turn indices")
+    _require(
+        all(0 <= index < len(script) for index in document_turns),
+        source,
+        "'document_turns' contains an index outside the script",
+    )
+    _require(
+        not document_turns or channel == "ios",
+        source,
+        "document turns use the attachment-capable iOS control-plane path",
+    )
+
     raw_hard = data.get("hard_assertions")
     _require(
         isinstance(raw_hard, list) and len(raw_hard) > 0,
@@ -171,6 +221,8 @@ def parse_scenario(data: object, *, source: str) -> Scenario:
         script=tuple(script),
         hard_assertions=hard,
         soft_dimensions=soft,
+        channel=channel,
+        document_turns=document_turns,
     )
 
 

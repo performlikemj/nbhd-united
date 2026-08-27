@@ -37,6 +37,7 @@ no ``atomic()`` around driving; it writes EvalResult rows only after a turn retu
 
 from __future__ import annotations
 
+import base64
 import logging
 import time
 import uuid
@@ -87,6 +88,8 @@ class TurnResult:
     ok: bool = False
     # A short machine code for a failed turn (never content), e.g. "post_http_500".
     error: str = ""
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
 
 @dataclass
@@ -117,7 +120,7 @@ class BehaviorTransport(Protocol):
     run's first turn and the default for the rest.
     """
 
-    def open_conversation(self) -> str:
+    def open_conversation(self, *, channel: str = "ios") -> str:
         """Open a FRESH conversation scope for the next scenario, make it active for
         subsequent ``send_turn`` calls, and return its (content-free) scope id. The
         suite calls this before EACH scenario so scenarios cannot see each other's
@@ -126,7 +129,13 @@ class BehaviorTransport(Protocol):
         never silently reuse a prior scenario's (contaminated) scope."""
         ...
 
-    def send_turn(self, *, text: str, deadline_seconds: float | None = None) -> TurnResult: ...
+    def send_turn(
+        self,
+        *,
+        text: str,
+        deadline_seconds: float | None = None,
+        document: bool = False,
+    ) -> TurnResult: ...
 
 
 class HttpxBehaviorTransport:
@@ -148,25 +157,30 @@ class HttpxBehaviorTransport:
         deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
         poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
         client: httpx.Client | None = None,
+        tenant=None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._pat = pat
         self._deadline = deadline_seconds
         self._poll_interval = poll_interval_seconds
         self._client = client
+        self._tenant = tenant
         # The active per-scenario conversation scope (a ChatThread id). None until
         # the suite opens the first scope; ``send_turn`` carries it as ``thread_id``
         # so every turn lands in this scenario's own OpenClaw session.
         self._thread_id: str | None = None
+        self._channel = "ios"
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._pat}", "Content-Type": "application/json"}
 
-    def open_conversation(self) -> str:
+    def open_conversation(self, *, channel: str = "ios") -> str:
         """Mint a FRESH thread (its own OpenClaw session) and make it the active
         scope. Raises ``BehaviorConfigError`` on any failure so a scope we cannot
         open ERRORs the run loudly (INVARIANT #3) rather than silently reusing the
         prior scenario's contaminated scope."""
+        if channel not in {"ios", "telegram", "line"}:
+            raise BehaviorConfigError(f"behavior transport: unsupported channel {channel!r}")
         owns_client = self._client is None
         client = self._client or httpx.Client(timeout=_HTTP_TIMEOUT_SECONDS)
         threads_url = f"{self._base_url}{_THREADS_PATH}"
@@ -194,12 +208,24 @@ class HttpxBehaviorTransport:
                     "behavior transport: /chat/threads/ returned no thread id — cannot scope the scenario"
                 )
             self._thread_id = thread_id
+            self._channel = channel
             return thread_id
         finally:
             if owns_client:
                 client.close()
 
-    def send_turn(self, *, text: str, deadline_seconds: float | None = None) -> TurnResult:
+    def send_turn(
+        self,
+        *,
+        text: str,
+        deadline_seconds: float | None = None,
+        document: bool = False,
+    ) -> TurnResult:
+        if self._channel != "ios":
+            if document:
+                return TurnResult(user_text=text, error="document_channel_unsupported")
+            return self._send_direct_channel_turn(text=text, deadline_seconds=deadline_seconds)
+
         client_msg_id = uuid.uuid4().hex
         result = TurnResult(user_text=text)
         owns_client = self._client is None
@@ -210,6 +236,13 @@ class HttpxBehaviorTransport:
         # own OpenClaw session (transcript isolation). Absent only if a caller drove
         # a turn without opening a scope — the suite always opens one first.
         post_body = {"client_msg_id": client_msg_id, "text": text}
+        if document:
+            # A tiny magic-valid synthetic PDF is sufficient to exercise the real
+            # attachment ingress + document-turn write gate. The scenario's
+            # synthetic facts stay in the caption, so no fixture content can be
+            # lost to async extraction timing.
+            pdf_bytes = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n" + b"\x00" * 32
+            post_body["document"] = base64.b64encode(pdf_bytes).decode("ascii")
         if self._thread_id:
             post_body["thread_id"] = self._thread_id
         started = time.monotonic()
@@ -242,6 +275,66 @@ class HttpxBehaviorTransport:
                 if str(body.get("status") or "") in _TERMINAL_STATUSES:
                     return self._finalize(result, body)
             result.error = "timeout"
+            return result
+        finally:
+            if owns_client:
+                client.close()
+
+    def _send_direct_channel_turn(self, *, text: str, deadline_seconds: float | None) -> TurnResult:
+        """Drive Telegram/LINE marker cases directly against OpenClaw.
+
+        The ordinary iOS control-plane path deliberately strips ``[[chart:]]``
+        and ``[[insight:]]`` before the polling response. Marker evals need the
+        raw assistant reply, so they use the same container gateway + channel
+        headers as the real Telegram/LINE drains while stopping before provider
+        relay. The target tenant remains ``is_eval_sink=True`` throughout.
+        """
+        result = TurnResult(user_text=text)
+        tenant = self._tenant
+        if tenant is None or not getattr(tenant, "container_fqdn", ""):
+            result.error = "direct_channel_unconfigured"
+            return result
+        if not self._thread_id:
+            result.error = "no_scope"
+            return result
+
+        from apps.cron.gateway_client import get_gateway_token_for_tenant
+        from apps.router.pending_queue import _extract_ai_response
+
+        gateway_token = get_gateway_token_for_tenant(tenant)
+        user_timezone = getattr(getattr(tenant, "user", None), "timezone", None) or "UTC"
+        url = f"https://{tenant.container_fqdn}/v1/chat/completions"
+        payload = {
+            "model": "openclaw",
+            "messages": [{"role": "user", "content": text}],
+            "user": f"thread:{self._thread_id}",
+        }
+        headers = {
+            "Authorization": f"Bearer {gateway_token}",
+            "X-User-Timezone": user_timezone,
+            "X-Channel": self._channel,
+            "X-OpenClaw-Message-Channel": self._channel,
+        }
+        owns_client = self._client is None
+        client = self._client or httpx.Client(timeout=deadline_seconds or self._deadline)
+        try:
+            try:
+                response = client.post(url, json=payload, headers=headers)
+            except httpx.HTTPError:
+                result.error = "gateway_post_error"
+                return result
+            if response.status_code != 200:
+                result.error = f"gateway_http_{response.status_code}"
+                return result
+            try:
+                body = response.json()
+            except (ValueError, TypeError):
+                result.error = "gateway_non_json"
+                return result
+            result.reply_text = _extract_ai_response(body)
+            result.ok = bool(result.reply_text.strip())
+            if not result.ok:
+                result.error = "empty_reply"
             return result
         finally:
             if owns_client:
@@ -320,7 +413,7 @@ def build_behavior_transport(tenant) -> BehaviorTransport:
             "follows provisioning."
         )
     pat = resolve_behavior_pat(tenant)
-    return HttpxBehaviorTransport(base_url=base_url, pat=pat)
+    return HttpxBehaviorTransport(base_url=base_url, pat=pat, tenant=tenant)
 
 
 # Scenario isolation is now REAL, via a fresh conversation scope per scenario

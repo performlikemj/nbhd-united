@@ -1,0 +1,11 @@
+# A stated sleep duration is a write-now Fuel fact even without an explicit
+# "log this" command.
+id: sleep_logged
+persona: >
+  A user casually sharing last night's sleep duration in conversation.
+script:
+  - "I slept 5 hours last night."
+hard_assertions:
+  - type: sleep_logged_5h
+  - type: reply_nonempty
+soft_dimensions: []
