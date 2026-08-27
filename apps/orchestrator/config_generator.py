@@ -209,18 +209,18 @@ _CRON_CONTEXT_PREAMBLE = (
     "'everything'. Confabulated postmortems erode user trust and hide the real "
     "root cause from operators investigating later. Skip only the affected "
     "section; sections whose tools succeeded are still required.\n\n"
+    "7. Call `nbhd_journal_context` only when the task below needs recent "
+    "journal/backbone context; otherwise skip it.\n\n"
 )
 
 
 _CRON_RULE_ROWS = (
     ("rules/journal-capture.md", "Journal capture"),
     ("rules/lessons-constellation.md", "Lessons"),
-    ("rules/memory.md", "Memory"),
     ("rules/onboarding.md", "Onboarding"),
     ("rules/messaging.md", "Cron delivery, check-in windows, automated routines"),
     ("rules/week-ahead.md", "Weekly review"),
     ("rules/fuel.md", "Fuel"),
-    ("rules/document-ingestion.md", "Uploaded documents"),
 )
 _CRON_DOC_ROWS = (
     ("docs/tools-reference.md", "before using any tool you're unsure about"),
@@ -1721,13 +1721,11 @@ def _build_memory_flush_block(tenant: Tenant) -> dict:
         "systemPrompt": (
             "Session nearing compaction. Save important context now. "
             "Use nbhd_memory_update for lasting insights about the user. "
-            "Use nbhd_daily_note_append for today's notable events. "
-            "Also write a brief session summary to memory/YYYY-MM-DD.md as a workspace backup."
+            "Use nbhd_daily_note_append for today's notable events."
         ),
         "prompt": (
             "Review this conversation for anything worth remembering. "
-            "Save lasting insights via nbhd_memory_update, today's events via nbhd_daily_note_append, "
-            "and a brief summary to your workspace memory file. "
+            "Save lasting insights via nbhd_memory_update and today's events via nbhd_daily_note_append. "
             "Reply with NO_REPLY when done."
         ),
     }

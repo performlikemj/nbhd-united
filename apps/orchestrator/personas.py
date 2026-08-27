@@ -469,7 +469,7 @@ def render_agents_md(persona_key: str) -> str:
         f"    - Morning report, weather, news, focus → matching slug\n"
         f"  - `nbhd_daily_note_append` -- ONLY for unstructured quick notes that don't fit a section\n"
         f"  - `nbhd_memory_get` / `nbhd_memory_update` -- read/write long-term memory\n"
-        f"  - `nbhd_journal_context` -- session init (recent notes + memory)\n"
+        f"  - `nbhd_journal_context` -- only for cron-requested or user-requested recent context\n"
         f"- Do not invent storage APIs or bypass tenant-scoped runtime tools.\n"
     )
 
@@ -781,8 +781,8 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     # tenant with document_ingestion_enabled loads the nbhd_document_* tools, so
     # the block that NAMES them (record/list/forget) is gated the same way — a
     # tenant without the flag never sees a tool it doesn't have (critic finding 5).
-    # The base body's generic gate + the fleet-wide rules file carry the behavior;
-    # this adds the tool workflow. Placed BEFORE the larger Gravity block so it is
+    # The base body's generic gate carries the behavior; this adds the tool
+    # workflow. Placed BEFORE the larger Gravity block so it is
     # never the silently-truncated tail if AGENTS.md exceeds the bootstrap budget.
     if tenant is not None and getattr(tenant, "document_ingestion_enabled", False):
         document_keep_removal_gate = (

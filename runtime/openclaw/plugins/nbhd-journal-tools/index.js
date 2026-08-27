@@ -218,7 +218,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_document_put",
       description:
-        "Create or replace a free-form narrative document. Use for daily notes, weekly/monthly reviews, project narratives, ideas, long-term memory. Do NOT use for goals or tasks — those have dedicated lifecycle tools (nbhd_goal_* and nbhd_task_*) so their status, due dates, and completion are queryable instead of buried in markdown. Kinds: daily, weekly, monthly, project, ideas, memory.",
+        "Create or replace a free-form narrative document. Use for daily notes, weekly/monthly reviews, project narratives, ideas, long-term memory. Durable behavioural directives go to `kind=memory, slug=intents`, one directive per line. Do NOT use for goals or tasks — those have dedicated lifecycle tools (nbhd_goal_* and nbhd_task_*) so their status, due dates, and completion are queryable instead of buried in markdown. Kinds: daily, weekly, monthly, project, ideas, memory.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -503,7 +503,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_memory_get",
       description:
-        "Get the user's long-term memory document (raw markdown). Contains curated preferences, goals, decisions, and lessons.",
+        "Get the user's long-term memory document (raw markdown). Use for assistant-held patterns, stable preferences, decisions, and lessons; for shared records, call nbhd_journal_search first.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -524,7 +524,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_memory_update",
       description:
-        "Replace the user's long-term memory document. Use after reviewing daily notes to curate preferences, goals, decisions, and lessons learned.",
+        "Replace the user's long-term memory document. Remember only durable names, locations, and facts; stable preferences; month-worthy patterns; and changed ongoing situations. Do not store routine details, journal duplicates, or unrequested sensitive emotions. When unsure, write less.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -556,7 +556,8 @@ export default function register(api) {
       description:
         "Load recent daily notes, long-term memory, backbone goals/tasks, and recent constellation " +
         "activity (stars the user has been working through — their pinned notes, reflections, and " +
-        "tutoring signals) in one call. Use at the start of every session to get caught up.",
+        "tutoring signals) in one call. Use when a cron preamble asks for it or when the user's request " +
+        "needs recent journal/backbone context; not at the start of ordinary chat turns.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -629,7 +630,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_journal_search",
       description:
-        "Search across all journal documents (daily notes, goals, projects, memory, reviews, etc.) by keyword or phrase. Uses full-text search. Use this to find past entries, recall what was written about a topic, or locate specific notes.",
+        "Search shared journal records first when recalling what was written about a topic. Searches all journal documents (daily notes, goals, projects, memory, reviews, etc.) by keyword or phrase using full-text search.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -892,7 +893,7 @@ export default function register(api) {
         "List YardTalk work sessions that have not yet been distilled into the journal/tasks/goals/memory primitives. " +
         "For each returned session, decide where its content belongs and write it using existing tools: " +
         "`nbhd_daily_note_append` for the work log of the session date; " +
-        "`nbhd_document_put` / `nbhd_document_append` for tasks (kind='tasks'), goals (kind='goal'), ideas, or per-project notes (kind='project'); " +
+        "`nbhd_task_*` for tasks, `nbhd_goal_*` for goals, and `nbhd_document_put` / `nbhd_document_append` for ideas or per-project notes (kind='project'); " +
         "`nbhd_memory_update` for cross-session context worth carrying forward. " +
         "Then call `nbhd_session_mark_processed` once per session with a brief record of what you wrote. " +
         "Skip a session (call mark with `skip_reason`) if it's a stub under ~30s, has no actionable content, or is purely a duplicate of something already filed. " +

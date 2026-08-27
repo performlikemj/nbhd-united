@@ -193,6 +193,35 @@ test("lesson and journal descriptions carry the rules-delivery contracts", () =>
   assert.match(constellation, /never quote a raw signal back to them/);
 });
 
+test("memory and journal descriptions carry the W3 rules-delivery contracts", () => {
+  const tools = collectTools();
+
+  assert.ok(tools.nbhd_document_put.description.includes("Durable behavioural directives go to `kind=memory, slug=intents`, one directive per line"));
+
+  const memoryGet = tools.nbhd_memory_get.description;
+  assert.ok(memoryGet.includes("assistant-held patterns"));
+  assert.ok(memoryGet.includes("for shared records, call nbhd_journal_search first"));
+
+  const memoryUpdate = tools.nbhd_memory_update.description;
+  assert.ok(memoryUpdate.includes("durable names, locations, and facts"));
+  assert.ok(memoryUpdate.includes("stable preferences"));
+  assert.ok(memoryUpdate.includes("month-worthy patterns"));
+  assert.ok(memoryUpdate.includes("changed ongoing situations"));
+  assert.ok(memoryUpdate.includes("Do not store routine details, journal duplicates, or unrequested sensitive emotions"));
+  assert.ok(memoryUpdate.includes("When unsure, write less"));
+
+  const context = tools.nbhd_journal_context.description;
+  assert.ok(context.includes("when a cron preamble asks for it"));
+  assert.ok(context.includes("when the user's request needs recent journal/backbone context"));
+  assert.ok(context.includes("not at the start of ordinary chat turns"));
+
+  assert.ok(tools.nbhd_journal_search.description.includes("Search shared journal records first"));
+
+  const sessions = tools.nbhd_sessions_pending.description;
+  assert.ok(sessions.includes("`nbhd_task_*` for tasks, `nbhd_goal_*` for goals"));
+  assert.ok(!sessions.includes("for tasks (kind='tasks'), goals (kind='goal')"));
+});
+
 test("platform issue sender omits absent optional strings and preserves supplied context", async () => {
   const originalFetch = globalThis.fetch;
   const originalTenantId = process.env.NBHD_TENANT_ID;

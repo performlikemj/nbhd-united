@@ -9,8 +9,8 @@ by design. What Phase 1 still pins — and keeps pinned here — is the
 ``set_prompt_extras`` composition mechanics (concat, not clobber) and that
 prompt-extras never perturb ``openclaw.json`` generation.
 
-Phase 2's layering (critic finding 5): the base behavioral gate and the
-generic rules file are fleet-wide and tool-name-free; only a tenant with
+Phase 2's layering (critic finding 5): the base behavioral gate is fleet-wide
+and tool-name-free; only a tenant with
 ``document_ingestion_enabled`` sees the block that NAMES ``nbhd_document_*``
 and only that tenant loads the plugin. The base gate must also keep the
 finance-tenant AGENTS.md load-bearing blocks above the per-file bootstrap
@@ -54,14 +54,8 @@ class BaseGateFleetWideTest(TestCase):
         for name in _TOOL_NAMES:
             self.assertNotIn(name, md)
 
-    def test_generic_rules_file_is_fleet_wide(self):
-        rules = render_workspace_rules()
-        self.assertIn("document-ingestion.md", rules)
-        body = rules["document-ingestion.md"]
-        self.assertIn("never on the same turn the document arrived", body)
-        # The generic fleet-wide rules must not name the removal/keep tools.
-        self.assertNotIn("nbhd_document_keep", body)
-        self.assertNotIn("nbhd_document_forget", body)
+    def test_retired_generic_rules_file_is_absent(self):
+        self.assertNotIn("document-ingestion.md", render_workspace_rules())
 
 
 class FlagGatedToolBlockTest(TestCase):

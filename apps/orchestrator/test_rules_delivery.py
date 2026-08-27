@@ -15,12 +15,10 @@ _CHAT_FILE_POINTER = re.compile(r"(?:rules|docs)/[a-z_-]+\.md")
 _CRON_INDEX_ROWS = (
     ("rules/journal-capture.md", "Journal capture"),
     ("rules/lessons-constellation.md", "Lessons"),
-    ("rules/memory.md", "Memory"),
     ("rules/onboarding.md", "Onboarding"),
     ("rules/messaging.md", "Cron delivery, check-in windows, automated routines"),
     ("rules/week-ahead.md", "Weekly review"),
     ("rules/fuel.md", "Fuel"),
-    ("rules/document-ingestion.md", "Uploaded documents"),
     ("docs/tools-reference.md", "before using any tool you're unsure about"),
     ("docs/cron-management.md", "before creating, editing, or disabling scheduled tasks"),
     ("docs/error-handling.md", "when a tool fails or a feature isn't working"),
@@ -51,6 +49,11 @@ class RulesDeliveryTest(TestCase):
             cron_prompt = _prepare_cron_prompt("Task body", tenant)
 
         self.assertIn("On-demand rule files (you can read these in this session)", cron_prompt)
+        self.assertIn(
+            "Call `nbhd_journal_context` only when the task below needs recent journal/backbone context; "
+            "otherwise skip it.",
+            cron_prompt,
+        )
         for path, load_for in _CRON_INDEX_ROWS:
             with self.subTest(path=path):
                 self.assertIn(f"| `{path}` | {load_for} |", cron_prompt)
@@ -58,6 +61,9 @@ class RulesDeliveryTest(TestCase):
             "| `rules/subagents.md` | Slow-task delegation and app completion delivery |",
             cron_prompt,
         )
+        self.assertNotIn("| `rules/memory.md` |", cron_prompt)
+        self.assertNotIn("| `rules/document-ingestion.md` |", cron_prompt)
+        self.assertNotIn("| `rules/reply-markers.md` |", cron_prompt)
 
     def test_all_gates_render_within_pin(self):
         prompt = render_workspace_files("neighbor", tenant=self._all_gates_tenant())["NBHD_AGENTS_MD"]
