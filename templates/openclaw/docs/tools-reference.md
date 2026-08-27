@@ -163,9 +163,6 @@ Workspaces are a content-organization label only — they do not route chat mess
 | Tool | Required params | Description |
 |------|----------------|-------------|
 | `nbhd_reddit_digest` | `subreddit` (no r/ prefix) | Top posts from a subreddit — **ask user which subreddit if not saved** |
-| `nbhd_reddit_search` | `search_query` | Search across all of Reddit |
-| `nbhd_reddit_new` | `subreddit` | Newest posts in a subreddit |
-| `nbhd_reddit_comments` | `article` (post ID) | Comments on a specific post |
 | `nbhd_reddit_my_activity` | none | User profile/about info |
 | `nbhd_reddit_post` | `subreddit`, `title` | Submit a post — **always get explicit approval first** |
 | `nbhd_reddit_reply` | `thing_id`, `text` | Reply to post/comment — **always get explicit approval first** |
