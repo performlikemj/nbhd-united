@@ -158,26 +158,32 @@ class SharedPiiPipeline:
         self._consecutive_failures = 0
         self._open_until = 0.0
         self._half_open_probe = False
+        self._generation = 0
 
-    def _before_call(self) -> bool:
+    def _before_call(self) -> tuple[int, bool]:
         now = self._clock()
         with self._breaker_lock:
             if not self._open_until:
-                return False
+                return self._generation, False
             if now < self._open_until or self._half_open_probe:
                 raise SharedPiiError("shared detector circuit is open", outcome="circuit_open")
             self._half_open_probe = True
-            return True
+            return self._generation, True
 
-    def _record_success(self) -> None:
+    def _record_success(self, generation: int, half_open: bool) -> None:
         with self._breaker_lock:
+            if not half_open and generation != self._generation:
+                return
             self._consecutive_failures = 0
             self._open_until = 0.0
             self._half_open_probe = False
 
-    def _record_failure(self, outcome: str, half_open: bool) -> None:
+    def _record_failure(self, outcome: str, generation: int, half_open: bool) -> None:
         with self._breaker_lock:
-            self._half_open_probe = False
+            if not half_open and generation != self._generation:
+                return
+            if half_open:
+                self._half_open_probe = False
             if outcome not in _BREAKER_OUTCOMES:
                 if half_open:
                     self._consecutive_failures = 0
@@ -185,6 +191,7 @@ class SharedPiiPipeline:
                 return
             self._consecutive_failures += 1
             if half_open or self._consecutive_failures >= _BREAKER_FAILURE_LIMIT:
+                self._generation += 1
                 self._open_until = self._clock() + _BREAKER_OPEN_S
 
     def _log_call(self, *, outcome: str, started: float, text_length: int, span_count: int) -> None:
@@ -203,15 +210,16 @@ class SharedPiiPipeline:
         if not isinstance(text, str):
             self._log_call(outcome="bad_response", started=started, text_length=0, span_count=0)
             raise SharedPiiError("shared detector input must be text", outcome="bad_response")
+        generation = 0
         half_open = False
         try:
-            half_open = self._before_call()
+            generation, half_open = self._before_call()
             spans = self._call(text)
         except SharedPiiError as exc:
-            self._record_failure(exc.outcome, half_open)
+            self._record_failure(exc.outcome, generation, half_open)
             self._log_call(outcome=exc.outcome, started=started, text_length=text_length, span_count=0)
             raise
-        self._record_success()
+        self._record_success(generation, half_open)
         self._log_call(outcome="ok", started=started, text_length=text_length, span_count=len(spans))
         return spans
 

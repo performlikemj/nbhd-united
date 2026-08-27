@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import socket
@@ -262,6 +263,56 @@ class SharedPiiClientTests(SimpleTestCase):
                 self.assertEqual(client("abc"), [])
             with _scripted_server(path, response):
                 self.assertEqual(client("abc"), [])
+
+    def test_late_success_cannot_close_new_breaker_generation(self):
+        clock = [100.0]
+        client = SharedPiiPipeline(socket_path="unused.sock", clock=lambda: clock[0])
+        admitted = threading.Barrier(8)
+        release_late_success = threading.Event()
+
+        def call_after_admission(text):
+            admitted.wait()
+            if text == "late-success":
+                release_late_success.wait(2)
+                return []
+            if text.startswith("failure"):
+                raise SharedPiiError("synthetic connect failure", outcome="connect")
+            raise SharedPiiError("synthetic oversized request", outcome="too_large")
+
+        def invoke(text):
+            try:
+                return client(text)
+            except SharedPiiError as exc:
+                return exc.outcome
+
+        inputs = [
+            "failure-0",
+            "failure-1",
+            "failure-2",
+            "late-success",
+            "large-0",
+            "large-1",
+            "large-2",
+            "large-3",
+        ]
+        with (
+            patch.object(client, "_call", side_effect=call_after_admission),
+            concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor,
+        ):
+            futures = [executor.submit(invoke, text) for text in inputs]
+            self.assertEqual({futures[index].result(2) for index in range(3)}, {"connect"})
+            release_late_success.set()
+            self.assertEqual(futures[3].result(2), [])
+            self.assertEqual({future.result(2) for future in futures[4:]}, {"too_large"})
+
+        with self.assertRaises(SharedPiiError) as opened:
+            client("still-open")
+        self.assertEqual(opened.exception.outcome, "circuit_open")
+
+        clock[0] += 31
+        with patch.object(client, "_call", return_value=[]):
+            self.assertEqual(client("half-open"), [])
+            self.assertEqual(client("closed"), [])
 
     def test_truncated_oversized_and_malformed_frames(self):
         cases = {
