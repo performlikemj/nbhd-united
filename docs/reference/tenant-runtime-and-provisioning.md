@@ -106,7 +106,7 @@ Single input `tenant`; tier and version are derived from tenant fields (`config_
 | `>= 2026.5.0` | `plugins.bundledDiscovery:"compat"`; per-provider `timeoutSeconds` **replaces** the retired `agents.defaults.llm` idle key (pre-5.0 emits `llm`, `:2293`; post emits provider timeout) | `:2216`, `:2285` |
 | `>= 2026.5.28` | `tools.toolSearch`, and `agents.defaults.params`/`contextPruning` | `:1744`, `:2330` |
 
-**Bootstrap budget.** `agents.defaults.bootstrapMaxChars: 18000` / `bootstrapTotalMaxChars: 80000` (`config_generator.py:2059–2060`) cap how much AGENTS.md/USER.md/SOUL.md is injected per turn (raised above the OC 12k/60k default for the Phase-2 insights prompt).
+**Bootstrap budget.** `agents.defaults.bootstrapMaxChars: 24000` / `bootstrapTotalMaxChars: 80000` (`config_generator.py:2667–2668`) cap how much AGENTS.md/USER.md/SOUL.md is injected per turn (raised above the OC 12k/60k default for the Phase-2 insights prompt). `MaximalTenantBudgetTest.test_rules_delivery_r0_all_gates_budget` pins the all-gates AGENTS.md render size in CI.
 
 **Plugins (config_generator.py:1852–2219).** A `(plugin_id, path)` list built from settings — unconditional (Google, Journal, Usage, ImageGen, Settings, RoutingContext, ActivityStream, StreamProgress) plus per-tenant-flag-gated (Reddit, Finance, Fuel, Site-publishing, Neighborhood/Friends, Insights, typed-crons). `_active_plugins` drops any entry whose ID is `""` (`config_generator.py:2018`) — this empty-ID convention is the **smoke-disable** mechanism (a bad plugin path wedges boot to last-good). `plugins.allow` and `plugins.entries` are kept consistent (`config_validator` flags orphans).
 

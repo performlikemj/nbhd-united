@@ -181,13 +181,12 @@ class BaseTemplateDocProseTrimTest(TestCase):
        here, not silently in production.
     """
 
-    # Ceilings sit above the post-trim render and below the pre-trim size (the
-    # trim took 677 chars off the base template, so off every render). Measured:
-    # lean render 16679 before → 16002 after; worst-case non-finance 20965 before
-    # → 20288 after. A ceiling between the two fails loudly if the doc/attachment
-    # prose re-bloats, without being so tight that an ordinary one-line wording
-    # tweak trips it.
-    _LEAN_CEILING = 16300
+    # Ceilings sit above the post-trim render and below the pre-trim size. The
+    # original document-prose trim took 677 chars off every render; rules-delivery
+    # R0 then brought the lean render from 16221 to 15040. A ceiling between the
+    # two fails loudly if the prose re-bloats, without being so tight that an
+    # ordinary one-line wording tweak trips it.
+    _LEAN_CEILING = 15119
     _WORST_NON_FINANCE_CEILING = 20600
 
     def test_lean_tenant_base_render_reflects_the_trim(self):

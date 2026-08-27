@@ -2216,7 +2216,7 @@ def _build_tools_section(
     # doctor`), and the redactor masks the resulting validation error, so
     # tenants still on the 5.7 image must NOT receive it. The canary's
     # openclaw_version is bumped to 2026.5.28 in lock-step with its image.
-    # See CONTINUITY_openclaw-528-toolsearch.md.
+    # See docs/reference/tenant-runtime-and-provisioning.md, "Version gates".
     from apps.orchestrator.tool_policy import _parse_version
 
     if _parse_version(version) >= (2026, 5, 28):

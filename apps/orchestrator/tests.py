@@ -821,7 +821,7 @@ class SautaiAgentsMdGateTest(TestCase):
         md = self._agents_md(self.flagged)
         self.assertIn("nbhd_generate_meal_plan", md)
         self.assertIn("nbhd_get_meal_plan", md)
-        self.assertIn("search the tool catalog", md)
+        self.assertIn("search the catalog", md)
         self.assertIn("not pre-loaded", md)
 
     def test_gate_absent_for_plain_tenant(self):
