@@ -220,7 +220,6 @@ _CRON_RULE_ROWS = (
     ("rules/messaging.md", "Cron delivery, check-in windows, automated routines"),
     ("rules/week-ahead.md", "Weekly review"),
     ("rules/fuel.md", "Fuel"),
-    ("rules/reply-markers.md", "Reply markers"),
     ("rules/document-ingestion.md", "Uploaded documents"),
 )
 _CRON_DOC_ROWS = (
