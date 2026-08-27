@@ -688,6 +688,19 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         "NBHD_SOUL_MD": render_soul_managed(persona_key, tenant),
         "NBHD_IDENTITY_MD": render_identity_managed(persona_key, tenant),
     }
+    # Profile onboarding gate — use the same omission predicate as USER.md's
+    # managed Profile section. UTC is the platform default, so it does not count
+    # as a confirmed timezone; an empty city likewise omits Home location.
+    user = getattr(tenant, "user", None)
+    if user is not None:
+        user_tz = (getattr(user, "timezone", "") or "").strip()
+        city = (getattr(user, "location_city", "") or "").strip()
+        if not user_tz or user_tz == "UTC" or not city:
+            onboarding_gate = (
+                "If USER.md lacks timezone or home city, ask once and never infer; save via nbhd_update_profile."
+            )
+            result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + onboarding_gate
+
     # Site publishing gate — behavioral, per-tenant. Only tenants with their own
     # website connected (site_publishing_enabled) load the publish_portfolio_image
     # tool, so the imperative cue that makes the agent actually CALL it — rather

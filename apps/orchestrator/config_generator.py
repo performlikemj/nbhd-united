@@ -217,7 +217,6 @@ _CRON_CONTEXT_PREAMBLE = (
 _CRON_RULE_ROWS = (
     ("rules/journal-capture.md", "Journal capture"),
     ("rules/lessons-constellation.md", "Lessons"),
-    ("rules/onboarding.md", "Onboarding"),
     ("rules/messaging.md", "Cron delivery, check-in windows, automated routines"),
     ("rules/week-ahead.md", "Weekly review"),
     ("rules/fuel.md", "Fuel"),

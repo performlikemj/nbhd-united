@@ -815,6 +815,8 @@ def update_tenant_config(tenant_id: str) -> None:
         delete_workspace_file(str(tenant.id), "workspace/rules/reply-markers.md")
         delete_workspace_file(str(tenant.id), "workspace/rules/memory.md")
         delete_workspace_file(str(tenant.id), "workspace/rules/document-ingestion.md")
+        delete_workspace_file(str(tenant.id), "workspace/rules/onboarding.md")
+        delete_workspace_file(str(tenant.id), "workspace/rules/_principles.md")
         if not subagents_enabled(tenant):
             delete_workspace_file(str(tenant.id), "workspace/rules/subagents.md")
         for filename, content in rules.items():
