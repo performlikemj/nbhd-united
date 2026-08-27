@@ -179,6 +179,7 @@ class SharedDetectorServer:
         self._listener: socket.socket | None = None
         self._bound = False
         self._pipeline: Callable[[str], list[dict[str, Any]]] | None = None
+        self.load_failure: Exception | None = None
         self._worker: threading.Thread | None = None
         self._handlers: set[threading.Thread] = set()
         self._handlers_lock = threading.Lock()
@@ -305,6 +306,7 @@ class SharedDetectorServer:
                 _configure_determinism()
             self._pipeline = self.pipeline_loader(self.engine)
         except Exception as exc:
+            self.load_failure = exc
             self._log_event(
                 outcome="not_ready",
                 text_length=0,
@@ -520,7 +522,7 @@ class SharedDetectorServer:
             return
 
 
-def main() -> None:
+def main() -> int:
     logging.basicConfig(level=logging.INFO)
     server = SharedDetectorServer()
 
@@ -533,7 +535,8 @@ def main() -> None:
         server.serve_forever()
     finally:
         server.shutdown()
+    return 3 if server.load_failure is not None else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

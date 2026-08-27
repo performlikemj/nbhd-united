@@ -407,6 +407,29 @@ class SharedPiiClientTests(SimpleTestCase):
 
 
 class SharedPiiServerTests(SimpleTestCase):
+    def test_model_load_failure_exits_sidecar_nonzero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "pii.sock")
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PII_SHARED_SOCKET": path,
+                    "PII_DETECTOR_ENGINE": "deberta",
+                    "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+                }
+            )
+            completed = subprocess.run(
+                [sys.executable, "-m", "apps.pii.testsupport.failing_shared_detector"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 3)
+        self.assertFalse(Path(path).exists())
+
     def test_adversarial_protocol_values_are_bad_requests(self):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "pii.sock")
