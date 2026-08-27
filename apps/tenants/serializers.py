@@ -90,6 +90,8 @@ class TenantSerializer(serializers.ModelSerializer):
             "trial_started_at",
             "trial_ends_at",
             "is_trial",
+            "is_synthetic",
+            "is_eval_sink",
             "container_id",
             "container_fqdn",
             "messages_today",
