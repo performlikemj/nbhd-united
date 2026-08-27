@@ -122,7 +122,7 @@ doing this," long-term / life goals, or a major life or career decision.
 ### Lessons
 | Tool | Purpose |
 |------|---------|
-| `nbhd_lesson_suggest` | Suggest a lesson for the user to approve |
+| `nbhd_lesson_suggest` | Add an approved lesson immediately to the constellation (no approval queue) |
 | `nbhd_lessons_pending` | List lessons awaiting approval |
 | `nbhd_lesson_search` | Search approved lessons semantically |
 

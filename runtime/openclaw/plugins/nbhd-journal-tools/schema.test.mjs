@@ -168,6 +168,31 @@ test("omission-prone tools name their required params in the description", () =>
   }
 });
 
+test("lesson and journal descriptions carry the rules-delivery contracts", () => {
+  const tools = collectTools();
+  const lesson = tools.nbhd_lesson_suggest;
+  assert.match(lesson.description, /approved lesson immediately/);
+  assert.match(lesson.description, /no approval queue/);
+  assert.match(lesson.description, /First call `nbhd_lesson_search` and skip near-duplicates/);
+  assert.match(lesson.description, /specific, actionable personal insight over trivia/);
+  assert.match(lesson.description, /useful in six months/);
+  assert.match(lesson.description, /trivial facts, temporary logistics, and vague or untestable statements/);
+  assert.match(lesson.description, /Never write lessons into daily notes/);
+  assert.match(lesson.description, /Supply 2–4 `tags`/);
+  assert.match(lesson.parameters.properties.tags.description, /2–4 concise tags/);
+
+  const setSection = tools.nbhd_daily_note_set_section.description;
+  assert.match(setSection, /OVERWRITES the whole section/);
+  assert.match(setSection, /first call `nbhd_daily_note_get`/);
+  assert.match(setSection, /merge the existing section with the new content/);
+  assert.match(setSection, /earlier content is preserved/);
+
+  const constellation = tools.nbhd_constellation_notes.description;
+  assert.match(constellation, /evidence about how the user learns/);
+  assert.match(constellation, /use them to teach to this user/);
+  assert.match(constellation, /never quote a raw signal back to them/);
+});
+
 test("platform issue sender omits absent optional strings and preserves supplied context", async () => {
   const originalFetch = globalThis.fetch;
   const originalTenantId = process.env.NBHD_TENANT_ID;

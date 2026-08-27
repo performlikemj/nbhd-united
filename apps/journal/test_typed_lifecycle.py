@@ -428,17 +428,15 @@ class TypedLifecycleSwapsTest(TestCase):
         self.assertNotIn("nbhd_document_append` (kind='goal'", out)
         self.assertNotIn("nbhd_document_get` with kind='goal'", out)
 
-    def test_flag_on_swaps_document_set_variants(self):
-        self.tenant.experimental_typed_journal_lifecycle = True
-        self.tenant.save()
-        prompt = (
-            "Action items → tasks document (`nbhd_document_set` with kind='tasks', slug='tasks')\n"
-            "Goals → goals document (`nbhd_document_set` with kind='goal', slug='goals')"
-        )
-        out = self._prepare(prompt)
-        self.assertIn("nbhd_task_create", out)
-        self.assertIn("nbhd_goal_create", out)
-        self.assertNotIn("nbhd_document_set", out)
+    def test_seeded_cron_prompts_never_emit_retired_document_set_tool(self):
+        from apps.orchestrator.config_generator import build_cron_seed_jobs
+
+        for typed_lifecycle in (False, True):
+            with self.subTest(typed_lifecycle=typed_lifecycle):
+                self.tenant.experimental_typed_journal_lifecycle = typed_lifecycle
+                self.tenant.save(update_fields=["experimental_typed_journal_lifecycle"])
+                prompts = [job["payload"]["message"] for job in build_cron_seed_jobs(self.tenant)]
+                self.assertNotIn("nbhd_document_set", "\n".join(prompts))
 
     def test_flag_on_task_swap_forbids_deletion_from_a_cron_turn(self):
         """Cron turns run with no user in the loop, so they can never satisfy the

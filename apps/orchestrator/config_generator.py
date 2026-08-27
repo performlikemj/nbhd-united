@@ -218,7 +218,6 @@ _CRON_RULE_ROWS = (
     ("rules/onboarding.md", "Onboarding"),
     ("rules/messaging.md", "Cron delivery, check-in windows, automated routines"),
     ("rules/week-ahead.md", "Weekly review"),
-    ("rules/voice-journal.md", "Voice journal"),
     ("rules/fuel.md", "Fuel"),
     ("rules/reply-markers.md", "Reply markers"),
     ("rules/document-ingestion.md", "Uploaded documents"),
@@ -354,21 +353,11 @@ _TYPED_LIFECYCLE_SWAPS: tuple[tuple[str, str], ...] = (
         "which an automated turn cannot obtain — complete, skip or defer stale items instead, and "
         "leave anything that looks like junk for the user to confirm",
     ),
-    (
-        "`nbhd_document_set` with kind='tasks', slug='tasks'",
-        "`nbhd_task_create` for new actionable items (or `nbhd_task_update`/`nbhd_task_complete` "
-        "for existing tasks). Do not write goal/task content into Document anymore",
-    ),
     # ── Write-side: goals ───────────────────────────────────────────────
     (
         "`nbhd_document_append` (kind='goal', slug='goals')",
         "`nbhd_goal_create` for new goals or `nbhd_goal_update` to update an existing goal "
         "(use `nbhd_goal_achieve` / `nbhd_goal_abandon` for lifecycle changes)",
-    ),
-    (
-        "`nbhd_document_set` with kind='goal', slug='goals'",
-        "`nbhd_goal_create` for new goals (or `nbhd_goal_update`/`nbhd_goal_achieve`/"
-        "`nbhd_goal_abandon` for existing). Do not write goal content into Document anymore",
     ),
     # ── Read-side: tasks ────────────────────────────────────────────────
     (
@@ -1110,12 +1099,11 @@ _WEEKLY_REFLECTION_PROMPT = (
 _PROJECT_CHECKIN_PROMPT = (
     "Project check-in. This is a cron (isolated) session — but you CAN have a "
     "back-and-forth with the user via `nbhd_send_to_user`.\n\n"
-    "Read `rules/voice-journal.md` for the full journal routing protocol.\n\n"
     "Steps:\n"
     "1. Load today's daily note (`nbhd_daily_note_get`) — check what's already been logged today\n"
     "2. Load ALL project documents (`nbhd_document_get` with kind='project') to see what's being tracked\n"
-    "3. Load the tasks document (`nbhd_document_get` with kind='tasks', slug='tasks')\n"
-    "4. Load the goals document (`nbhd_document_get` with kind='goal', slug='goals')\n"
+    "3. Load open tasks with `nbhd_task_list({status: 'open'})`\n"
+    "4. Load active goals with `nbhd_goal_list({status: 'active'})`\n"
     "5. Compare: which tracked projects have updates today vs which have nothing logged\n"
     "6. If the daily note already has comprehensive updates for all tracked projects "
     "(e.g. from a voice journal earlier), skip the check-in entirely — do NOT message the user.\n"
@@ -1123,8 +1111,10 @@ _PROJECT_CHECKIN_PROMPT = (
     '   - "Hey, haven\'t heard about [project] today — anything happening or taking a break from it?"\n'
     "   - Group questions naturally, don't send one message per project\n"
     "8. If the user responds with updates, route them to the right journal locations:\n"
-    "   - Project-specific updates → the project's document (`nbhd_document_set` kind='project')\n"
-    "   - Tasks → tasks document\n"
+    "   - Project-specific updates → append to the existing project document with "
+    "`nbhd_document_append` (kind='project', slug=<project slug>)\n"
+    "   - Tasks → `nbhd_task_create` for new tasks or `nbhd_task_update`/`nbhd_task_complete` for existing tasks\n"
+    "   - Goals → `nbhd_goal_create` for new goals or `nbhd_goal_update`/`nbhd_goal_achieve` for existing goals\n"
     "   - General notes → daily note via `nbhd_daily_note_append`\n"
     "9. Keep the tone casual and supportive — this is a friend checking in, not a standup meeting\n"
 )
@@ -1305,7 +1295,8 @@ _BACKGROUND_TASKS_PROMPT = (
     "task/goal capture belongs to the user and to the nightly extraction pass (which dedupes "
     "and offers a one-tap undo). This maintenance run only reconciles existing items and "
     "curates the lighter stores below:\n"
-    "   - Ideas or brainstorms → ideas document (`nbhd_document_set` with kind='ideas', slug='ideas')\n"
+    "   - Ideas or brainstorms → first load the ideas document, merge the new material, then call "
+    "`nbhd_document_put` with kind='ideas', slug='ideas'\n"
     "   - Lasting patterns or preferences → memory (`nbhd_memory_update`)\n"
     "   The morning briefing reads the typed task/goal state directly and will surface anything relevant.\n"
     "7. Check the lessons constellation — if there are new approved lessons, the clusters "
