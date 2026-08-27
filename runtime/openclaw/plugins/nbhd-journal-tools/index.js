@@ -1700,7 +1700,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_purpose_update",
       description:
-        "Update a North Star — refine the statement or pillars, or mark a confirmed one as 'evolving' when the user is actively reshaping their direction. PATCH semantics (only included fields change). This CANNOT confirm a proposed purpose — use nbhd_purpose_confirm (with the user's explicit yes) for that. To retire a direction the user has moved past, set status='retired' (non-destructive; preserved for history).",
+        "Update a North Star — refine the statement or pillars, or mark a confirmed one as 'evolving' when the user is actively reshaping their direction. PATCH semantics (only included fields change). This CANNOT confirm a proposed purpose — use nbhd_purpose_confirm (with the user's explicit yes) for that.",
       parameters: {
         type: "object",
         additionalProperties: false,

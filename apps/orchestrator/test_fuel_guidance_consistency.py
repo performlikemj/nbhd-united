@@ -7,10 +7,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from apps.orchestrator.test_reminder_capability import MaximalTenantBudgetTest
 
 _ROOT = Path(__file__).resolve().parents[2]
-_GUIDANCE_FILES = (
-    _ROOT / "runtime/openclaw/plugins/nbhd-fuel-tools/index.js",
-    _ROOT / "templates/openclaw/docs/tools-reference.md",
-)
+_GUIDANCE_FILES = (_ROOT / "runtime/openclaw/plugins/nbhd-fuel-tools/index.js",)
 _DISCOVERY_FILES = (
     _ROOT / "templates/openclaw/AGENTS.md",
     _ROOT / "templates/openclaw/rules/fuel.md",

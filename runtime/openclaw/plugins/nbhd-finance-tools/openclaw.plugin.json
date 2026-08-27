@@ -11,7 +11,8 @@
       "nbhd_finance_archive_account",
       "nbhd_finance_unarchive_account",
       "nbhd_finance_calculate_payoff",
-      "nbhd_finance_summary"
+      "nbhd_finance_summary",
+      "nbhd_gravity_query"
     ]
   },
   "configSchema": {

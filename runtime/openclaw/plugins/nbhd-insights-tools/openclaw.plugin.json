@@ -14,7 +14,8 @@
       "nbhd_insights_refute",
       "nbhd_insights_signals",
       "nbhd_insights_voice_pref_set",
-      "nbhd_insights_voice_pref_list"
+      "nbhd_insights_voice_pref_list",
+      "nbhd_yesterdays_signals"
     ]
   },
   "configSchema": {

@@ -97,12 +97,9 @@ test("nbhd_reddit_status — connected true", async () => {
   assert.ok(tool, "tool should be registered");
 
   const result = await tool.execute("2", {});
-  const body = JSON.parse(calls[0].options.body);
-  assert.equal(body.action, "status");
-
-  const parsed = JSON.parse(result.content[0].text);
-  assert.equal(parsed.connected, true);
-  assert.equal(parsed.provider_email, "user@example.com");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.method, undefined);
+  assert.equal(result.content[0].text, "Reddit is connected as user@example.com.");
 });
 
 test("nbhd_reddit_status — connected false", async () => {
@@ -115,15 +112,17 @@ test("nbhd_reddit_status — connected false", async () => {
   const tool = tools.get("nbhd_reddit_status");
 
   const result = await tool.execute("3", {});
-  const parsed = JSON.parse(result.content[0].text);
-  assert.equal(parsed.connected, false);
+  assert.equal(
+    result.content[0].text,
+    "Reddit is not connected. Use nbhd_reddit_connect to link your account.",
+  );
 });
 
 // ---------------------------------------------------------------------------
 // nbhd_reddit_digest
 // ---------------------------------------------------------------------------
 
-test("nbhd_reddit_digest — with subreddits and sort", async () => {
+test("nbhd_reddit_digest — fans out subreddits and returns once-daily guidance", async () => {
   setupEnv();
   const { api, tools } = buildApi();
   const calls = [];
@@ -136,16 +135,27 @@ test("nbhd_reddit_digest — with subreddits and sort", async () => {
   const tool = tools.get("nbhd_reddit_digest");
   assert.ok(tool, "tool should be registered");
 
-  await tool.execute("4", { subreddits: ["javascript", "python"], sort: "new", limit: 10 });
+  const result = await tool.execute("4", {
+    subreddits: ["javascript", "python"],
+    sort: "new",
+    time_filter: "week",
+    limit: 10,
+  });
 
-  const body = JSON.parse(calls[0].options.body);
-  assert.equal(body.action, "digest");
-  assert.deepEqual(body.subreddits, ["javascript", "python"]);
-  assert.equal(body.sort, "new");
-  assert.equal(body.limit, 10);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(
+    calls.map(({ options }) => JSON.parse(options.body)),
+    [
+      { action: "digest", subreddit: "javascript", sort: "new", limit: 10, t: "week" },
+      { action: "digest", subreddit: "python", sort: "new", limit: 10, t: "week" },
+    ],
+  );
+  const response = JSON.parse(result.content[0].text);
+  assert.equal(response.guidance, "surface a digest at most once per day unless asked");
+  assert.deepEqual(response.digests.map(({ subreddit }) => subreddit), ["javascript", "python"]);
 });
 
-test("nbhd_reddit_digest — default params (no subreddits, defaults hot/5)", async () => {
+test("nbhd_reddit_digest — requires subreddits", async () => {
   setupEnv();
   const { api, tools } = buildApi();
   const calls = [];
@@ -157,13 +167,11 @@ test("nbhd_reddit_digest — default params (no subreddits, defaults hot/5)", as
   register(api);
   const tool = tools.get("nbhd_reddit_digest");
 
-  await tool.execute("5", {});
-
-  const body = JSON.parse(calls[0].options.body);
-  assert.equal(body.action, "digest");
-  assert.equal(body.subreddits, undefined);
-  assert.equal(body.sort, "hot");
-  assert.equal(body.limit, 5);
+  await assert.rejects(
+    () => tool.execute("5", {}),
+    /missing required parameter\(s\): subreddits/,
+  );
+  assert.equal(calls.length, 0);
 });
 
 test("nbhd_reddit_digest — rejects array exceeding 10 subreddits", async () => {
@@ -178,6 +186,17 @@ test("nbhd_reddit_digest — rejects array exceeding 10 subreddits", async () =>
     () => tool.execute("6", { subreddits: Array.from({ length: 11 }, (_, i) => `sub${i}`) }),
     /Array exceeds max items/,
   );
+});
+
+test("Reddit digest description matches the current plural contract", () => {
+  const { api, tools } = buildApi();
+  register(api);
+
+  const digest = tools.get("nbhd_reddit_digest");
+  assert.match(digest.description, /required `subreddits\[\]` list/);
+  assert.deepEqual(digest.parameters.required, ["subreddits"]);
+  assert.equal(digest.parameters.properties.subreddits.type, "array");
+  assert.equal(digest.parameters.properties.subreddits.items.type, "string");
 });
 
 // ---------------------------------------------------------------------------
@@ -230,7 +249,7 @@ test("nbhd_reddit_post — rejects missing subreddit", async () => {
 
   await assert.rejects(
     () => tool.execute("9", { title: "Hello", text: "body" }),
-    /subreddit is required/,
+    /missing required parameter\(s\): subreddit/,
   );
 });
 

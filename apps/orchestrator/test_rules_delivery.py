@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.orchestrator.config_generator import _prepare_cron_prompt
 from apps.orchestrator.personas import PERSONAS, render_workspace_files
 from apps.orchestrator.test_reminder_capability import MaximalTenantBudgetTest
 from apps.tenants.services import create_tenant
+
+_ROOT = Path(__file__).resolve().parents[2]
+_TOOLS_REFERENCE = _ROOT / "templates/openclaw/docs/tools-reference.md"
+_TOOLS_REFERENCE_HEADER = (
+    "<!-- CRON-ONLY: chat sessions cannot read this file; it is listed in the cron preamble. "
+    "Tool descriptions are the authoritative reference. -->"
+)
 
 _CHAT_FILE_POINTER = re.compile(r"(?:rules|docs)/[a-z_-]+\.md")
 _CRON_INDEX_ROWS = (
@@ -70,3 +78,21 @@ class RulesDeliveryTest(TestCase):
 
         # Measured after rules-delivery W0: 21,920 chars. The R0 ceiling remains unchanged.
         self.assertLessEqual(len(prompt), 22_759)
+
+
+class ToolsReferenceCronStubTest(SimpleTestCase):
+    def test_stub_is_small_cron_only_and_keeps_only_cross_tool_contracts(self):
+        content = _TOOLS_REFERENCE.read_text()
+
+        self.assertTrue(content.startswith(_TOOLS_REFERENCE_HEADER))
+        self.assertLessEqual(len(content), 2_500)
+        self.assertIn("last line, or immediately before a final `[[quick-replies: ...]]` line", content)
+        self.assertIn("**Session-start check:**", content)
+        self.assertIn("the user has explicitly approved it", content)
+        self.assertIn(
+            "For Fuel plans/fill-ins, first use `tool_search` for exact `nbhd_fuel_search_exercises` and "
+            "call it per accessory/mobility group; then find/call `nbhd_fuel_create_plan`/"
+            "`nbhd_fuel_update_plan`. Plans four weeks or longer rotate accessories every 1–2 weeks.",
+            content,
+        )
+        self.assertNotIn("| Tool |", content)
