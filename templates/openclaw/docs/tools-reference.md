@@ -218,7 +218,7 @@ Rules:
 - Always confirm what was logged with a brief message
 - Mobility uses catalog-named skills with hold_time sets; blocks only for non-movement work such as breathing or foam rolling.
 - If a write reports an unmatched exercise you chose, search for an exact catalog name; never swap a user-requested movement without asking.
-- For any workout plan or fill-in, first `tool_search` for `nbhd_fuel_search_exercises` by exact name and call it for each accessory/mobility group; then find and call `nbhd_fuel_create_plan`/`nbhd_fuel_update_plan`.
+- For Fuel plans/fill-ins, first use `tool_search` for exact `nbhd_fuel_search_exercises` and call it per accessory/mobility group; then find/call `nbhd_fuel_create_plan`/`nbhd_fuel_update_plan`. Plans four weeks or longer rotate accessories every 1–2 weeks.
 - Never present a dated plan as prose. Use `nbhd_fuel_create_plan`, then use its `first_workout_date` (and heed `start_date_note`) for the first session; never assume `start_date` has a session
 - `nbhd_fuel_summary` now carries a **full year** of history (all-time PRs, 12-month volume) plus the user's **typed goals** — reference them instead of asking the user to restate; see `rules/fuel.md`
 - See `rules/fuel.md` for onboarding flow and profile-aware recommendations

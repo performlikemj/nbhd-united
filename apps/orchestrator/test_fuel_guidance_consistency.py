@@ -16,9 +16,9 @@ _DISCOVERY_FILES = (
     _ROOT / "templates/openclaw/docs/tools-reference.md",
 )
 _DISCOVERY_GATE = (
-    "For any workout plan or fill-in, first `tool_search` for `nbhd_fuel_search_exercises` by exact name "
-    "and call it for each accessory/mobility group; then find and call "
-    "`nbhd_fuel_create_plan`/`nbhd_fuel_update_plan`."
+    "For Fuel plans/fill-ins, first use `tool_search` for exact `nbhd_fuel_search_exercises` and call it "
+    "per accessory/mobility group; then find/call `nbhd_fuel_create_plan`/`nbhd_fuel_update_plan`. Plans "
+    "four weeks or longer rotate accessories every 1–2 weeks."
 )
 _CHAT_ONLY_PLAN_GATE = (
     'Exception: creating/building a workout plan is a Fuel WRITE, not "planning" — find and call '
@@ -37,6 +37,7 @@ _LOAD_BEARING_PHRASES = (
     "blocks only for non-movement work",
     "never swap a user-requested movement without asking",
     "accessory_rotations",
+    "four weeks or longer",
 )
 
 
@@ -75,3 +76,4 @@ class FuelCreatePlanGuidanceConsistencyTests(SimpleTestCase):
             start = plugin.index(f'name: "{tool_name}"')
             description = plugin[start : plugin.index("parameters:", start)]
             self.assertIn("First call nbhd_fuel_search_exercises", description)
+            self.assertIn("four weeks or longer", description)

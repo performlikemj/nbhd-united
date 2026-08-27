@@ -2687,6 +2687,43 @@ class RuntimeWorkoutPlanTests(TestCase):
         }
 
     def test_create_plan(self):
+        base_detail = {
+            "detail_json": {
+                "exercises": [
+                    {
+                        "name": "Bench Press",
+                        "role": "primary",
+                        "sets": [{"type": "weighted_reps", "reps": 5, "weight": 60}],
+                    },
+                    {
+                        "name": "Hammer Curl",
+                        "role": "accessory",
+                        "sets": [{"type": "weighted_reps", "reps": 10, "weight": 10}],
+                    },
+                ]
+            }
+        }
+        rotated_detail = {
+            "detail_json": {
+                "exercises": [
+                    {
+                        "name": "Bench Press",
+                        "role": "primary",
+                        "sets": [{"type": "weighted_reps", "reps": 5, "weight": 60}],
+                    },
+                    {
+                        "name": "Front Raise",
+                        "role": "accessory",
+                        "sets": [{"type": "weighted_reps", "reps": 10, "weight": 10}],
+                    },
+                ]
+            }
+        }
+        rotated_week = {
+            "0": {"activity": "Push", "category": "strength", "duration_minutes": 60, **rotated_detail},
+            "2": {"activity": "Pull", "category": "strength", "duration_minutes": 60, **rotated_detail},
+            "4": {"activity": "Legs", "category": "strength", "duration_minutes": 55, **rotated_detail},
+        }
         resp = self.client.post(
             f"/api/v1/fuel/runtime/{self.tenant.id}/plans/",
             {
@@ -2695,10 +2732,11 @@ class RuntimeWorkoutPlanTests(TestCase):
                 "weeks": 4,
                 "days_per_week": 3,
                 "schedule_json": {
-                    "0": {"activity": "Push", "category": "strength", "duration_minutes": 60, **_STRENGTH_DETAIL},
-                    "2": {"activity": "Pull", "category": "strength", "duration_minutes": 60, **_STRENGTH_DETAIL},
-                    "4": {"activity": "Legs", "category": "strength", "duration_minutes": 55, **_STRENGTH_DETAIL},
+                    "0": {"activity": "Push", "category": "strength", "duration_minutes": 60, **base_detail},
+                    "2": {"activity": "Pull", "category": "strength", "duration_minutes": 60, **base_detail},
+                    "4": {"activity": "Legs", "category": "strength", "duration_minutes": 55, **base_detail},
                 },
+                "week_overrides": {"2": rotated_week, "3": rotated_week},
                 "notes": "Linear progression: add 2.5kg each week.",
             },
             format="json",
@@ -7208,6 +7246,7 @@ class WeekdayNameScheduleKeyTests(TestCase):
                 "weeks": 4,
                 "days_per_week": 2,
                 "start_date": "2026-06-15",
+                "variation_policy": "progression_only",
                 "schedule_json": {
                     "monday": {"category": "strength", "activity": "Push", **_STRENGTH_DETAIL},
                     "wednesday": {"category": "cardio", "activity": "Run", "duration_minutes": 30},

@@ -286,6 +286,8 @@ class WeekOverrideBoundsTests(_RuntimeFuelCase):
             "weeks": 4,
             "days_per_week": 1,
             "start_date": "2026-06-01",
+            "repeat_policy": "intentional",
+            "repeat_reason": "Override-bounds fixture intentionally keeps one recipe",
             "schedule_json": {
                 "monday": {"category": "strength", "activity": "Full Body", "detail_json": _strength_detail()}
             },
