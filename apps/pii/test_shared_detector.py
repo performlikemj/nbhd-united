@@ -18,7 +18,7 @@ from unittest.mock import patch
 from django.conf import settings
 from django.test import SimpleTestCase
 
-from apps.pii import engine
+from apps.pii import engine, shared_client
 from apps.pii.config import resolve_detector_transport
 from apps.pii.redactor import redact_text
 from apps.pii.shared_client import (
@@ -173,6 +173,20 @@ class SharedPiiClientTests(SimpleTestCase):
                 client("abc")
         self.assertEqual(raised.exception.outcome, "connect")
 
+    def test_socket_constructor_failure_is_translated(self):
+        client = SharedPiiPipeline(socket_path="unused.sock")
+        with (
+            patch("apps.pii.shared_client.socket.socket", side_effect=OSError("synthetic")),
+            self.assertRaises(SharedPiiError) as raised,
+        ):
+            client("abc")
+
+        self.assertEqual(raised.exception.outcome, "connect")
+
+    def test_ping_socket_constructor_failure_returns_false(self):
+        with patch("apps.pii.shared_client.socket.socket", side_effect=OSError("synthetic")):
+            self.assertFalse(ping_shared_detector(socket_path="unused.sock"))
+
     def test_not_ready_and_server_error_paths(self):
         for code in ("not_ready", "queue_full", "expired"):
             with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
@@ -193,6 +207,29 @@ class SharedPiiClientTests(SimpleTestCase):
             ):
                 SharedPiiPipeline(socket_path=path, deadline_s=0.02)("abc")
             self.assertEqual(raised.exception.outcome, "timeout")
+
+    def test_deadline_covers_response_validation(self):
+        original_validate = shared_client._validate_span
+
+        def validate_late(span, text_length):
+            time.sleep(0.03)
+            return original_validate(span, text_length)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "pii.sock")
+            response = {
+                "v": 1,
+                "engine": "deberta",
+                "spans": [{"entity_group": "NAME", "score": 0.5, "start": 0, "end": 1}],
+            }
+            with (
+                _scripted_server(path, response),
+                patch("apps.pii.shared_client._validate_span", side_effect=validate_late),
+                self.assertRaises(SharedPiiError) as raised,
+            ):
+                SharedPiiPipeline(socket_path=path, deadline_s=0.02)("a")
+
+        self.assertEqual(raised.exception.outcome, "timeout")
 
     def test_oversized_text_does_not_open_circuit(self):
         with tempfile.TemporaryDirectory() as directory:

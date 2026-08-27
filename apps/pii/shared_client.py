@@ -107,7 +107,7 @@ def _decode_response(connection: socket.socket, deadline: float) -> dict[str, An
     body = _recv_exact(connection, size, deadline)
     try:
         response = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, RecursionError, ValueError) as exc:
         raise SharedPiiError("shared detector response is not valid JSON", outcome="bad_response") from exc
     if not isinstance(response, dict):
         raise SharedPiiError("shared detector response is not an object", outcome="bad_response")
@@ -219,10 +219,11 @@ class SharedPiiPipeline:
         if len(text.encode("utf-8")) + 128 > MAX_REQUEST_BYTES:
             raise SharedPiiError("shared detector request exceeds byte cap", outcome="too_large")
         deadline = time.monotonic() + self.deadline_s
-        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection: socket.socket | None = None
         try:
-            connection.settimeout(_remaining(deadline))
             try:
+                connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                connection.settimeout(_remaining(deadline))
                 connection.connect(self.socket_path)
             except TimeoutError as exc:
                 raise SharedPiiError("shared detector connection timed out", outcome="timeout") from exc
@@ -243,7 +244,11 @@ class SharedPiiPipeline:
                 raise SharedPiiError("shared detector request write failed", outcome="protocol") from exc
             response = _decode_response(connection, deadline)
         finally:
-            connection.close()
+            if connection is not None:
+                try:
+                    connection.close()
+                except OSError:
+                    pass
 
         if response.get("v") != PROTOCOL_VERSION:
             raise SharedPiiError("shared detector protocol version mismatch", outcome="protocol")
@@ -260,7 +265,9 @@ class SharedPiiPipeline:
         raw_spans = response["spans"]
         if not isinstance(raw_spans, list) or len(raw_spans) > MAX_SPANS:
             raise SharedPiiError("shared detector returned an invalid span list", outcome="bad_response")
-        return [_validate_span(span, len(text)) for span in raw_spans]
+        spans = [_validate_span(span, len(text)) for span in raw_spans]
+        _remaining(deadline)
+        return spans
 
 
 _shared_pipeline: SharedPiiPipeline | None = None
@@ -287,8 +294,9 @@ def ping_shared_detector(*, timeout_s: float = 1.0, socket_path: str | None = No
     path = socket_path or os.environ.get("PII_SHARED_SOCKET", DEFAULT_SOCKET_PATH)
     engine = resolve_detector_engine(os.environ.get("PII_DETECTOR_ENGINE", DEFAULT_DETECTOR_ENGINE))
     deadline = time.monotonic() + timeout_s
-    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection: socket.socket | None = None
     try:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         connection.settimeout(_remaining(deadline))
         connection.connect(path)
         connection.sendall(_encode_frame({"v": PROTOCOL_VERSION, "ping": True}, cap=MAX_REQUEST_BYTES))
@@ -296,7 +304,11 @@ def ping_shared_detector(*, timeout_s: float = 1.0, socket_path: str | None = No
     except (OSError, SharedPiiError):
         return False
     finally:
-        connection.close()
+        if connection is not None:
+            try:
+                connection.close()
+            except OSError:
+                pass
     return (
         set(response) == {"v", "ready", "engine", "protocol"}
         and response["v"] == PROTOCOL_VERSION
