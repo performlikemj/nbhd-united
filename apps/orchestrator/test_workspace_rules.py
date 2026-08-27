@@ -65,15 +65,15 @@ class RenderWorkspaceRulesTest(TestCase):
         self.assertIn("only if you actually\ncalled a lookup tool THIS turn", memory)
         self.assertIn("worst\nfailure mode", memory)
 
-    def test_fuel_rule_carries_catalog_and_full_day_override_contracts(self):
+    def test_fuel_rule_is_a_small_cron_only_stub(self):
         fuel = render_workspace_rules()["fuel.md"]
-        self.assertIn("nbhd_fuel_get_plan", fuel)
-        self.assertIn("has_prescription: false", fuel)
-        self.assertIn("use the returned name verbatim", fuel)
-        self.assertIn("complete day object", fuel)
-        self.assertIn("replaces the whole overrides map", fuel)
-        self.assertIn("accessory_rotations", fuel)
-        self.assertIn('role: "primary" | "accessory" | "warmup" | "mobility"', fuel)
+        self.assertTrue(fuel.startswith("<!-- CRON-ONLY:"))
+        self.assertLessEqual(len(fuel), 1_500)
+        self.assertIn("For Fuel plans/fill-ins, first use `tool_search`", fuel)
+        self.assertIn("background workout cron runs silently", fuel)
+        self.assertIn("Morning briefings", fuel)
+        self.assertIn("Evening check-ins", fuel)
+        self.assertIn("Week-ahead reviews", fuel)
 
     def test_rendered_agents_has_always_loaded_fuel_search_gate(self):
         agents = render_workspace_files("neighbor")["NBHD_AGENTS_MD"]

@@ -556,7 +556,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_log_workout",
       description:
-        'Log a workout from natural language. Infer the category from the activity name (e.g. "deadlift" → strength, "ran" → cardio, "yoga" → mobility). Default to today\'s date and status "done". Confirm briefly and do not interrogate the user. TWO hard server rules: (1) a strength or calisthenics workout MUST carry at least one exercise with sets in detail_json.exercises — an empty list is a 400, because a workout with no exercises is invisible in the app; if the user gave you no detail, ask once for the lifts, or log it under the category that matches what they actually described. (2) numeric detail_json fields are numbers only — distance_km is kilometres and work_s/rest_s are seconds, so convert first and send 8.05, never "5 miles".',
+        'Log a workout from natural language. Infer the category from the activity name (e.g. "deadlift" → strength, "ran" → cardio, "yoga" → mobility); if unknown, use "other". Default to today\'s date and status "done". Confirm briefly and do not interrogate the user for missing optional fields. Use one call for a mixed session containing weighted exercises and holds. TWO hard server rules: (1) a strength or calisthenics workout MUST carry at least one exercise with sets in detail_json.exercises — an empty list is a 400, because a workout with no exercises is invisible in the app; if the user gave you no detail, ask once for the lifts, or log it under the category that matches what they actually described. (2) numeric detail_json fields are numbers only — distance_km is kilometres and work_s/rest_s are seconds, so convert first and send 8.05, never "5 miles".',
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -573,7 +573,8 @@ export default function register(api) {
           },
           date: {
             type: "string",
-            description: "Date in YYYY-MM-DD format. Defaults to today.",
+            description:
+              "ISO date or a relative phrase like 'yesterday'/'last Tuesday'. Defaults to today.",
           },
           status: {
             type: "string",
@@ -830,18 +831,19 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_log_body_weight",
       description:
-        "Log the user's body weight. Upserts by date — if an entry already exists for that date, it's updated.",
+        "Log the user's body weight without asking permission. Use one call per scalar measurement. Clarify or skip fuzzy ranges rather than inventing a value. Upserts by date — if an entry already exists for that date, it's updated.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
           weight_kg: {
             type: "number",
-            description: "Body weight in kilograms.",
+            description: "Body weight in kilograms. When the user gives pounds, convert with lbs / 2.2046.",
           },
           date: {
             type: "string",
-            description: "Date in YYYY-MM-DD format. Defaults to today.",
+            description:
+              "ISO date or a relative phrase like 'yesterday'/'last Tuesday'. Defaults to today.",
           },
         },
         required: ["weight_kg"],
@@ -963,7 +965,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_update_profile",
       description:
-        "Update the user's fitness profile progressively. Call with any subset of fields as you learn them during onboarding conversation. List fields (goals, limitations, equipment) replace the full list each call — send the complete current list, not just additions. Set onboarding_status to 'in_progress' when starting, 'completed' when done, or 'declined' if the user opts out.",
+        "Update the user's fitness profile progressively. Save answers as they are learned during onboarding instead of waiting until the end; call with any subset of fields. After the onboarding questions, set onboarding_status to 'completed'. If the user declines, set it to 'declined', acknowledge that choice, and never nag them to resume. List fields (goals, limitations, equipment) replace the full list each call — send the complete current list, not just additions. Set onboarding_status to 'in_progress' when starting, 'completed' when done, or 'declined' if the user opts out.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1060,7 +1062,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_create_plan",
       description:
-        "Create a structured, multi-week workout plan. First call nbhd_fuel_search_exercises for each accessory/mobility group. USE THIS whenever the user asks to make / build / design / lay out / fill out / map out / write up a plan, program, routine, or schedule — including phrasings like 'fill out my workout plan for the rest of the month'. NEVER present a dated plan as a chat message: provide the WEEKLY CADENCE and let the backend assign calendar dates in the user's timezone. ALWAYS pass the user's tenant-local start anchor as start_date. For 'today' / 'I am at the gym now', start_date is today and schedule_json MUST include today's weekday — rotate the split so today is day 1; the server hard-rejects a plan that starts today with no session on today's weekday (400). Never design a cadence that excludes the requested first training day. The response's first_workout_date is the date to use when describing the first session; honor start_date_note and never assume start_date has a session. Design from the user's profile, journal context, sleep trends, lessons, and goals. schedule_json is keyed by weekday NAME — \"monday\", \"tuesday\", \"wednesday\", \"thursday\", \"friday\", \"saturday\", \"sunday\" — mapping each training day to a workout definition. Write the name, never a number: numeric indices are legacy-only and the numbering conventions disagree (Python Mon=0, ISO Mon=1, cron Sun=0), which is how a Wednesday session gets scheduled on Thursday. Set target_rpe per day, objective for the plan's through-line, and week_overrides for progression/deload. Plans four weeks or longer rotate accessories every 1–2 weeks. For accessory_rotations, you pick the pool; the plugin builds the weeks. Check nbhd_fuel_summary for an existing active plan first.",
+        "Create a structured, multi-week workout plan. First call nbhd_fuel_search_exercises for each accessory/mobility group. Before designing, gather context with nbhd_fuel_summary, search approved fitness lessons with nbhd_lesson_search, and search relevant goals or memory with nbhd_journal_search when needed. USE THIS whenever the user asks to make / build / design / lay out / fill out / map out / write up a plan, program, routine, or schedule — including phrasings like 'fill out my workout plan for the rest of the month'. NEVER present a dated plan as a chat message: provide the WEEKLY CADENCE and let the backend assign calendar dates in the user's timezone. ALWAYS pass the user's tenant-local start anchor as start_date. For 'today' / 'I am at the gym now', start_date is today and schedule_json MUST include today's weekday — rotate the split so today is day 1; the server hard-rejects a plan that starts today with no session on today's weekday (400). Never design a cadence that excludes the requested first training day. The response's first_workout_date is the date to use when describing the first session; honor start_date_note and never assume start_date has a session. Design from the user's profile, journal context, sleep trends, lessons, and goals. Put contextual programming rationale in the plan notes. Base schedule_json contains training days only; omit rest days. schedule_json is keyed by weekday NAME — \"monday\", \"tuesday\", \"wednesday\", \"thursday\", \"friday\", \"saturday\", \"sunday\" — mapping each training day to a workout definition. Write the name, never a number: numeric indices are legacy-only and the numbering conventions disagree (Python Mon=0, ISO Mon=1, cron Sun=0), which is how a Wednesday session gets scheduled on Thursday. Set target_rpe per day, objective for the plan's through-line, and week_overrides for progression/deload. Plans four weeks or longer rotate accessories every 1–2 weeks. For accessory_rotations, you pick the pool; the plugin builds the weeks. Check nbhd_fuel_summary for an existing active plan first.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1230,7 +1232,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_update_plan",
       description:
-        'Update an existing workout plan. First call nbhd_fuel_search_exercises for each accessory/mobility group. schedule_json MERGES by default: send only the days you want to add or change, and days you omit stay untouched. Example: add weekend mobility without touching weekdays by sending schedule_json: {"saturday":{"category":"mobility","activity":"Mobility"},"sunday":{"category":"mobility","activity":"Recovery Flow"}}. Omit detail_json from an updated day to keep that day\'s existing exercises. Remove days only with remove_days; use replace_schedule:true only when intentionally replacing the entire weekly template. Legacy integer weekday keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls because numbering conventions disagree. Item role is optional: primary | accessory | warmup | mobility. Plans four weeks or longer rotate accessories every 1–2 weeks. For accessory_rotations, you pick the pool; the plugin builds the weeks. If you send strength/calisthenics detail_json, it must contain a non-empty exercises list. Schedule or weeks changes reconcile future planned workouts.',
+        'Update an existing workout plan. First call nbhd_fuel_search_exercises for each accessory/mobility group. Before redesigning, gather context with nbhd_fuel_summary, search approved fitness lessons with nbhd_lesson_search, and search relevant goals or memory with nbhd_journal_search when needed. Put contextual programming rationale in notes. Base schedules contain training days only; omit rest days, using remove_days when an existing training day becomes rest. schedule_json MERGES by default: send only the days you want to add or change, and days you omit stay untouched. Example: add weekend mobility without touching weekdays by sending schedule_json: {"saturday":{"category":"mobility","activity":"Mobility"},"sunday":{"category":"mobility","activity":"Recovery Flow"}}. Omit detail_json from an updated day to keep that day\'s existing exercises. Remove days only with remove_days; use replace_schedule:true only when intentionally replacing the entire weekly template. Legacy integer weekday keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls because numbering conventions disagree. Item role is optional: primary | accessory | warmup | mobility. Plans four weeks or longer rotate accessories every 1–2 weeks. For accessory_rotations, you pick the pool; the plugin builds the weeks. If you send strength/calisthenics detail_json, it must contain a non-empty exercises list. Schedule or weeks changes reconcile future planned workouts.',
       parameters: {
         type: "object",
         additionalProperties: false,

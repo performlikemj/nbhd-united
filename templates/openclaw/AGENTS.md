@@ -37,6 +37,8 @@ SOUL.md, USER.md, MEMORY.md, IDENTITY.md, and TOOLS.md are already in your conte
 
    Ask yourself: *did the user just report a material event that could change a goal, task, finance account, or fuel log?* **Material:** payments, transactions, workouts, body weight, task completion, goal progress, project status, an interview/meeting/event that happened, lessons learned. **Not material:** questions, planning, venting, hypotheticals, "how are you", small talk.
 
+   - A reported sleep duration or quality is a Fuel event: call nbhd_fuel_log_sleep this turn and briefly confirm.
+
    Exception: creating/building a workout plan is a Fuel WRITE, not "planning" — find and call `nbhd_fuel_create_plan` that same turn; never deliver a chat-only plan.
 
    For Fuel plans/fill-ins, first use `tool_search` for exact `nbhd_fuel_search_exercises` and call it per accessory/mobility group; then find/call `nbhd_fuel_create_plan`/`nbhd_fuel_update_plan`. Plans four weeks or longer rotate accessories every 1–2 weeks.

@@ -1429,6 +1429,7 @@ class RuntimeFuelViewTests(TestCase):
         )
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.data["activity"], "Push Day")
+        self.assertEqual(resp.data["guidance"], "Confirm briefly in one line.")
         self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 1)
 
     def test_log_workout_invalid_category_defaults(self):
@@ -1661,6 +1662,7 @@ class RuntimeFuelViewTests(TestCase):
         )
         self.assertEqual(resp.status_code, 201)
         self.assertIn("82.5", resp.data["weight_kg"])
+        self.assertEqual(resp.data["guidance"], "Confirm briefly in one line.")
 
     def test_log_body_weight_default_date_uses_tenant_timezone(self):
         """Bug #3 regression: an early-morning Eastern entry lands today, not yesterday.
@@ -1853,6 +1855,24 @@ class RuntimeFuelAuditTests(TestCase):
         self.assertEqual(body["conflicts"]["duplicate_fires"], [])
         self.assertIn("Safe to propose", body["guidance"])
         self.assertEqual(body["active_plans"], [])  # none yet → no plan-state note
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_guidance_carries_coaching_rules(self, mock_invoke):
+        mock_invoke.return_value = {"details": {"jobs": []}}
+
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+
+        self.assertEqual(resp.status_code, 200)
+        guidance = resp.data["guidance"]
+        for phrase in (
+            "rest days count as adherence, not gaps",
+            "never invent a workout on a rest day",
+            "acknowledge completed sessions",
+            "handle misses without guilt",
+            "Injury, poor sleep, or inactivity",
+            "at least 75% complete or in its final week",
+        ):
+            self.assertIn(phrase, guidance)
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_audit_surfaces_active_plan_and_intent_guidance(self, mock_invoke):
@@ -2289,6 +2309,52 @@ class RuntimeFuelSummaryWithProfileTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertIsNone(resp.data["profile"])
+        self.assertIn("profile is empty", resp.data["guidance"])
+        self.assertIn("conservative general-population advice", resp.data["guidance"])
+
+    def test_summary_guidance_carries_reasoning_and_pending_onboarding(self):
+        FuelProfile.objects.create(tenant=self.tenant, onboarding_status="pending")
+
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/summary/",
+            **self.headers,
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        guidance = resp.data["guidance"]
+        for phrase in (
+            "source healthkit is measured device data",
+            "user is user-entered",
+            "assistant is assistant-logged",
+            "template is plan-generated",
+            "Prefer measured metrics over guesses",
+            "server-computed four-week trends",
+            "monthly_volume_12mo",
+            "estimated 1RM",
+            "never as weight actually lifted",
+            "Program toward open_goals",
+            "Use latest_sleep to temper recovery recommendations",
+            "Onboarding is optional",
+            "fitness level, goals, injuries or limitations",
+            "preferred training frequency, days, and time",
+            "one or two questions at a time",
+            "set onboarding_status to declined and stop asking",
+        ):
+            self.assertIn(phrase, guidance)
+
+    def test_summary_guidance_respects_declined_onboarding(self):
+        FuelProfile.objects.create(tenant=self.tenant, onboarding_status="declined")
+
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/summary/",
+            **self.headers,
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        guidance = resp.data["guidance"]
+        self.assertIn("declined onboarding", guidance)
+        self.assertIn("conservative general advice", guidance)
+        self.assertIn("do not ask again", guidance)
 
     def test_summary_echoes_rpe_and_objective(self):
         # Read-back: a later session must be able to see the intensity (target_rpe)

@@ -604,6 +604,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             "activity": workout.activity,
             "status": workout.status,
             "rpe": workout.rpe,
+            "guidance": "Confirm briefly in one line.",
         }
         if rpe_clamped:
             payload["rpe_clamped"] = True
@@ -1040,6 +1041,34 @@ class RuntimeWorkoutSwapView(_FuelResponseGuard, APIView):
         )
 
 
+def _summary_guidance(profile_data: dict | None) -> str:
+    guidance = (
+        "Provenance: source healthkit is measured device data; user is user-entered, assistant is "
+        "assistant-logged from a report, and template is plan-generated. Prefer measured metrics over guesses. "
+        "Use the server-computed four-week trends instead of re-deriving trends from recent_workouts, and use "
+        "monthly_volume_12mo for longer trends. Label all_time_prs est_1rm values honestly as estimated 1RM, "
+        "never as weight actually lifted, and use their display/source set. Program toward open_goals and use "
+        "active-plan dates and progress. Use latest_sleep to temper recovery recommendations."
+    )
+    onboarding_status = (profile_data or {}).get("onboarding_status")
+    if onboarding_status == "pending":
+        return (
+            guidance + " Onboarding is optional: offer setup covering fitness level, goals, injuries or limitations, "
+            "equipment, and preferred training frequency, days, and time, asking one or two questions at a time. "
+            "If the user declines, set onboarding_status to declined and stop asking."
+        )
+    if onboarding_status == "in_progress":
+        return guidance + " Resume onboarding with only the missing profile fields, one or two questions at a time."
+    if onboarding_status == "completed":
+        return (
+            guidance + " Personalize recommendations to the completed profile's level, goals, limitations, equipment, "
+            "and availability."
+        )
+    if onboarding_status == "declined":
+        return guidance + " The user declined onboarding: give conservative general advice and do not ask again."
+    return guidance + " The profile is empty: give conservative general-population advice without assumptions."
+
+
 class RuntimeFuelSummaryView(_FuelResponseGuard, APIView):
     """GET: recent workouts + weekly stats for AI context."""
 
@@ -1169,6 +1198,7 @@ class RuntimeFuelSummaryView(_FuelResponseGuard, APIView):
                 "monthly_volume_12mo": monthly_volume_12mo(tenant),
                 "open_goals": open_goals(tenant),
                 "profile": profile_data,
+                "guidance": _summary_guidance(profile_data),
             }
         )
 
@@ -1490,7 +1520,12 @@ class RuntimeBodyWeightView(APIView):
             defaults={"weight_kg": weight_kg},
         )
         return Response(
-            {"date": str(entry.date), "weight_kg": str(entry.weight_kg), "created": created},
+            {
+                "date": str(entry.date),
+                "weight_kg": str(entry.weight_kg),
+                "created": created,
+                "guidance": "Confirm briefly in one line.",
+            },
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
@@ -3657,4 +3692,10 @@ def _audit_guidance(today_plan: dict, fuel_crons: list, duplicate_fires: list, a
             "next_14d_workouts so your proposal fits the existing program. Workout IDs "
             "for any update or delete are in next_14d_workouts[i].id."
         )
-    return base + plan_note
+    coaching_note = (
+        " COACHING: programmed rest days count as adherence, not gaps; never invent a workout on a rest day. "
+        "Briefly acknowledge completed sessions and handle misses without guilt. Injury, poor sleep, or inactivity "
+        "may warrant a lighter session or plan adjustment. When a plan is at least 75% complete or in its final "
+        "week, offer to design the next phase."
+    )
+    return base + plan_note + coaching_note
