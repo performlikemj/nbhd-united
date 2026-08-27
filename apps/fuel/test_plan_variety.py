@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.platform_logs.models import ToolContractEvent
@@ -11,7 +11,59 @@ from apps.tenants.services import create_tenant
 from apps.tenants.test_utils import seed_internal_key
 
 from .models import WorkoutPlan
+from .plan_variety import validate_plan_variety
 from .set_contract import validate_detail
+
+
+class PlanVarietyBoundaryTests(SimpleTestCase):
+    def day(self, recipe):
+        return {
+            "activity": "Upper",
+            "category": "strength",
+            "detail_json": {
+                "exercises": [
+                    {
+                        "name": recipe,
+                        "role": "accessory",
+                        "sets": [{"type": "weighted_reps", "reps": 10, "weight": 10}],
+                    }
+                ]
+            },
+        }
+
+    def validate(self, recipes, *, rest_weeks=()):
+        overrides = {}
+        for week, recipe in enumerate(recipes[1:], start=1):
+            overrides[str(week)] = {"0": None if week in rest_weeks else self.day(recipe)}
+        return validate_plan_variety(
+            {"0": self.day(recipes[0])},
+            len(recipes),
+            overrides,
+        )
+
+    def test_three_week_plan_is_unguarded(self):
+        self.assertIsNone(self.validate(("A", "A", "A")))
+
+    def test_four_week_boundary_matrix(self):
+        cases = (
+            (("A", "A", "A", "A"), True),
+            (("A", "A", "B", "B"), False),
+            (("A", "A", "A", "B"), True),
+            (("A", "B", "A", "B"), False),
+        )
+        for recipes, rejected in cases:
+            with self.subTest(recipes=recipes):
+                result = self.validate(recipes)
+                self.assertEqual(result is not None, rejected)
+
+    def test_four_week_track_with_a_rest_week_is_exempt(self):
+        self.assertIsNone(self.validate(("A", "A", "A", "A"), rest_weeks={2}))
+
+    def test_five_week_repeated_plan_remains_guarded(self):
+        self.assertEqual(
+            self.validate(("A", "A", "A", "A", "A"))["error"],
+            "plan_rotation_required",
+        )
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
@@ -80,6 +132,23 @@ class PlanVarietyRuntimeTests(TestCase):
         event = ToolContractEvent.objects.get(reason_code="plan_rotation_required")
         self.assertEqual(event.detail, {"guard_policy": "default", "guard_tracks": 5})
         self.assertFalse(WorkoutPlan.objects.filter(tenant=self.tenant).exists())
+
+    @patch("apps.fuel.runtime_views._manage_fuel_cron")
+    def test_four_week_identical_plan_is_rejected_on_create(self, _cron):
+        response = self.client.post(
+            self.url(),
+            self.body({"monday": self.day("Push")}, weeks=4),
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data["error"], "plan_rotation_required")
+        self.assertEqual(
+            response.data["message"],
+            "Plans four weeks or longer must rotate each recurring session recipe at least every two "
+            "active weeks, or declare a validated progression/intentional-repeat policy.",
+        )
 
     @patch("apps.fuel.runtime_views._manage_fuel_cron")
     def test_one_accessory_rotation_still_rejects_the_other_tracks(self, _cron):
@@ -199,6 +268,7 @@ class PlanVarietyRuntimeTests(TestCase):
             self.url(),
             self.body(
                 {"monday": self.day("Rehab", self.item("Bodyweight Squat"))},
+                weeks=4,
                 repeat_policy="intentional",
                 repeat_reason="Clinician-directed fixed rehab block",
             ),
@@ -237,12 +307,12 @@ class PlanVarietyRuntimeTests(TestCase):
         self.assertNotIn("_searched_before_write", response.data)
 
     @patch("apps.fuel.runtime_views._manage_fuel_cron")
-    def test_metadata_only_patch_never_retroactively_rejects_legacy_plan(self, _cron):
+    def test_notes_only_patch_does_not_reject_stamped_four_week_plan(self, _cron):
         plan = WorkoutPlan.objects.create(
             tenant=self.tenant,
             name="Legacy repeated",
             start_date=self.start,
-            weeks=8,
+            weeks=4,
             days_per_week=1,
             schedule_json={"0": self.day("Push")},
         )
@@ -257,6 +327,27 @@ class PlanVarietyRuntimeTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         plan.refresh_from_db()
         self.assertEqual(plan.schedule_json, schedule_before)
+
+    @patch("apps.fuel.runtime_views._manage_fuel_cron")
+    def test_four_week_identical_plan_is_rejected_on_schedule_patch(self, _cron):
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Legacy repeated four-week plan",
+            start_date=self.start,
+            weeks=4,
+            days_per_week=1,
+            schedule_json={"0": self.day("Push")},
+        )
+
+        response = self.client.patch(
+            self.url(f"{plan.id}/"),
+            {"schedule_json": {"monday": {"activity": "Push renamed"}}},
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data["error"], "plan_rotation_required")
 
     @patch("apps.fuel.runtime_views._manage_fuel_cron")
     def test_weeks_schedule_and_override_patches_each_run_the_guard(self, _cron):

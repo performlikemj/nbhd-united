@@ -165,7 +165,7 @@ def validate_plan_variety(
     repeat_reason: str = "",
 ) -> dict[str, Any] | None:
     """Return a ``plan_rotation_required`` payload, or ``None`` when valid."""
-    if weeks <= 4 or (repeat_policy == "intentional" and repeat_reason.strip()):
+    if weeks < 4 or (repeat_policy == "intentional" and repeat_reason.strip()):
         return None
 
     tracks: dict[tuple[int, str], list[_WeekRecipe]] = defaultdict(list)
@@ -194,6 +194,8 @@ def validate_plan_variety(
     track_payloads: list[dict[str, Any]] = []
     for track_key in sorted(tracks):
         recipes = tracks[track_key]
+        # Tracks qualify only with at least four active weeks. A rest week in a
+        # four-week plan therefore exempts that track while other tracks still validate.
         if len(recipes) < 4:
             continue
         run = _longest_run(recipes)
@@ -217,7 +219,7 @@ def validate_plan_variety(
     return {
         "error": "plan_rotation_required",
         "message": (
-            "Plans longer than four weeks must rotate each recurring session recipe at least every two "
+            "Plans four weeks or longer must rotate each recurring session recipe at least every two "
             "active weeks, or declare a validated progression/intentional-repeat policy."
         ),
         "tracks": track_payloads,

@@ -77,7 +77,7 @@ class RenderWorkspaceRulesTest(TestCase):
     def test_rendered_agents_has_always_loaded_fuel_search_gate(self):
         agents = render_workspace_files("neighbor")["NBHD_AGENTS_MD"]
         self.assertIn(
-            "For any workout plan or fill-in, first `tool_search` for `nbhd_fuel_search_exercises`",
+            "For Fuel plans/fill-ins, first use `tool_search` for exact `nbhd_fuel_search_exercises`",
             agents,
         )
 
