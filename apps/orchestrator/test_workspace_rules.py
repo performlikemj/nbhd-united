@@ -41,7 +41,6 @@ class RenderWorkspaceRulesTest(TestCase):
         expected_rules = {
             "journal-capture.md",
             "lessons-constellation.md",
-            "memory.md",
             "messaging.md",
             "onboarding.md",
         }
@@ -53,18 +52,10 @@ class RenderWorkspaceRulesTest(TestCase):
         rules = render_workspace_rules()
         self.assertNotIn("workspaces.md", rules)
 
-    def test_memory_rule_carries_redacted_identity_honesty(self):
+    def test_retired_memory_and_document_ingestion_rules_are_absent(self):
         rules = render_workspace_rules()
-        memory = rules["memory.md"]
-        self.assertIn("## Redacted identities", memory)
-        self.assertIn("|unresolved", memory)
-        self.assertIn("Never assert familiarity, deny", memory)
-
-    def test_memory_rule_requires_lookup_backed_check_claims(self):
-        memory = render_workspace_rules()["memory.md"]
-        self.assertIn("## Claims about checking", memory)
-        self.assertIn("only if you actually\ncalled a lookup tool THIS turn", memory)
-        self.assertIn("worst\nfailure mode", memory)
+        self.assertNotIn("memory.md", rules)
+        self.assertNotIn("document-ingestion.md", rules)
 
     def test_fuel_rule_is_a_small_cron_only_stub(self):
         fuel = render_workspace_rules()["fuel.md"]
@@ -95,11 +86,9 @@ class SubagentWorkspaceRulesTest(TestCase):
             set(rules),
             {
                 "_principles.md",
-                "document-ingestion.md",
                 "fuel.md",
                 "journal-capture.md",
                 "lessons-constellation.md",
-                "memory.md",
                 "messaging.md",
                 "onboarding.md",
                 "week-ahead.md",
@@ -149,7 +138,7 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
     )
     @patch("apps.orchestrator.azure_client.delete_workspace_file")
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
-    def test_update_tenant_config_uploads_rules(
+    def test_update_tenant_config_uploads_rules_and_deletes_retired_rules(
         self,
         mock_upload_workspace_file,
         mock_delete_workspace_file,
@@ -176,27 +165,20 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
             0,
             f"No rules uploaded. All paths: {uploaded_paths}",
         )
-        self.assertTrue(
-            any("memory.md" in p for p in rules_paths),
-            f"memory.md not found in uploaded rules: {rules_paths}",
-        )
+        self.assertNotIn("workspace/rules/memory.md", rules_paths)
+        self.assertNotIn("workspace/rules/document-ingestion.md", rules_paths)
         self.assertNotIn("workspace/rules/subagents.md", rules_paths)
         mock_delete_workspace_file.assert_has_calls(
             [
                 mock_call(str(self.tenant.id), "workspace/rules/voice-journal.md"),
                 mock_call(str(self.tenant.id), "workspace/rules/reply-markers.md"),
+                mock_call(str(self.tenant.id), "workspace/rules/memory.md"),
+                mock_call(str(self.tenant.id), "workspace/rules/document-ingestion.md"),
                 mock_call(str(self.tenant.id), "workspace/rules/subagents.md"),
             ],
             any_order=True,
         )
-        self.assertEqual(mock_delete_workspace_file.call_count, 3)
-        memory_upload = next(
-            call for call in mock_upload_workspace_file.call_args_list if call.args[1] == "workspace/rules/memory.md"
-        )
-        self.assertIn("## Redacted identities", memory_upload.args[2])
-        self.assertIn("|unresolved", memory_upload.args[2])
-        self.assertIn("## Claims about checking", memory_upload.args[2])
-        self.assertIn("called a lookup tool THIS turn", memory_upload.args[2])
+        self.assertEqual(mock_delete_workspace_file.call_count, 5)
 
     @patch("apps.orchestrator.services.upload_config_to_file_share")
     @patch("apps.orchestrator.services.config_to_json", return_value="{}")
@@ -227,10 +209,12 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
             [
                 mock_call(str(self.tenant.id), "workspace/rules/voice-journal.md"),
                 mock_call(str(self.tenant.id), "workspace/rules/reply-markers.md"),
+                mock_call(str(self.tenant.id), "workspace/rules/memory.md"),
+                mock_call(str(self.tenant.id), "workspace/rules/document-ingestion.md"),
             ],
             any_order=True,
         )
-        self.assertEqual(mock_delete_workspace_file.call_count, 2)
+        self.assertEqual(mock_delete_workspace_file.call_count, 4)
         uploaded_paths = [call.args[1] for call in mock_upload_workspace_file.call_args_list]
         self.assertIn("workspace/rules/subagents.md", uploaded_paths)
 

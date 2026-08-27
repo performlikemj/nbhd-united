@@ -6,7 +6,7 @@ If the rule resolves the stale-task-surfacing bug without regressions, promote i
 
 ## Background
 
-The morning briefing surfaces open tasks by reading the tenant's tasks document (`nbhd_document_get(kind='tasks', slug='tasks')`) and counting days since each `- [ ]` line was added. When a user verbally reports completing a task ("messaged Patrick", "done with the CV", "finished the deck"), the agent acknowledges in chat but does **not** update the tasks document. The checkbox stays `- [ ]`, the counter keeps ticking, and the same "X days overdue" item reappears in every subsequent briefing.
+The morning briefing surfaces open tasks from the typed task lifecycle. When a user verbally reports completing a task ("messaged Patrick", "done with the CV", "finished the deck"), the agent must update that task's typed status so the same item is not raised again.
 
 The prompt rule below closes the write-back gap.
 
@@ -15,18 +15,17 @@ The prompt rule below closes the write-back gap.
 ```
 ## Task completion discipline
 
-When the user reports that they have completed, dropped, or deferred a task that appears in their `tasks` document — phrases like "messaged Patrick", "done with X", "finished Y", "took care of Z", "not doing that", "drop it" — you MUST update the tasks document in the SAME TURN as your acknowledgment. Do not defer. Do not assume another system will handle it.
+When the user reports that they have completed, dropped, or deferred a task — phrases like "messaged Patrick", "done with X", "finished Y", "took care of Z", "not doing that", "drop it" — you MUST update the typed task in the SAME TURN as your acknowledgment. Do not defer. Do not assume another system will handle it.
 
 Procedure:
 
-1. Call `nbhd_document_get(kind='tasks', slug='tasks')` to fetch the current markdown.
-2. Find the matching task line by case-insensitive substring match on the task text. If zero lines match, acknowledge the user naturally and do not force a write. If two or more lines match ambiguously, ask the user which one before writing.
-3. For completion ("done", "finished", "messaged them"): toggle `- [ ]` to `- [x]` on the matching line. Leave all other lines and content untouched.
-4. For drop/defer ("not doing that", "drop it"): delete the entire task line. Do not leave it checked — the user has chosen to remove it from consideration.
-5. Call `nbhd_document_put(kind='tasks', slug='tasks', markdown=<updated content>)` with the full updated document. Preserve every other line byte-for-byte.
-6. In your reply, briefly confirm in-line: "✓ closed Patrick check-in" or "✓ dropped gym plan." One short phrase. Don't ceremonialise it; the user already moved on.
+1. Call `nbhd_task_list` to fetch the current typed tasks.
+2. Find the matching task by its title. If zero tasks match, acknowledge the user naturally and do not force a write. If two or more match ambiguously, ask the user which one before writing.
+3. For completion ("done", "finished", "messaged them"), call `nbhd_task_complete` with the matching task id.
+4. For drop or defer, call `nbhd_task_skip` or `nbhd_task_defer` with the matching task id, according to what the user said.
+5. In your reply, briefly confirm in-line: "✓ closed Patrick check-in" or "✓ dropped gym plan." One short phrase. Don't ceremonialise it; the user already moved on.
 
-Why this matters: the morning briefing's "overdue" counter reads directly from the checkbox state. Until you flip it, every briefing re-raises the same closed item. The user has told you — you're the system of record.
+Why this matters: the morning briefing reads typed task status. Until you update it, every briefing can re-raise the same closed item. The user has told you — you're the system of record.
 ```
 
 ## Deployment
@@ -68,7 +67,7 @@ python manage.py force_apply_configs --tenant-id <CANARY_TENANT_UUID>
 
 - [ ] Before set: `grep "prompt_extras" $(az storage file download ...)` returns nothing in the canary's AGENTS.md.
 - [ ] After set + apply: the new rule block is present at the end of the canary's AGENTS.md.
-- [ ] Canary user reports a task completion ("messaged X"). Agent responds with "✓ closed X …" AND the tasks document shows `- [x] X` on next `nbhd_document_get`.
+- [ ] Canary user reports a task completion ("messaged X"). Agent responds with "✓ closed X …" AND the task is `done` on the next `nbhd_task_list`.
 - [ ] Next morning's briefing does NOT list X as overdue.
 - [ ] A second canary test: user says "drop Y". Agent removes the `Y` line entirely. Briefing does not list Y.
 - [ ] Non-canary tenants' AGENTS.md is unchanged.
