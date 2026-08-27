@@ -45,9 +45,10 @@ defaults:
     shell: bash
 
 env:
-  REGISTRY: nbhdunited
-  RESOURCE_GROUP: rg-nbhd-prod
-  DJANGO_APP: nbhd-django-westus2
+  AZURE_RG: ${{ vars.AZURE_RG }}
+  ACA_ENV: ${{ vars.ACA_ENV }}
+  ACR_NAME: ${{ vars.ACR_NAME }}
+  ACA_APP: ${{ vars.ACA_APP }}
   SWA_NAME: nbhd-united-frontend
   PII_DETECTOR_ENGINE: deberta
 
@@ -413,6 +414,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [frontend-test, backend-test, openclaw-config-smoke]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
     env:
       # Optional: add a SENTRY_AUTH_TOKEN repo secret to enable Sentry release
       # tracking + suspect-commit detection. When unset, the release step below
@@ -450,11 +454,13 @@ jobs:
         if: steps.freshness.outputs.superseded != 'true'
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Login to ACR
         if: steps.freshness.outputs.superseded != 'true'
-        run: az acr login --name ${{ env.REGISTRY }}
+        run: az acr login --name ${{ env.ACR_NAME }}
 
       # This content tag names the pinned DeBERTa revision and the default
       # DeBERTa-only recipe shape. The old v2 alias was briefly overwritten by
@@ -466,15 +472,15 @@ jobs:
           # Keep this consumer tag matched to the Django Dockerfile (two-place rule).
           PII_MODEL_TAG=deberta-only-a038061af92047b0
           if ! az acr repository show \
-              --name ${{ env.REGISTRY }} \
+              --name ${{ env.ACR_NAME }} \
               --image pii-model:${PII_MODEL_TAG} >/dev/null 2>&1; then
             echo "pii-model:${PII_MODEL_TAG} missing — building the pinned DeBERTa-only artifact"
             docker build --platform linux/amd64 \
               --build-arg INCLUDE_LIQUID=false \
               -f Dockerfile.pii-model \
-              -t ${{ env.REGISTRY }}.azurecr.io/pii-model:${PII_MODEL_TAG} \
+              -t ${{ env.ACR_NAME }}.azurecr.io/pii-model:${PII_MODEL_TAG} \
               .
-            docker push ${{ env.REGISTRY }}.azurecr.io/pii-model:${PII_MODEL_TAG}
+            docker push ${{ env.ACR_NAME }}.azurecr.io/pii-model:${PII_MODEL_TAG}
           fi
           echo "Pinned DeBERTa-only pii-model:${PII_MODEL_TAG} is available in ACR."
 
@@ -482,11 +488,11 @@ jobs:
         if: steps.freshness.outputs.superseded != 'true'
         run: |
           docker build --platform linux/amd64 \
-            -t ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
-            -t ${{ env.REGISTRY }}.azurecr.io/django:latest \
+            -t ${{ env.ACR_NAME }}.azurecr.io/django:${{ github.sha }} \
+            -t ${{ env.ACR_NAME }}.azurecr.io/django:latest \
             .
-          docker push ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }}
-          docker push ${{ env.REGISTRY }}.azurecr.io/django:latest
+          docker push ${{ env.ACR_NAME }}.azurecr.io/django:${{ github.sha }}
+          docker push ${{ env.ACR_NAME }}.azurecr.io/django:latest
 
       - name: Smoke-test PII stack in Django image
         if: steps.freshness.outputs.superseded != 'true'
@@ -495,7 +501,7 @@ jobs:
           # reinstalled as the CUDA wheel; (2) a weightless model layer; (3) the
           # shelved Liquid bundle leaking back into the serving Django image.
           docker run --rm --entrypoint python \
-            ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
+            ${{ env.ACR_NAME }}.azurecr.io/django:${{ github.sha }} \
             -c "import os, torch; assert '+cpu' in torch.__version__, f'torch is not the CPU build: {torch.__version__}'; from transformers import AutoModelForTokenClassification; files = os.listdir('/app/pii-model'); assert any(f.endswith(('.bin', '.safetensors')) for f in files), f'no model weights in /app/pii-model: {files}'; assert not os.path.exists('/app/pii-model/liquid'), 'shelved Liquid bundle present in serving image'; print('PII smoke OK:', torch.__version__, '| weights:', [f for f in files if f.endswith(('.bin', '.safetensors'))])"
 
           # Golden-set regression guard: run the REAL detect+filter chain over
@@ -508,7 +514,7 @@ jobs:
             -e DEBUG=False \
             -e ALLOWED_HOSTS='*' \
             -e DATABASE_URL=postgres://u:p@localhost:5432/db \
-            ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
+            ${{ env.ACR_NAME }}.azurecr.io/django:${{ github.sha }} \
             -m apps.pii.golden_check
 
       - name: Build and push OpenClaw runtime image
@@ -525,9 +531,9 @@ jobs:
           echo "Building nbhd-openclaw:${OC_TAG}"
           docker build --platform linux/amd64 \
             -f Dockerfile.openclaw \
-            -t ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${OC_TAG} \
+            -t ${{ env.ACR_NAME }}.azurecr.io/nbhd-openclaw:${OC_TAG} \
             .
-          docker push ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${OC_TAG}
+          docker push ${{ env.ACR_NAME }}.azurecr.io/nbhd-openclaw:${OC_TAG}
 
       - name: Download maximal-flags config for boot smoke
         if: steps.freshness.outputs.superseded != 'true'
@@ -545,7 +551,7 @@ jobs:
         # agents.defaults surfaces as "Invalid config". Either fails the deploy
         # BEFORE any tenant is rolled onto the image.
         run: |
-          OC_IMAGE=${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${{ env.OC_IMAGE_TAG }}
+          OC_IMAGE=${{ env.ACR_NAME }}.azurecr.io/nbhd-openclaw:${{ env.OC_IMAGE_TAG }}
           # Parity with the doctor-smoke env: the maximal config embeds
           # "${NBHD_INTERNAL_API_KEY}" in gateway.auth.token, so an unresolved
           # placeholder would false-fail doctor on an otherwise-valid config.
@@ -610,8 +616,8 @@ jobs:
           # Ensure single-revision mode (only one active revision at a time).
           # Prevents multiple Telegram pollers competing for getUpdates (409 Conflict).
           az containerapp revision set-mode \
-            --name ${{ env.DJANGO_APP }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name ${{ env.ACA_APP }} \
+            --resource-group ${{ env.AZURE_RG }} \
             --mode single
 
           # Export without --show-secrets, then preserve the live definition
@@ -622,20 +628,21 @@ jobs:
           DEPLOY_SPEC="$(mktemp)"
           trap 'rm -f "$DEPLOY_SPEC"' EXIT
           az containerapp show \
-            --name ${{ env.DJANGO_APP }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name ${{ env.ACA_APP }} \
+            --resource-group ${{ env.AZURE_RG }} \
             --output json > "$DEPLOY_SPEC"
+          # TODO(shared-room): derive from az containerapp show
           python3 -m config.containerapp_deploy \
             --spec "$DEPLOY_SPEC" \
-            --container-name ${{ env.DJANGO_APP }} \
-            --image ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
+            --container-name ${{ env.ACA_APP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/django:${{ github.sha }} \
             --openclaw-image-tag ${{ env.OC_IMAGE_TAG }} \
             --sentry-release ${{ github.sha }} \
             --django-base-url https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io \
             --pii-detector-engine ${{ env.PII_DETECTOR_ENGINE }}
           az containerapp update \
-            --name ${{ env.DJANGO_APP }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name ${{ env.ACA_APP }} \
+            --resource-group ${{ env.AZURE_RG }} \
             --yaml "$DEPLOY_SPEC"
 
       - name: Wait for Django to serve THIS build (identity + liveness)
@@ -679,10 +686,10 @@ jobs:
           # Single-revision mode ⇒ the latest revision takes 100% traffic, so
           # the app template's image IS the serving image. Compare against the
           # immutable full-sha tag, never :latest (which always looks current).
-          EXPECTED="${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }}"
+          EXPECTED="${{ env.ACR_NAME }}.azurecr.io/django:${{ github.sha }}"
           SERVING=$(az containerapp show \
-            --name ${{ env.DJANGO_APP }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name ${{ env.ACA_APP }} \
+            --resource-group ${{ env.AZURE_RG }} \
             --query "properties.template.containers[0].image" -o tsv)
           echo "Expected serving image: $EXPECTED"
           echo "Actual serving image:   $SERVING"
