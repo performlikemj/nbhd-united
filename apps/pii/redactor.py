@@ -1625,10 +1625,7 @@ def _redact_user_message(
         # punctuation as before. CJK edges also drop the anchor (unspaced
         # Japanese has no ``\b`` between "田中" and "です"), so a stored Japanese
         # name re-masks across turns without needing a fresh model detection.
-        esc = re.escape(original)
-        left = _known_name_edge_anchor(original[:1])
-        right = _known_name_edge_anchor(original[-1:])
-        pattern = re.compile(left + esc + right, re.IGNORECASE)
+        pattern = known_name_pattern(original)
         # Substitute only outside existing placeholders so a stored name that
         # contains a capital letter or ``_`` can never rewrite a placeholder's
         # interior (the Bug A nested-explosion class).

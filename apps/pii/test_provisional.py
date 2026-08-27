@@ -10,7 +10,7 @@ from django.test import TestCase, override_settings
 
 from apps.pii.config import resolve_positive_int
 from apps.pii.provisional import PiiIngress, record_provisional_sightings, transition_binding
-from apps.pii.redactor import DetectedEntity, redact_user_message
+from apps.pii.redactor import DetectedEntity, known_value_matches, redact_user_message
 from apps.tenants.models import Tenant, User
 
 
@@ -202,6 +202,18 @@ class SightingRecorderTests(TestCase):
 
     def test_uses_substitution_boundary_rules(self):
         self.assertEqual(self._record("event-1", datetime(2026, 8, 28, 1, tzinfo=UTC), "XFakenamealphaY"), [])
+
+    def test_primary_substitution_and_recurrence_matcher_share_case_width_rules(self):
+        variants = (
+            "Fakenamealpha",
+            "fAKENAMEALPHA",
+            "Ｆａｋｅｎａｍｅａｌｐｈａ",
+            "XFakenamealphaY",
+        )
+        for text in variants:
+            with self.subTest(text=text), patch("apps.pii.redactor._detect_pii", return_value=[]):
+                substituted = redact_user_message(text, self.tenant) == "[PERSON_1]"
+            self.assertEqual(substituted, known_value_matches(text, "Fakenamealpha"))
 
     def test_channel_participates_in_event_digest(self):
         occurred_at = datetime(2026, 8, 28, 1, tzinfo=UTC)
