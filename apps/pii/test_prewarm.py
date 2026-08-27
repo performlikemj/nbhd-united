@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import runpy
 import sys
 from pathlib import Path
@@ -49,6 +50,38 @@ class PiiWorkerPrewarmTests(SimpleTestCase):
 
         loader.assert_called_once_with()
         self.worker.log.info.assert_any_call("post_worker_init: PII pipeline warmed")
+
+    @patch("apps.crypto.prewarm.start_prewarm_thread")
+    def test_shared_transport_pings_without_constructing_local_detector(self, _dek_prewarm):
+        with (
+            patch.dict(os.environ, {"PII_DETECTOR_TRANSPORT": "shared", "PII_SHARED_WARM_WAIT_S": "0"}),
+            patch("apps.pii.shared_client.ping_shared_detector", return_value=True) as ping,
+            patch("apps.pii.engine.get_pii_pipeline") as loader,
+        ):
+            _post_worker_init()(self.worker)
+
+        ping.assert_called_once()
+        loader.assert_not_called()
+        shared_logs = [
+            call for call in self.worker.log.info.call_args_list if "PII shared transport ready" in call.args[0]
+        ]
+        self.assertEqual(len(shared_logs), 1)
+
+    @patch("apps.crypto.prewarm.start_prewarm_thread")
+    def test_shared_transport_warm_timeout_fails_open(self, _dek_prewarm):
+        with (
+            patch.dict(os.environ, {"PII_DETECTOR_TRANSPORT": "shared", "PII_SHARED_WARM_WAIT_S": "0"}),
+            patch("apps.pii.shared_client.ping_shared_detector", return_value=False),
+            patch("apps.pii.engine.get_pii_pipeline") as loader,
+        ):
+            _post_worker_init()(self.worker)
+
+        loader.assert_not_called()
+        self.worker.log.warning.assert_called_once_with(
+            "post_worker_init: PII shared transport not ready after %.1f s; "
+            "failing open (unconfirmed receipts) until ready",
+            0.0,
+        )
 
     @patch("apps.crypto.prewarm.start_prewarm_thread")
     @patch("apps.pii.engine.get_pii_pipeline", side_effect=RuntimeError("model unavailable"))
