@@ -327,6 +327,11 @@ engine, outcome, queue/inference/total times, character-length bucket, span
 count, and queue depth. Buckets are `0-255`, `256-1023`, `1024-8191`,
 `8192-19999`, and `20000+`; neither event contains input text or payloads.
 
+Client outcomes are `ok`, `timeout`, `connect`, `not_ready`, `queue_full`,
+`expired`, `too_large`, `protocol`, `engine_mismatch`, `bad_response`, and
+`circuit_open`. An oversized request is rejected before connection and does not
+advance the circuit breaker.
+
 ### D7 parity and latency
 
 The offline cached production DeBERTa model was run locally and through a real

@@ -33,6 +33,7 @@ _SERVER_ERRORS = {
     "inference_failed",
 }
 _BREAKER_OUTCOMES = {"timeout", "connect", "protocol", "engine_mismatch", "bad_response"}
+_DIRECT_SERVER_OUTCOMES = {"queue_full", "expired", "engine_mismatch", "not_ready", "too_large"}
 
 
 def _length_bucket(length: int) -> str:
@@ -215,6 +216,8 @@ class SharedPiiPipeline:
         return spans
 
     def _call(self, text: str) -> list[dict[str, Any]]:
+        if len(text.encode("utf-8")) + 128 > MAX_REQUEST_BYTES:
+            raise SharedPiiError("shared detector request exceeds byte cap", outcome="too_large")
         deadline = time.monotonic() + self.deadline_s
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
@@ -248,7 +251,7 @@ class SharedPiiPipeline:
             if set(response) != {"v", "error"} or response["error"] not in _SERVER_ERRORS:
                 raise SharedPiiError("shared detector returned an unknown error", outcome="bad_response")
             error = response["error"]
-            outcome = error if error in {"queue_full", "expired", "engine_mismatch", "not_ready"} else "bad_response"
+            outcome = error if error in _DIRECT_SERVER_OUTCOMES else "bad_response"
             raise SharedPiiError(f"shared detector returned {error}", outcome=outcome)
         if set(response) != {"v", "engine", "spans"}:
             raise SharedPiiError("shared detector returned an invalid response shape", outcome="bad_response")

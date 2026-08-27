@@ -194,6 +194,19 @@ class SharedPiiClientTests(SimpleTestCase):
                 SharedPiiPipeline(socket_path=path, deadline_s=0.02)("abc")
             self.assertEqual(raised.exception.outcome, "timeout")
 
+    def test_oversized_text_does_not_open_circuit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "pii.sock")
+            client = SharedPiiPipeline(socket_path=path)
+            for _index in range(3):
+                with self.assertRaises(SharedPiiError) as raised:
+                    client("x" * (2 * 1024 * 1024))
+                self.assertEqual(raised.exception.outcome, "too_large")
+
+            response = {"v": 1, "engine": "deberta", "spans": []}
+            with _scripted_server(path, response):
+                self.assertEqual(client("normal"), [])
+
     def test_circuit_opens_then_half_open_success_closes_it(self):
         clock = [100.0]
         with tempfile.TemporaryDirectory() as directory:
