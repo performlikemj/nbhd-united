@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import logging
 import re
@@ -12,7 +10,6 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from django.core import signing
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone as tz
@@ -25,6 +22,12 @@ from rest_framework.views import APIView
 from apps.billing.services import record_usage
 from apps.common.tenant_tz import safe_zoneinfo, tenant_today, tenant_tz_name
 from apps.common.windows import Window, resolve_window
+from apps.integrations.confirmation_tokens import (
+    CONFIRM_TOKEN_MAX_AGE_SECONDS,
+    confirm_token_failure,
+    confirmation_digest,
+    issue_confirm_token,
+)
 from apps.integrations.content_sanitize import neutralize_remote_image_markdown
 from apps.journal.document_authoring import (
     get_or_create_authored_document,
@@ -81,6 +84,47 @@ from .services import (
 )
 
 logger = logging.getLogger(__name__)
+
+_REDDIT_CONFIRM_TOKEN_SALT = "apps.integrations.reddit.outward-confirm.v1"
+_REDDIT_CONFIRM_GUIDANCE = (
+    "Show this exact draft to the user and wait for an explicit yes; then call again with confirm_token unchanged."
+)
+_WORKSPACE_DELETE_CONFIRM_TOKEN_SALT = "apps.integrations.workspace.delete-confirm.v1"
+_WORKSPACE_DELETE_CONFIRM_GUIDANCE = (
+    "Show this workspace deletion preview, obtain explicit confirmation, then retry with confirm_token unchanged."
+)
+
+
+def _action_confirmation_context(*, tenant: Tenant, action: str, parameters: dict) -> dict:
+    """Bind a token to tenant, action, and a hash of the exact parameters."""
+    return {
+        "tenant_id": str(tenant.id),
+        "action": action,
+        "parameters_hash": confirmation_digest(parameters),
+    }
+
+
+def _confirmation_required_response(
+    *,
+    context: dict,
+    preview: dict,
+    salt: str,
+    guidance: str,
+    reason: str,
+) -> Response:
+    payload = {
+        "status": "confirmation_required",
+        "preview": preview,
+        "confirm_token": issue_confirm_token(context, salt=salt),
+        "confirm_token_expires_in_seconds": CONFIRM_TOKEN_MAX_AGE_SECONDS,
+        "guidance": guidance,
+    }
+    response_status = status.HTTP_200_OK
+    if reason != "missing":
+        payload.update({"error": "confirmation_required", "reason": reason})
+        response_status = status.HTTP_400_BAD_REQUEST
+    return Response(payload, status=response_status)
+
 
 _SITUATION_CAPTURE_GUIDANCE = (
     "Acknowledge this capture in one short clause. If the user objects, do not record again and drop the subject."
@@ -4538,7 +4582,6 @@ class RuntimeWorkspaceDetailView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
-        record_runtime_write_activity(tenant)
 
         from apps.journal.models import Workspace
 
@@ -4558,8 +4601,42 @@ class RuntimeWorkspaceDetailView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        # If deleting the active workspace, fall back to default
         was_active = tenant.active_workspace_id == workspace.id
+        preview = {
+            "slug": workspace.slug,
+            "name": workspace.name,
+            "content_counts": {"associated_records": 0},
+            "will_fall_back_to_default": was_active,
+        }
+        context = _action_confirmation_context(
+            tenant=tenant,
+            action="workspace_delete",
+            parameters=preview,
+        )
+        body = request.data if isinstance(request.data, dict) else {}
+        confirm_token = str(body.get("confirm_token") or "").strip()
+        confirmation_failure = "missing"
+        if confirm_token:
+            confirmation_failure = confirm_token_failure(
+                confirm_token,
+                context,
+                salt=_WORKSPACE_DELETE_CONFIRM_TOKEN_SALT,
+            )
+        if confirmation_failure is not None:
+            return _confirmation_required_response(
+                context=context,
+                preview=preview,
+                salt=_WORKSPACE_DELETE_CONFIRM_TOKEN_SALT,
+                guidance=_WORKSPACE_DELETE_CONFIRM_GUIDANCE,
+                reason=confirmation_failure,
+            )
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+        record_runtime_write_activity(tenant)
+
+        # If deleting the active workspace, fall back to default
         if was_active:
             default_ws = Workspace.objects.filter(tenant=tenant, is_default=True).first()
             tenant.active_workspace = default_ws
@@ -4801,10 +4878,34 @@ class RedditToolView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        params = {k: v for k, v in request.data.items() if k not in {"action", "confirm_token"}}
+
+        if action in {"post", "reply"}:
+            preview = {"action": action, **params}
+            context = _action_confirmation_context(
+                tenant=tenant,
+                action=f"reddit_{action}",
+                parameters=params,
+            )
+            confirm_token = str(request.data.get("confirm_token") or "").strip()
+            confirmation_failure = "missing"
+            if confirm_token:
+                confirmation_failure = confirm_token_failure(
+                    confirm_token,
+                    context,
+                    salt=_REDDIT_CONFIRM_TOKEN_SALT,
+                )
+            if confirmation_failure is not None:
+                return _confirmation_required_response(
+                    context=context,
+                    preview=preview,
+                    salt=_REDDIT_CONFIRM_TOKEN_SALT,
+                    guidance=_REDDIT_CONFIRM_GUIDANCE,
+                    reason=confirmation_failure,
+                )
+
         if action in {"post", "reply", "edit", "delete_post", "delete_comment"}:
             record_runtime_write_activity(tenant)
-
-        params = {k: v for k, v in request.data.items() if k != "action"}
 
         try:
             result = execute_reddit_tool(tenant, action, params)
@@ -4852,7 +4953,7 @@ class RedditToolView(APIView):
 # docs/sautai-phase0-contract.md.
 
 _SAUTAI_MAX_PROMPT_CHARS = 2000
-_SAUTAI_CONFIRM_TOKEN_MAX_AGE_SECONDS = 10 * 60
+_SAUTAI_CONFIRM_TOKEN_MAX_AGE_SECONDS = CONFIRM_TOKEN_MAX_AGE_SECONDS
 _SAUTAI_CONFIRM_TOKEN_SALT = "apps.integrations.sautai.generate-confirm.v1"
 
 
@@ -4886,32 +4987,17 @@ def _sautai_confirmation_context(*, tenant: Tenant, request_payload: dict, tool_
     }
 
 
-def _sautai_confirmation_digest(context: dict) -> str:
-    canonical = json.dumps(context, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
 def _sautai_issue_confirm_token(context: dict) -> str:
-    digest = _sautai_confirmation_digest(context)
-    return signing.TimestampSigner(salt=_SAUTAI_CONFIRM_TOKEN_SALT).sign(digest)
+    return issue_confirm_token(context, salt=_SAUTAI_CONFIRM_TOKEN_SALT)
 
 
 def _sautai_confirm_token_failure(confirm_token: str, context: dict) -> str | None:
-    """Return an agent-facing failure reason, or ``None`` for a valid token."""
-    if len(confirm_token) > 512:
-        return "invalid"
-    try:
-        signed_digest = signing.TimestampSigner(salt=_SAUTAI_CONFIRM_TOKEN_SALT).unsign(
-            confirm_token,
-            max_age=_SAUTAI_CONFIRM_TOKEN_MAX_AGE_SECONDS,
-        )
-    except signing.SignatureExpired:
-        return "expired"
-    except signing.BadSignature:
-        return "invalid"
-    if not hmac.compare_digest(signed_digest, _sautai_confirmation_digest(context)):
-        return "mismatch"
-    return None
+    return confirm_token_failure(
+        confirm_token,
+        context,
+        salt=_SAUTAI_CONFIRM_TOKEN_SALT,
+        max_age=_SAUTAI_CONFIRM_TOKEN_MAX_AGE_SECONDS,
+    )
 
 
 def _sautai_display_date(value: date) -> str:
