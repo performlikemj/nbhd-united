@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from errno import ECONNREFUSED, ENOENT
 from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
@@ -118,7 +119,22 @@ def _remove_stale_socket(path: Path) -> None:
         return
     if not stat.S_ISSOCK(mode):
         raise RuntimeError("PII shared socket path exists and is not a socket")
-    path.unlink()
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(0.5)
+    try:
+        probe.connect(str(path))
+    except OSError as exc:
+        if exc.errno not in {ECONNREFUSED, ENOENT}:
+            raise
+    else:
+        logger.error("pii_detector_server refusing to start: socket busy")
+        raise RuntimeError("PII shared socket busy")
+    finally:
+        probe.close()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _local_pipeline_loader(engine: str) -> Callable[[str], list[dict[str, Any]]]:
@@ -161,6 +177,7 @@ class SharedDetectorServer:
         self.stopped = threading.Event()
         self._jobs: queue.Queue[_Job | None] = queue.Queue(maxsize=self.queue_max)
         self._listener: socket.socket | None = None
+        self._bound = False
         self._pipeline: Callable[[str], list[dict[str, Any]]] | None = None
         self._worker: threading.Thread | None = None
         self._handlers: set[threading.Thread] = set()
@@ -212,15 +229,26 @@ class SharedDetectorServer:
         path = Path(self.socket_path)
         if not path.parent.exists():
             path.parent.mkdir(mode=0o700, parents=True)
+            os.chmod(path.parent, 0o700)
         _remove_stale_socket(path)
         previous_umask = os.umask(0o077)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             listener.bind(self.socket_path)
+            self._bound = True
+            listener.listen(self.queue_max + 8)
+            listener.settimeout(0.2)
+        except Exception:
+            listener.close()
+            if self._bound:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                self._bound = False
+            raise
         finally:
             os.umask(previous_umask)
-        listener.listen(self.queue_max + 8)
-        listener.settimeout(0.2)
         return listener
 
     def start(self) -> None:
@@ -261,12 +289,14 @@ class SharedDetectorServer:
         for handler in handlers:
             if handler is not threading.current_thread():
                 handler.join(timeout=1)
-        path = Path(self.socket_path)
-        try:
-            if path.is_socket():
-                path.unlink()
-        except OSError:
-            pass
+        if self._bound:
+            path = Path(self.socket_path)
+            try:
+                if path.is_socket():
+                    path.unlink()
+            except OSError:
+                pass
+            self._bound = False
 
     def _inference_loop(self) -> None:
         started = time.monotonic()

@@ -294,6 +294,43 @@ class SharedPiiClientTests(SimpleTestCase):
 
 
 class SharedPiiServerTests(SimpleTestCase):
+    def test_stale_socket_is_replaced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "pii.sock")
+            stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            stale.bind(path)
+            stale.close()
+
+            with (
+                _running_server(path, lambda _text: []),
+                patch.dict(os.environ, {"PII_SHARED_SOCKET": path, "PII_DETECTOR_ENGINE": "deberta"}),
+            ):
+                self.assertTrue(ping_shared_detector())
+
+    def test_live_socket_owner_is_not_unlinked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "pii.sock")
+            with _running_server(path, lambda _text: []):
+                env = os.environ.copy()
+                env.update(
+                    {
+                        "PII_SHARED_SOCKET": path,
+                        "PII_DETECTOR_ENGINE": "deberta",
+                        "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+                    }
+                )
+                second = subprocess.run(
+                    [sys.executable, "-m", "apps.pii.testsupport.fake_shared_detector"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                self.assertNotEqual(second.returncode, 0)
+                with patch.dict(os.environ, {"PII_SHARED_SOCKET": path, "PII_DETECTOR_ENGINE": "deberta"}):
+                    self.assertTrue(ping_shared_detector())
+
     def test_shape_only_server_telemetry_never_logs_text(self):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "pii.sock")

@@ -2,7 +2,6 @@
 set -e
 
 PII_TRANSPORT="${PII_DETECTOR_TRANSPORT:-local}"
-PII_SOCKET="${PII_SHARED_SOCKET:-/run/nbhd/pii-detector.sock}"
 SIDECAR_PID=""
 POLLER_PID=""
 GUNICORN_PID=""
@@ -20,9 +19,6 @@ start_sidecar() {
   if [ "$PII_TRANSPORT" != "shared" ]; then
     SIDECAR_PID=""
     return
-  fi
-  if [ -S "$PII_SOCKET" ]; then
-    rm -f -- "$PII_SOCKET"
   fi
   echo "[startup] starting shared PII detector..."
   python -m apps.pii.shared_server &
