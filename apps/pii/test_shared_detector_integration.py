@@ -77,13 +77,11 @@ class _ServerProcess:
                 "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
             }
         )
-        if fake:
-            env["PII_SHARED_FAKE_BACKEND"] = "1"
-        else:
-            env.pop("PII_SHARED_FAKE_BACKEND", None)
+        if not fake:
             env["HF_HUB_OFFLINE"] = "1"
+        module = "apps.pii.testsupport.fake_shared_detector" if fake else "apps.pii.shared_server"
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "apps.pii.shared_server"],
+            [sys.executable, "-m", module],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

@@ -2,8 +2,9 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-/Users/michaeljones/Projects/nbhd-united/.venv/bin/python}"
+REAL_PYTHON="${REAL_PYTHON:-/Users/michaeljones/Projects/nbhd-united/.venv/bin/python}"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/nbhd-startup.XXXXXX")"
+SHIM_DIR="$TEST_ROOT/shims"
 SUPERVISOR_PID=""
 
 cleanup() {
@@ -19,6 +20,94 @@ fail() {
   echo "FAIL: $1" >&2
   exit 1
 }
+
+mkdir -p "$SHIM_DIR"
+cat > "$SHIM_DIR/python" <<'SHIM'
+#!/bin/bash
+set -e
+
+if [ "$1" = "manage.py" ]; then
+  case "$2" in
+    migrate|disable_rls|bump_pending_configs)
+      exit 0
+      ;;
+    poll_telegram)
+      role="poller"
+      ;;
+    *)
+      exit 64
+      ;;
+  esac
+elif [ "$1" = "-m" ] && [ "$2" = "apps.pii.shared_server" ]; then
+  role="sidecar"
+else
+  exit 64
+fi
+
+exec "$FAKE_REAL_PYTHON" -c '
+import os
+import signal
+import sys
+import time
+
+role = sys.argv[1]
+directory = os.environ["FAKE_STATE_DIR"]
+starts_path = os.path.join(directory, role + ".starts")
+pids_path = os.path.join(directory, role + ".pids")
+with open(starts_path, "a", encoding="utf-8") as starts:
+    starts.write("start\n")
+with open(pids_path, "a", encoding="utf-8") as pids:
+    pids.write(str(os.getpid()) + "\n")
+with open(starts_path, encoding="utf-8") as starts:
+    count = sum(1 for _line in starts)
+
+def stop(_signum, _frame):
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+prefix = "FAKE_" + role.upper()
+if count == 1 and os.environ.get(prefix + "_FAIL_FIRST") == "1":
+    time.sleep(float(os.environ.get(prefix + "_FAIL_AFTER_S", "0.1")))
+    raise SystemExit(int(os.environ.get(prefix + "_FAIL_CODE", "23")))
+exit_after = os.environ.get(prefix + "_EXIT_AFTER_S")
+if exit_after is not None:
+    time.sleep(float(exit_after))
+    raise SystemExit(int(os.environ.get(prefix + "_EXIT_CODE", "0")))
+while True:
+    time.sleep(3600)
+' "$role"
+SHIM
+
+cat > "$SHIM_DIR/gunicorn" <<'SHIM'
+#!/bin/bash
+set -e
+exec "$FAKE_REAL_PYTHON" -c '
+import os
+import signal
+import time
+
+role = "gunicorn"
+directory = os.environ["FAKE_STATE_DIR"]
+with open(os.path.join(directory, role + ".starts"), "a", encoding="utf-8") as starts:
+    starts.write("start\n")
+with open(os.path.join(directory, role + ".pids"), "a", encoding="utf-8") as pids:
+    pids.write(str(os.getpid()) + "\n")
+
+def stop(_signum, _frame):
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+exit_after = os.environ.get("FAKE_GUNICORN_EXIT_AFTER_S")
+if exit_after is not None:
+    time.sleep(float(exit_after))
+    raise SystemExit(int(os.environ.get("FAKE_GUNICORN_EXIT_CODE", "0")))
+while True:
+    time.sleep(3600)
+'
+SHIM
+chmod +x "$SHIM_DIR/python" "$SHIM_DIR/gunicorn"
 
 wait_for_lines() {
   file="$1"
@@ -65,17 +154,17 @@ assert_children_gone() {
 restart_dir="$TEST_ROOT/restart"
 mkdir -p "$restart_dir"
 env \
-  NBHD_STARTUP_FAKE=1 \
-  NBHD_STARTUP_FAKE_DIR="$restart_dir" \
+  PATH="$SHIM_DIR:$PATH" \
+  FAKE_REAL_PYTHON="$REAL_PYTHON" \
+  FAKE_STATE_DIR="$restart_dir" \
+  FAKE_SIDECAR_FAIL_FIRST=1 \
+  FAKE_SIDECAR_FAIL_AFTER_S=0.1 \
+  FAKE_GUNICORN_EXIT_AFTER_S=3 \
+  FAKE_GUNICORN_EXIT_CODE=17 \
   NBHD_STARTUP_BACKOFF_BASE_S=1 \
   NBHD_STARTUP_BACKOFF_CAP_S=2 \
-  NBHD_FAKE_SIDECAR_FAIL_FIRST=1 \
-  NBHD_FAKE_SIDECAR_FAIL_AFTER_S=0.1 \
-  NBHD_FAKE_GUNICORN_EXIT_AFTER_S=3 \
-  NBHD_FAKE_GUNICORN_EXIT_CODE=17 \
   PII_DETECTOR_TRANSPORT=shared \
   PII_SHARED_SOCKET="$restart_dir/pii.sock" \
-  PYTHON_BIN="$PYTHON_BIN" \
   /bin/bash "$PROJECT_DIR/startup.sh" > "$restart_dir/startup.log" 2>&1 &
 SUPERVISOR_PID=$!
 
@@ -93,12 +182,12 @@ echo "PASS: gunicorn shutdown leaves no fake children"
 signal_dir="$TEST_ROOT/signal"
 mkdir -p "$signal_dir"
 env \
-  NBHD_STARTUP_FAKE=1 \
-  NBHD_STARTUP_FAKE_DIR="$signal_dir" \
+  PATH="$SHIM_DIR:$PATH" \
+  FAKE_REAL_PYTHON="$REAL_PYTHON" \
+  FAKE_STATE_DIR="$signal_dir" \
   NBHD_STARTUP_BACKOFF_BASE_S=1 \
   PII_DETECTOR_TRANSPORT=shared \
   PII_SHARED_SOCKET="$signal_dir/pii.sock" \
-  PYTHON_BIN="$PYTHON_BIN" \
   /bin/bash "$PROJECT_DIR/startup.sh" > "$signal_dir/startup.log" 2>&1 &
 SUPERVISOR_PID=$!
 

@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 
-PYTHON_BIN="${PYTHON_BIN:-python}"
 PII_TRANSPORT="${PII_DETECTOR_TRANSPORT:-local}"
 PII_SOCKET="${PII_SHARED_SOCKET:-/run/nbhd/pii-detector.sock}"
 SIDECAR_PID=""
@@ -10,52 +9,12 @@ GUNICORN_PID=""
 SIDECAR_BACKOFF_S="${NBHD_STARTUP_BACKOFF_BASE_S:-5}"
 SIDECAR_BACKOFF_CAP_S="${NBHD_STARTUP_BACKOFF_CAP_S:-60}"
 
-if [ "${NBHD_STARTUP_FAKE:-0}" != "1" ]; then
-  echo "Running database migrations..."
-  DATABASE_URL="${ADMIN_DATABASE_URL:-$DATABASE_URL}" "$PYTHON_BIN" manage.py migrate --noinput
-  echo "Disabling RLS on any new tables..."
-  DATABASE_URL="${ADMIN_DATABASE_URL:-$DATABASE_URL}" "$PYTHON_BIN" manage.py disable_rls || true
-  echo "Bumping pending config versions..."
-  "$PYTHON_BIN" manage.py bump_pending_configs
-else
-  echo "[startup] fake mode: setup tasks skipped"
-fi
-
-start_fake_child() {
-  role="$1"
-  "$PYTHON_BIN" -c '
-import os
-import signal
-import sys
-import time
-
-role = sys.argv[1]
-directory = os.environ["NBHD_STARTUP_FAKE_DIR"]
-starts_path = os.path.join(directory, role + ".starts")
-pids_path = os.path.join(directory, role + ".pids")
-with open(starts_path, "a", encoding="utf-8") as starts:
-    starts.write("start\n")
-with open(pids_path, "a", encoding="utf-8") as pids:
-    pids.write(str(os.getpid()) + "\n")
-with open(starts_path, encoding="utf-8") as starts:
-    count = sum(1 for _line in starts)
-
-def stop(_signum, _frame):
-    raise SystemExit(0)
-
-signal.signal(signal.SIGTERM, stop)
-signal.signal(signal.SIGINT, stop)
-prefix = "NBHD_FAKE_" + role.upper()
-if count == 1 and os.environ.get(prefix + "_FAIL_FIRST") == "1":
-    time.sleep(float(os.environ.get(prefix + "_FAIL_AFTER_S", "0.1")))
-    raise SystemExit(int(os.environ.get(prefix + "_FAIL_CODE", "23")))
-exit_after = os.environ.get(prefix + "_EXIT_AFTER_S")
-if exit_after is not None:
-    time.sleep(float(exit_after))
-    raise SystemExit(int(os.environ.get(prefix + "_EXIT_CODE", "0")))
-time.sleep(3600)
-' "$role" &
-}
+echo "Running database migrations..."
+DATABASE_URL="${ADMIN_DATABASE_URL:-$DATABASE_URL}" python manage.py migrate --noinput
+echo "Disabling RLS on any new tables..."
+DATABASE_URL="${ADMIN_DATABASE_URL:-$DATABASE_URL}" python manage.py disable_rls || true
+echo "Bumping pending config versions..."
+python manage.py bump_pending_configs
 
 start_sidecar() {
   if [ "$PII_TRANSPORT" != "shared" ]; then
@@ -66,42 +25,30 @@ start_sidecar() {
     rm -f -- "$PII_SOCKET"
   fi
   echo "[startup] starting shared PII detector..."
-  if [ "${NBHD_STARTUP_FAKE:-0}" = "1" ]; then
-    start_fake_child sidecar
-  else
-    "$PYTHON_BIN" -m apps.pii.shared_server &
-  fi
+  python -m apps.pii.shared_server &
   SIDECAR_PID=$!
 }
 
 start_poller() {
   echo "Starting central Telegram poller..."
-  if [ "${NBHD_STARTUP_FAKE:-0}" = "1" ]; then
-    start_fake_child poller
-  else
-    "$PYTHON_BIN" manage.py poll_telegram &
-  fi
+  python manage.py poll_telegram &
   POLLER_PID=$!
 }
 
 start_gunicorn() {
   echo "Starting gunicorn..."
-  if [ "${NBHD_STARTUP_FAKE:-0}" = "1" ]; then
-    start_fake_child gunicorn
-  else
-    gunicorn config.wsgi:application \
-      -c gunicorn.conf.py \
-      --bind 0.0.0.0:8000 \
-      --worker-class gthread \
-      --workers 2 \
-      --threads 8 \
-      --timeout 300 \
-      --graceful-timeout 600 \
-      --max-requests 1000 \
-      --max-requests-jitter 100 \
-      --access-logfile - \
-      --access-logformat '%(h)s %(m)s %(U)s %(s)s %(D)sµs' &
-  fi
+  gunicorn config.wsgi:application \
+    -c gunicorn.conf.py \
+    --bind 0.0.0.0:8000 \
+    --worker-class gthread \
+    --workers 2 \
+    --threads 8 \
+    --timeout 300 \
+    --graceful-timeout 600 \
+    --max-requests 1000 \
+    --max-requests-jitter 100 \
+    --access-logfile - \
+    --access-logformat '%(h)s %(m)s %(U)s %(s)s %(D)sµs' &
   GUNICORN_PID=$!
 }
 
@@ -179,11 +126,7 @@ while true; do
   fi
   if ! kill -0 "$POLLER_PID" 2>/dev/null; then
     echo "[startup] poller exited ($WAIT_RC), restarting in 5s..."
-    if [ "${NBHD_STARTUP_FAKE:-0}" = "1" ]; then
-      sleep "${NBHD_STARTUP_BACKOFF_BASE_S:-0.1}"
-    else
-      sleep 5
-    fi
+    sleep 5
     start_poller
   fi
 done
