@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import secrets
 from datetime import UTC, datetime
+from io import StringIO
 
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 from apps.pii.junk_sweep import _classify
@@ -111,3 +113,18 @@ class ProvisionalExpiryTests(TestCase):
     @override_settings(PII_PROVISIONAL_SWEEP_ENABLED=False)
     def test_cron_gate_is_independent(self):
         self.assertEqual(expire_provisional_bindings_task(), {"disabled": 1})
+
+    def test_rollback_promote_all_and_retire_all(self):
+        promoted = _tenant(
+            {"[PERSON_1]": {"name": "Fakenamealpha", "provisional": True, "last_seen_at": self.NOW.isoformat()}}
+        )
+        call_command("expire_provisional_bindings", "--promote-all", stdout=StringIO())
+        promoted.refresh_from_db()
+        self.assertFalse(promoted.pii_entity_map["[PERSON_1]"]["provisional"])
+
+        retired = _tenant(
+            {"[PERSON_1]": {"name": "Fakenamesigma", "provisional": True, "last_seen_at": self.NOW.isoformat()}}
+        )
+        call_command("expire_provisional_bindings", "--retire-all", stdout=StringIO())
+        retired.refresh_from_db()
+        self.assertEqual(retired.pii_entity_map["[PERSON_1]"]["retired_reason"], "rollback")

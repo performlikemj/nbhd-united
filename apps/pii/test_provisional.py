@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
+from apps.pii.config import resolve_positive_int
 from apps.pii.provisional import PiiIngress, record_provisional_sightings, transition_binding
 from apps.pii.redactor import DetectedEntity, redact_user_message
 from apps.tenants.models import Tenant, User
@@ -26,6 +27,14 @@ def _tenant(*, entry: dict, denylist: dict | None = None) -> Tenant:
         pii_entity_map={"[PERSON_1]": entry},
         pii_denylist=denylist or {},
     )
+
+
+class ProvisionalConfigTests(TestCase):
+    def test_ttl_must_be_positive(self):
+        self.assertEqual(resolve_positive_int("72", name="PII_PROVISIONAL_TTL_HOURS"), 72)
+        for invalid in ("0", "-1", "invalid", None):
+            with self.assertRaises(ValueError):
+                resolve_positive_int(invalid, name="PII_PROVISIONAL_TTL_HOURS")
 
 
 class TransitionBindingTests(TestCase):
@@ -110,6 +119,28 @@ class ProvisionalMintTests(TestCase):
         self.tenant.refresh_from_db()
         self.assertNotIn("provisional", self.tenant.pii_entity_map["[PERSON_1]"])
 
+    @override_settings(PII_PROVISIONAL_TENANT_IDS=frozenset())
+    def test_expired_binding_reactivates_before_current_redaction(self):
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": {
+                "name": "Fakenamealpha",
+                "provisional": True,
+                "last_seen_at": "2026-08-20T00:00:00+00:00",
+                "retired": True,
+                "retired_at": "2026-08-24T00:00:00+00:00",
+                "retired_reason": "provisional-expired",
+            }
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            redacted = redact_user_message("Fakenamealpha", self.tenant, ingress=self.ingress)
+        record_provisional_sightings(self.tenant, "Fakenamealpha", self.ingress)
+        self.tenant.refresh_from_db()
+        self.assertEqual(redacted, "[PERSON_1]")
+        self.assertEqual(set(self.tenant.pii_entity_map), {"[PERSON_1]"})
+        self.assertFalse(self.tenant.pii_entity_map["[PERSON_1]"].get("retired", False))
+        self.assertEqual(len(self.tenant.pii_entity_map["[PERSON_1]"]["seen_events"]), 1)
+
 
 class SightingRecorderTests(TestCase):
     def setUp(self):
@@ -167,3 +198,17 @@ class SightingRecorderTests(TestCase):
         )
         self.tenant.refresh_from_db()
         self.assertEqual(len(self.tenant.pii_entity_map["[PERSON_1]"]["seen_events"]), 2)
+
+    def test_recurrence_telemetry_contains_no_content_identifiers(self):
+        ingress = PiiIngress(
+            channel="fixture",
+            provider_event_id="secret-event-fixture",
+            occurred_at=datetime(2026, 8, 28, 1, tzinfo=UTC),
+        )
+        with self.assertLogs("apps.pii.provisional", level="INFO") as captured:
+            record_provisional_sightings(self.tenant, "Fakenamealpha arrived", ingress)
+        rendered = "\n".join(captured.output)
+        self.assertIn("pii_policy_recurrence", rendered)
+        self.assertNotIn("Fakenamealpha", rendered)
+        self.assertNotIn("[PERSON_1]", rendered)
+        self.assertNotIn("secret-event-fixture", rendered)

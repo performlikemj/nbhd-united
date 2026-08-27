@@ -1578,6 +1578,12 @@ def _redact_user_message(
     ingress: PiiIngress | None = None,
 ) -> str:
     """Internal: redact user message with known + new entity detection."""
+    if ingress is not None:
+        # Reactivate before the known-value pass so the current occurrence uses
+        # its historical placeholder even when the neural detector misses it.
+        from apps.pii.provisional import reactivate_provisional_matches
+
+        reactivate_provisional_matches(tenant, text, ingress)
     existing_map = getattr(tenant, "pii_entity_map", None) or {}
     denylist = getattr(tenant, "pii_denylist", None) or {}
 
@@ -1758,7 +1764,6 @@ def _redact_user_message(
         # name that genuinely comes back mints a FRESH placeholder rather than
         # resurrecting the retired one (directive A9).
         locked_inverted_ci = _inverted_names_ci(locked_map, include_retired=False)
-
         merged = dict(locked_map)
         for start, end, etype, original, score in to_mint:
             ci_key = _canonical_key(original)
@@ -1812,6 +1817,12 @@ def _redact_user_message(
                 )
             else:
                 entry = _entry_storage(original)
+            logger.info(
+                "pii_policy_mint tenant=%s type=%s outcome=%s",
+                getattr(tenant, "id", "?"),
+                etype,
+                "provisional" if entry.get("provisional") else "permanent",
+            )
             new_map_entries[placeholder] = entry
             merged[placeholder] = entry
             if ci_key:

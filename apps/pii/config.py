@@ -17,6 +17,16 @@ DEFAULT_DETECTOR_TRANSPORT = "local"
 SUPPORTED_DETECTOR_TRANSPORTS = frozenset({DEFAULT_DETECTOR_TRANSPORT, "shared"})
 
 
+def resolve_positive_int(value, *, name: str) -> int:
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if resolved <= 0:
+        raise ValueError(f"{name} must be greater than zero")
+    return resolved
+
+
 def resolve_detector_engine(requested: str | None) -> str:
     """Normalize a detector selection, falling back safely to DeBERTa."""
     normalized = (requested or "").strip().lower()

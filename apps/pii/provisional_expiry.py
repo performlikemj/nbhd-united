@@ -46,6 +46,7 @@ def sweep_tenant(tenant, *, dry_run: bool = False, max_entries: int = DEFAULT_MA
                 expires_before=cutoff,
             )
             expired += int(result.outcome == "expired")
+            logger.info("pii_policy_expire tenant=%s outcome=%s", tenant.pk, result.outcome)
     return {"examined": len(placeholders), "eligible": len(placeholders), "expired": expired}
 
 

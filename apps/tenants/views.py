@@ -1336,6 +1336,13 @@ class EntityRegistryListView(APIView):
         tenant.pii_entity_map = entity_map
         tenant.pii_type_counters = stored_counters
         tenant.pii_denylist = denylist
+        from apps.pii.provisional import lifecycle_source
+
+        logger.info(
+            "pii_policy_owner_action tenant=%s action=always_hide source=%s",
+            tenant.pk,
+            lifecycle_source(new_value),
+        )
 
         return Response(
             {
@@ -1527,6 +1534,7 @@ class EntityRegistryBulkDeleteView(APIView):
             normalize_denylist_key,
             to_storage_value,
         )
+        from apps.pii.provisional import lifecycle_source
 
         try:
             tenant = request.user.tenant
@@ -1579,6 +1587,11 @@ class EntityRegistryBulkDeleteView(APIView):
                     continue
                 entry = entity_map[placeholder]
                 deleted.append(placeholder)
+                logger.info(
+                    "pii_policy_owner_action tenant=%s action=stop_hiding source=%s",
+                    tenant.pk,
+                    lifecycle_source(entry),
+                )
                 retired = to_storage_value(
                     get_name(entry),
                     existing=entry,

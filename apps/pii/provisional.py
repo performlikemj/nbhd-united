@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
@@ -22,6 +23,14 @@ class PiiIngress:
     channel: str
     provider_event_id: str | None
     occurred_at: datetime
+
+
+def lifecycle_source(entry: Any) -> str:
+    if isinstance(entry, dict) and entry.get("retired_reason") == "provisional-expired":
+        return "expired"
+    if isinstance(entry, dict) and entry.get("provisional"):
+        return "provisional"
+    return "permanent"
 
 
 def provisional_creation_enabled(tenant) -> bool:
@@ -55,6 +64,42 @@ def _event_digest(tenant, ingress: PiiIngress) -> str | None:
     return sha256(material).hexdigest()[:32]
 
 
+def reactivate_provisional_matches(tenant, raw_text: str, ingress: PiiIngress) -> list[TransitionResult]:
+    """Reactivate the deterministic expired binding for each matching value."""
+    if not raw_text:
+        return []
+
+    from apps.pii.redactor import known_value_matches
+
+    grouped: dict[str, list[tuple[str, Any]]] = {}
+    for placeholder, raw in (getattr(tenant, "pii_entity_map", None) or {}).items():
+        name = get_name(raw)
+        key = canonical_key(name)
+        if key and known_value_matches(raw_text, name):
+            grouped.setdefault(key, []).append((placeholder, raw))
+
+    targets: list[str] = []
+    for entries in grouped.values():
+        if any(not is_retired(raw) for _placeholder, raw in entries):
+            continue
+        expired = [
+            item
+            for item in entries
+            if isinstance(item[1], dict) and item[1].get("retired_reason") == "provisional-expired"
+        ]
+        if expired:
+            # Newest last sighting wins; placeholder makes equal timestamps deterministic.
+            targets.append(max(expired, key=lambda item: (item[1].get("last_seen_at") or "", item[0]))[0])
+
+    results = []
+    for placeholder in targets:
+        result = transition_binding(tenant, placeholder, "reactivate", now=ingress.occurred_at)
+        results.append(result)
+        if result.outcome == "reactivated":
+            logging.getLogger(__name__).info("pii_policy_reactivate tenant=%s", tenant.pk)
+    return results
+
+
 def record_provisional_sightings(tenant, raw_owner_text: str, ingress: PiiIngress) -> list[TransitionResult]:
     """Record one raw provider event against every matching provisional value."""
     digest = _event_digest(tenant, ingress)
@@ -86,16 +131,27 @@ def record_provisional_sightings(tenant, raw_owner_text: str, ingress: PiiIngres
     results = []
     local_date = _local_date(tenant, ingress.occurred_at)
     for placeholder in targets:
-        results.append(
-            transition_binding(
-                tenant,
-                placeholder,
-                "count",
-                now=ingress.occurred_at,
-                event_digest=digest,
-                local_date=local_date,
-            )
+        before = (getattr(tenant, "pii_entity_map", None) or {}).get(placeholder)
+        was_expired = isinstance(before, dict) and before.get("retired_reason") == "provisional-expired"
+        result = transition_binding(
+            tenant,
+            placeholder,
+            "count",
+            now=ingress.occurred_at,
+            event_digest=digest,
+            local_date=local_date,
         )
+        results.append(result)
+        entry = result.entry or {}
+        logging.getLogger(__name__).info(
+            "pii_policy_recurrence tenant=%s channel=%s seen_events=%d promoted=%d",
+            tenant.pk,
+            ingress.channel,
+            len(entry.get("seen_events") or []),
+            int(result.outcome == "promoted"),
+        )
+        if was_expired and result.outcome in {"reactivated", "counted", "promoted"}:
+            logging.getLogger(__name__).info("pii_policy_reactivate tenant=%s", tenant.pk)
     return results
 
 
@@ -245,6 +301,13 @@ def transition_binding(
             if changed:
                 entity_map[placeholder] = entry
                 type(tenant).objects.filter(pk=tenant.pk).update(pii_entity_map=entity_map)
+            if action in {"keep", "stop-hiding"}:
+                logging.getLogger(__name__).info(
+                    "pii_policy_owner_action tenant=%s action=%s source=%s",
+                    tenant.pk,
+                    "stop_hiding" if action == "stop-hiding" else "keep",
+                    lifecycle_source(raw),
+                )
             result = TransitionResult(changed, entry, entity_map, outcome)
 
     tenant.pii_entity_map = result.entity_map

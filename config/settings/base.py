@@ -9,7 +9,7 @@ from pathlib import Path
 import environ
 from django.core.exceptions import ImproperlyConfigured
 
-from apps.pii.config import resolve_detector_engine, resolve_detector_transport
+from apps.pii.config import resolve_detector_engine, resolve_detector_transport, resolve_positive_int
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -35,12 +35,9 @@ PII_DETECTOR_TRANSPORT = resolve_detector_transport(
 
 def _positive_int_env(name: str, default: int) -> int:
     try:
-        value = int(env(name, default=default))
-    except (TypeError, ValueError) as exc:
-        raise ImproperlyConfigured(f"{name} must be a positive integer") from exc
-    if value <= 0:
-        raise ImproperlyConfigured(f"{name} must be greater than zero")
-    return value
+        return resolve_positive_int(env(name, default=default), name=name)
+    except ValueError as exc:
+        raise ImproperlyConfigured(str(exc)) from exc
 
 
 # Creation and sweep gates are deliberately independent. Existing lifecycle
