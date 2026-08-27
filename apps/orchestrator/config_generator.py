@@ -211,6 +211,39 @@ _CRON_CONTEXT_PREAMBLE = (
 )
 
 
+_CRON_RULE_ROWS = (
+    ("rules/journal-capture.md", "Journal capture"),
+    ("rules/lessons-constellation.md", "Lessons"),
+    ("rules/memory.md", "Memory"),
+    ("rules/onboarding.md", "Onboarding"),
+    ("rules/messaging.md", "Cron delivery, check-in windows, automated routines"),
+    ("rules/week-ahead.md", "Weekly review"),
+    ("rules/voice-journal.md", "Voice journal"),
+    ("rules/fuel.md", "Fuel"),
+    ("rules/reply-markers.md", "Reply markers"),
+    ("rules/document-ingestion.md", "Uploaded documents"),
+)
+_CRON_DOC_ROWS = (
+    ("docs/tools-reference.md", "before using any tool you're unsure about"),
+    ("docs/cron-management.md", "before creating, editing, or disabling scheduled tasks"),
+    ("docs/error-handling.md", "when a tool fails or a feature isn't working"),
+)
+
+
+def _cron_rule_index(tenant: Tenant) -> str:
+    rows = list(_CRON_RULE_ROWS)
+    if subagents_enabled(tenant):
+        rows.insert(
+            5,
+            ("rules/subagents.md", "Slow-task delegation and app completion delivery"),
+        )
+    rows.extend(_CRON_DOC_ROWS)
+    table = "\n".join(f"| `{path}` | {load_for} |" for path, load_for in rows)
+    return (
+        f"**On-demand rule files (you can read these in this session):**\n| File | Load for |\n|---|---|\n{table}\n\n"
+    )
+
+
 # Marker used by `_wrap_message_with_phase2` and `update_system_cron_prompts` to
 # detect that a job's message already contains the Phase 2 sync block. The
 # wrapper text below MUST contain this exact substring.
@@ -428,7 +461,7 @@ def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
         "unless the math confirms exactly 1 day away.\n\n"
     )
     return _apply_typed_lifecycle_swaps(
-        date_line + time_source_instructions + _CRON_CONTEXT_PREAMBLE + prompt,
+        date_line + time_source_instructions + _CRON_CONTEXT_PREAMBLE + _cron_rule_index(tenant) + prompt,
         tenant,
     )
 

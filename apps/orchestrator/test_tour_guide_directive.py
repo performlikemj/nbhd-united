@@ -26,7 +26,7 @@ from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
 _TOUR_GUIDE_MARKER = "## Tour guide"
-_TOUR_GUIDE_DOC_CUE = "read `docs/tour-guide.md` THIS TURN"
+_TOUR_GUIDE_DISCOVERY_CUE = "search for `nbhd_tour_guide` by name, read its description"
 _TOUR_GUIDE_TOOL_CUE = "call `nbhd_tour_guide` FIRST this turn"
 _PLACES_SEARCH_TOOL_CUE = "then call `nbhd_places_search` before composing"
 _JOURNAL_SHAPING_MARKER = "## Journal shaping"
@@ -56,9 +56,9 @@ _FORMER_GATE_OPENCLAW_VERSION = "2026.5.29"
 _LEGACY_TOUR_GUIDE_GATE = (
     "## Tour guide\n\n"
     "When the user asks what to do, where to eat, or how to spend time around a place — "
-    'or any message contains a "📍 Current location" line — read `docs/tour-guide.md` '
-    "THIS TURN, before answering, and follow its reply format exactly. Never ask where "
-    "the user is when a recent 📍 message exists."
+    'or any message contains a "📍 Current location" line — search for `nbhd_tour_guide` '
+    "by name, read its description, and call it THIS TURN before answering; its response "
+    "carries the exact reply format. Never ask where the user is when a recent 📍 message exists."
 )
 
 
@@ -75,7 +75,7 @@ class TourGuideGateTest(TestCase):
         agents_md = _agents_md(tenant)
 
         self.assertIn(_TOUR_GUIDE_MARKER, agents_md)
-        self.assertIn(_TOUR_GUIDE_DOC_CUE, agents_md)
+        self.assertIn(_TOUR_GUIDE_DISCOVERY_CUE, agents_md)
         self.assertIn("Never ask where the user is", agents_md)
 
     def test_flag_off_tenant_does_not_get_gate(self):
@@ -84,7 +84,7 @@ class TourGuideGateTest(TestCase):
         self.assertFalse(tenant.tour_guide_enabled)
         agents_md = _agents_md(tenant)
         self.assertNotIn(_TOUR_GUIDE_MARKER, agents_md)
-        self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
+        self.assertNotIn(_TOUR_GUIDE_DISCOVERY_CUE, agents_md)
 
     def test_manifest_ok_with_reconciled_version_gets_tool_response_gate(self):
         tenant = create_tenant(display_name="Tour Guide Tool Gate", telegram_chat_id=943006)
@@ -97,7 +97,7 @@ class TourGuideGateTest(TestCase):
 
         self.assertIn(_TOUR_GUIDE_TOOL_CUE, agents_md)
         self.assertIn("follow the contract in its response exactly", agents_md)
-        self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
+        self.assertNotIn(_TOUR_GUIDE_DISCOVERY_CUE, agents_md)
         self.assertTrue(agents_md.endswith(_CURRENT_MAIN_TOOL_TOUR_GATE))
 
     def test_places_ready_gate_loads_format_then_searches_before_composing(self):
@@ -111,7 +111,7 @@ class TourGuideGateTest(TestCase):
         self.assertIn(_TOUR_GUIDE_TOOL_CUE, agents_md)
         self.assertIn(_PLACES_SEARCH_TOOL_CUE, agents_md)
         self.assertLess(agents_md.index("nbhd_tour_guide"), agents_md.index("nbhd_places_search"))
-        self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
+        self.assertNotIn(_TOUR_GUIDE_DISCOVERY_CUE, agents_md)
 
     def test_situation_context_extends_both_verified_tool_variants(self):
         readiness_cases = (
@@ -174,7 +174,7 @@ class TourGuideGateTest(TestCase):
 
         rendered = _agents_md(tenant)
         self.assertLess(rendered.index(_TOUR_GUIDE_MARKER), rendered.index(_JOURNAL_SHAPING_MARKER))
-        self.assertIn(_TOUR_GUIDE_DOC_CUE, rendered)
+        self.assertIn(_TOUR_GUIDE_DISCOVERY_CUE, rendered)
         self.assertNotIn(_TOUR_GUIDE_TOOL_CUE, rendered)
         self.assertEqual(rendered.encode(), expected_current_main.encode())
 
@@ -362,7 +362,7 @@ class TourGuideToolConfigTest(TestCase):
                 )
                 agents_md = _agents_md(tenant)
                 self.assertIn(_TOUR_GUIDE_TOOL_CUE, agents_md)
-                self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
+                self.assertNotIn(_TOUR_GUIDE_DISCOVERY_CUE, agents_md)
 
     def test_manifest_ok_emits_disabled_flag_but_persona_gate_stays_absent(self):
         tenant = create_tenant(display_name="Tour Guide Tool Disabled", telegram_chat_id=943012)

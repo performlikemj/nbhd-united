@@ -543,8 +543,6 @@ _SUBAGENT_MESSAGING_ADDENDUM = (
     "sub-agent completion events; its internal-completion delivery exception "
     "overrides the normal-conversation rule above."
 )
-_SUBAGENT_RULE_INDEX_ANCHOR = "| `rules/messaging.md` | Cron delivery, check-in windows, automated routines |"
-_SUBAGENT_RULE_INDEX_ROW = "| `rules/subagents.md` | Slow-task delegation and app completion delivery |"
 
 
 def _subagent_workspace_surfaces_enabled(tenant) -> bool:
@@ -690,22 +688,6 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         "NBHD_SOUL_MD": render_soul_managed(persona_key, tenant),
         "NBHD_IDENTITY_MD": render_identity_managed(persona_key, tenant),
     }
-    if _subagent_workspace_surfaces_enabled(tenant):
-        agents_md = result["NBHD_AGENTS_MD"]
-        if _SUBAGENT_RULE_INDEX_ANCHOR in agents_md:
-            result["NBHD_AGENTS_MD"] = agents_md.replace(
-                _SUBAGENT_RULE_INDEX_ANCHOR,
-                f"{_SUBAGENT_RULE_INDEX_ANCHOR}\n{_SUBAGENT_RULE_INDEX_ROW}",
-                1,
-            )
-        else:
-            # Fallback templates may not carry the standard rule table. Keep
-            # the tenant-only reference discoverable without changing the base
-            # template for everyone else.
-            result["NBHD_AGENTS_MD"] = (
-                f"{agents_md}\n\n## Additional rules\n\n- `rules/subagents.md` — "
-                "slow-task delegation and app completion delivery"
-            )
     # Site publishing gate — behavioral, per-tenant. Only tenants with their own
     # website connected (site_publishing_enabled) load the publish_portfolio_image
     # tool, so the imperative cue that makes the agent actually CALL it — rather
@@ -861,10 +843,10 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + sautai_gate
 
-    # Tour-guide gate — unverified manifests keep the doc-read contract
-    # byte-for-byte; only tenants whose settings-tools manifest is verified get
-    # the tool-response gate. Keep this BEFORE the larger Gravity block so it
-    # cannot become a truncated tail.
+    # Tour-guide gate — unverified manifests keep an explicit tool-discovery
+    # contract; tenants whose settings-tools manifest is verified get the direct
+    # tool-response gate. Keep this BEFORE the larger Gravity block so it cannot
+    # become a truncated tail.
     if tenant is not None and getattr(tenant, "tour_guide_enabled", False):
         if places_search_delivery_ready(tenant):
             if getattr(tenant, "situational_context_enabled", False):
@@ -903,9 +885,9 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
             tour_guide_gate = (
                 "## Tour guide\n\n"
                 "When the user asks what to do, where to eat, or how to spend time around a place — "
-                'or any message contains a "📍 Current location" line — read `docs/tour-guide.md` '
-                "THIS TURN, before answering, and follow its reply format exactly. Never ask where "
-                "the user is when a recent 📍 message exists."
+                'or any message contains a "📍 Current location" line — search for `nbhd_tour_guide` '
+                "by name, read its description, and call it THIS TURN before answering; its response "
+                "carries the exact reply format. Never ask where the user is when a recent 📍 message exists."
             )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + tour_guide_gate
 
@@ -915,7 +897,8 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
             "This user can reshape their journal template through you.\n"
             "- `nbhd_journal_template_get` — read the current daily-note sections.\n"
             "- `nbhd_journal_template_update` — replace the sections list.\n"
-            "- Before ANY reshape: read `docs/journal-shaping.md`, then propose the exact sections and get "
+            "- Before ANY reshape: call `nbhd_journal_template_get` to list the current sections, then propose "
+            "the exact sections and get "
             "explicit agreement. Never reshape silently.\n"
             "- Template = future structure only; existing notes are never modified by a template change.\n"
             "- Pair every section change with its check-in schedule: prefer folding into an existing check-in "

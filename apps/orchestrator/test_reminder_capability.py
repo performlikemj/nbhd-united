@@ -46,10 +46,10 @@ _CANT_DO_HEADING = "## What You Can't Do"
 # email provenance, sautai, tour guide, journal shaping, and Gravity):
 #
 #   cap                                   24,000
-#   template alone                        15,040
-#   MJ-shaped gates + 1,500 extras        21,361
-#   ALL gates, no extras                  measured by the pin below
-#   ALL gates + 1,500 extras              intentionally pinned as a known gap
+#   template alone                        14,170
+#   MJ-shaped gates + 1,500 extras        20,491
+#   ALL gates, no extras                  21,920
+#   ALL gates + 1,500 extras              23,422 after rules-delivery W0
 #
 # The ceiling here is therefore the strongest TRUE statement available, not the one we
 # wish were true. Do not "fix" a red test by widening it — that is deleting the alarm.
@@ -217,27 +217,14 @@ class MaximalTenantBudgetTest(TestCase):
             "cap — his AGENTS.md tail is being silently truncated in production RIGHT NOW",
         )
 
-    def test_KNOWN_GAP_all_gates_plus_extras_exceeds_the_cap(self):
-        """KNOWN_GAP — arbitrary tenant extras can still overflow the fixed cap.
-
-        A tenant with every gate AND 1,500 chars of prompt_extras renders 24,261
-        chars against a 24,000 cap: silently truncated, newest rule first.
-
-        Pinned green here so the gap is COUNTED rather than hidden behind an
-        undercounting fixture. The render-time sentinel in personas.py alarms on it in
-        production in the meantime.
-
-        FLIPS WHEN: another reviewed diet or prompt-extras budget lands. When it does,
-        this assertion goes RED: delete the sentinel and assert that shape fits with
-        real margin.
-        """
+    def test_all_gates_plus_extras_fits_under_the_cap(self):
+        """Rules-delivery W0 funded 1,500 chars of prompt extras in the maximal shape."""
         md = _agents_md(self._tenant(all_gates=True, extras=1500))
-        self.assertGreater(
+        self.assertLess(
             len(md),
             BOOTSTRAP_MAX_CHARS,
-            f"the all-gates + extras render is now {len(md)} chars, under the "
-            f"{BOOTSTRAP_MAX_CHARS} cap — the gate diet has landed. DELETE this KNOWN_GAP "
-            "sentinel and replace it with a real under-cap assertion.",
+            f"the all-gates + extras render is {len(md)} chars, over the "
+            f"{BOOTSTRAP_MAX_CHARS} cap — prompt extras would be silently truncated",
         )
 
     def test_the_reminder_bullet_survives_in_the_full_shape(self):
