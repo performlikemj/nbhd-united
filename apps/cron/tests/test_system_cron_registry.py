@@ -251,6 +251,11 @@ class SystemCronsWellFormednessTests(TestCase):
                 msg=f"SYSTEM_CRONS entry {name!r} has a malformed cron expr {cron_expr!r}",
             )
 
+    def test_hibernate_idle_tenants_is_scheduled_every_ten_minutes(self):
+        entry = next(e for e in reg_cmd.SYSTEM_CRONS if e[0] == "hibernate-idle-tenants")
+        self.assertEqual(entry[1], "*/10 * * * *")
+        self.assertEqual(entry[2], "/api/cron/trigger/hibernate_idle_tenants/")
+
     def test_stale_app_chat_reaper_is_registered_every_five_minutes(self):
         from apps.cron.views import TASK_MAP
 

@@ -805,9 +805,9 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
 
 
 def hibernate_idle_tenants_task() -> dict:
-    """Find active tenants idle >2h and hibernate their containers.
+    """Find active tenants past the configured idle cutoff and hibernate them.
 
-    Excludes tenants with a recent ``cron_wake_at`` so this hourly sweep
+    Excludes tenants with a recent ``cron_wake_at`` so this ten-minute sweep
     doesn't race with ``wake_for_cron_task`` and kill a container right
     when its scheduled cron is about to fire. Without this guard, a
     morning briefing scheduled at the top of the hour was silently killed
@@ -816,12 +816,13 @@ def hibernate_idle_tenants_task() -> dict:
     at :00:47, briefing never delivered). Cron-wake re-hibernation belongs
     to ``check_cron_wake_idle_task``, which knows about upcoming crons and
     decides correctly. If ``cron_wake_at`` ever gets stuck (QStash drop,
-    etc.), the same 2h cutoff still lets us reclaim the container — we
-    just defer to the cron-aware path while it's fresh.
+    etc.), the configured idle cutoff still lets us reclaim the container
+    — we just defer to the cron-aware path while it's fresh.
     """
     import logging
     from datetime import timedelta
 
+    from django.conf import settings
     from django.db.models import Q
     from django.utils import timezone
 
@@ -832,7 +833,7 @@ def hibernate_idle_tenants_task() -> dict:
 
     from django.db import transaction
 
-    cutoff = timezone.now() - timedelta(hours=2)
+    cutoff = timezone.now() - timedelta(minutes=settings.TENANT_IDLE_HIBERNATE_MINUTES)
 
     hibernated = 0
     failed = 0
@@ -1420,7 +1421,7 @@ def ensure_at_cron_wakes_task() -> dict:
     Background: Django only schedules ``wake_for_cron`` tasks via
     ``hibernate_idle_tenants`` — i.e. when it cleanly hibernates a tenant.
     For an ``at`` cron created mid-conversation, that path doesn't run
-    until the next hourly idle sweep, and even then only if the tenant is
+    until the next ten-minute idle sweep, and even then only if the tenant is
     actually idle. If the container goes down out-of-band (Azure replica
     recycle, OOM, crash) between cron creation and fire time, the fire
     is missed because nothing wakes the tenant.

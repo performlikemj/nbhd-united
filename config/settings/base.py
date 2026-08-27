@@ -223,6 +223,12 @@ QSTASH_CURRENT_SIGNING_KEY = env("QSTASH_CURRENT_SIGNING_KEY", default="")
 QSTASH_NEXT_SIGNING_KEY = env("QSTASH_NEXT_SIGNING_KEY", default="")
 QSTASH_TOKEN = env("QSTASH_TOKEN", default="")
 
+# Tenant runtime hibernation timing. All values are minutes so operators can
+# restore the previous behavior through environment variables without a deploy.
+TENANT_IDLE_HIBERNATE_MINUTES = env.int("TENANT_IDLE_HIBERNATE_MINUTES", default=30)
+TENANT_CRON_HOLD_MINUTES = env.int("TENANT_CRON_HOLD_MINUTES", default=20)
+TENANT_CRON_WAKE_IDLE_MINUTES = env.int("TENANT_CRON_WAKE_IDLE_MINUTES", default=10)
+
 # Steward Phase 1 — portfolio-scoped deterministic evidence ingestion,
 # direct urgent delivery, and the external dead-man. Every value is optional
 # at process boot; ingest fails closed with 503 while its secret is empty.
