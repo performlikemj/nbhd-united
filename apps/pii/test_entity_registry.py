@@ -29,6 +29,8 @@ from apps.pii.entity_registry import (
     is_denied,
     iter_normalized,
     normalize_denylist_key,
+    retire_binding_by_placeholder,
+    retire_bindings_for_key,
     same_name_collisions,
     to_storage_value,
 )
@@ -112,6 +114,71 @@ class ToStorageValueTests(TestCase):
             to_storage_value("Nana", relationship="", notes=""),
             {"name": "Nana"},
         )
+
+    def test_existing_object_preserves_lifecycle_and_unknown_fields(self):
+        existing = {
+            "name": "Fakenamealpha",
+            "provisional": True,
+            "seen_events": ["0" * 32],
+            "future_field": {"kept": True},
+        }
+        stored = to_storage_value(
+            "Fakenamealpha",
+            existing=existing,
+            relationship="fixture",
+        )
+        self.assertTrue(stored["provisional"])
+        self.assertEqual(stored["seen_events"], ["0" * 32])
+        self.assertEqual(stored["future_field"], {"kept": True})
+
+    def test_retire_by_key_preserves_lifecycle_and_unknown_fields(self):
+        original = {
+            "[PERSON_1]": {
+                "name": "Fakenamealpha",
+                "provisional": True,
+                "future_field": "fixture",
+            }
+        }
+        updated, retired = retire_bindings_for_key(
+            original,
+            "fakenamealpha",
+            now_iso="2026-08-28T00:00:00+00:00",
+        )
+        self.assertEqual(retired, ["[PERSON_1]"])
+        self.assertTrue(updated["[PERSON_1]"]["provisional"])
+        self.assertEqual(updated["[PERSON_1]"]["future_field"], "fixture")
+
+
+class TargetedRetirementTests(TestCase):
+    def setUp(self):
+        user = User.objects.create_user(
+            username=f"u_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+            password="fixture-password",
+        )
+        self.tenant = Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.ACTIVE,
+            container_fqdn="container.example.com",
+            pii_entity_map={
+                "[PERSON_1]": {
+                    "name": "Fakenamealpha",
+                    "provisional": True,
+                    "future_field": "fixture",
+                },
+                "[PERSON_2]": {"name": "Fakenamealpha", "provisional": True},
+            },
+        )
+
+    def test_targets_one_placeholder_and_preserves_full_object(self):
+        self.assertTrue(retire_binding_by_placeholder(self.tenant, "[PERSON_1]", "fixture-reason"))
+        self.tenant.refresh_from_db()
+        first = self.tenant.pii_entity_map["[PERSON_1]"]
+        second = self.tenant.pii_entity_map["[PERSON_2]"]
+        self.assertTrue(first["retired"])
+        self.assertEqual(first["retired_reason"], "fixture-reason")
+        self.assertEqual(first["future_field"], "fixture")
+        self.assertNotIn("retired", second)
 
 
 class IterNormalizedTests(TestCase):

@@ -1296,6 +1296,7 @@ class EntityRegistryListView(APIView):
                     current["notes"] = notes
                 new_value = to_storage_value(
                     current.get("name", ""),
+                    existing=entity_map[placeholder],
                     relationship=current.get("relationship", ""),
                     notes=current.get("notes", ""),
                     updated_at=now,
@@ -1425,6 +1426,7 @@ class EntityRegistryItemView(APIView):
             # kept entry does not bounce back into the review queue on edit.
             new_value = to_storage_value(
                 current.get("name", ""),
+                existing=entity_map[placeholder],
                 relationship=current.get("relationship", ""),
                 notes=current.get("notes", ""),
                 updated_at=current["updated_at"],
@@ -1447,7 +1449,12 @@ class EntityRegistryItemView(APIView):
         )
 
     def delete(self, request, placeholder: str):
-        from apps.pii.entity_registry import canonical_key, coerce, get_name, normalize_denylist_key
+        from apps.pii.entity_registry import (
+            canonical_key,
+            get_name,
+            normalize_denylist_key,
+            to_storage_value,
+        )
 
         try:
             tenant = request.user.tenant
@@ -1467,9 +1474,14 @@ class EntityRegistryItemView(APIView):
                 )
 
             now = timezone.now().isoformat()
-            retired = coerce(entity_map[placeholder])
-            retired["retired"] = True
-            retired["retired_at"] = now
+            raw = entity_map[placeholder]
+            retired = to_storage_value(
+                get_name(raw),
+                existing=raw,
+                retired=True,
+                retired_at=now,
+                retired_reason="owner",
+            )
             entity_map[placeholder] = retired
             key = normalize_denylist_key(retired.get("name", ""))
             has_active_same_name = any(
@@ -1507,7 +1519,12 @@ class EntityRegistryBulkDeleteView(APIView):
     _MAX_BATCH = 1000
 
     def post(self, request):
-        from apps.pii.entity_registry import canonical_key, coerce, get_name, normalize_denylist_key
+        from apps.pii.entity_registry import (
+            canonical_key,
+            get_name,
+            normalize_denylist_key,
+            to_storage_value,
+        )
 
         try:
             tenant = request.user.tenant
@@ -1560,9 +1577,13 @@ class EntityRegistryBulkDeleteView(APIView):
                     continue
                 entry = entity_map[placeholder]
                 deleted.append(placeholder)
-                retired = coerce(entry)
-                retired["retired"] = True
-                retired["retired_at"] = now
+                retired = to_storage_value(
+                    get_name(entry),
+                    existing=entry,
+                    retired=True,
+                    retired_at=now,
+                    retired_reason="owner",
+                )
                 entity_map[placeholder] = retired
                 key = normalize_denylist_key(get_name(entry))
                 if key:
@@ -1730,6 +1751,7 @@ class PIIReviewQueueKeepView(APIView):
                 # the new reviewed_at, so keeping never drops identity metadata.
                 entity_map[placeholder] = to_storage_value(
                     current.get("name", ""),
+                    existing=entity_map[placeholder],
                     relationship=current.get("relationship", ""),
                     notes=current.get("notes", ""),
                     updated_at=current.get("updated_at"),
