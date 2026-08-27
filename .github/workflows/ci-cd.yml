@@ -51,7 +51,6 @@ env:
   ACA_APP: ${{ vars.ACA_APP }}
   SWA_NAME: nbhd-united-frontend
   PII_DETECTOR_ENGINE: deberta
-  PII_DETECTOR_TRANSPORT: local
 
 # Serialize the pipeline so concurrent merges can never race the production
 # deploy. The app runs in single-revision mode (Telegram poller 409 avoidance),
@@ -426,6 +425,7 @@ jobs:
       SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
       SENTRY_ORG: by-way-of-mj
       SENTRY_PROJECT: python-django
+      PII_DETECTOR_TRANSPORT: shared
     steps:
       - uses: actions/checkout@v4
         with:
