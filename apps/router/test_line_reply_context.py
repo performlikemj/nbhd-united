@@ -244,6 +244,38 @@ class HandleMessagePrependsReplyContextTests(TestCase):
         self.assertEqual(kwargs.get("raw_user_text"), "i guess writing in japanese. and she wants to do roblox")
 
     def test_quote_forward_records_raw_segment_once(self):
+        from django.utils import timezone
+
+        from apps.pii.provisional import PiiIngress
+        from apps.pii.redactor import RedactionOutcome
+        from apps.router.line_webhook import LineWebhookView
+
+        tenant = _make_tenant()
+        view = LineWebhookView()
+        ingress = PiiIngress(channel="line", provider_event_id="line-event-1", occurred_at=timezone.now())
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("masked", True, "redacted"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+            patch("apps.router.pending_queue.enqueue_message_for_tenant"),
+        ):
+            view._forward_to_container(
+                "U_fixture",
+                tenant,
+                '[Replying to: "Fixture quote"]\n\nFakenamealpha arrived',
+                raw_user_text="Fakenamealpha arrived",
+                webhook_event_id="line-event-1",
+                pii_ingress=ingress,
+            )
+
+        self.assertEqual(redact.call_count, 2)
+        ingress = redact.call_args_list[0].kwargs["ingress"]
+        self.assertEqual(redact.call_args_list[1].kwargs["ingress"], ingress)
+        record.assert_called_once_with(tenant, "Fakenamealpha arrived", ingress)
+
+    def test_agent_postback_payload_is_not_pii_ingress(self):
         from apps.pii.redactor import RedactionOutcome
         from apps.router.line_webhook import LineWebhookView
 
@@ -260,12 +292,10 @@ class HandleMessagePrependsReplyContextTests(TestCase):
             view._forward_to_container(
                 "U_fixture",
                 tenant,
-                '[Replying to: "Fixture quote"]\n\nFakenamealpha arrived',
-                raw_user_text="Fakenamealpha arrived",
+                '[User tapped button: "Fakenamealpha"]',
+                raw_user_text="Fakenamealpha",
                 webhook_event_id="line-event-1",
             )
 
-        self.assertEqual(redact.call_count, 2)
-        ingress = redact.call_args_list[0].kwargs["ingress"]
-        self.assertEqual(redact.call_args_list[1].kwargs["ingress"], ingress)
-        record.assert_called_once_with(tenant, "Fakenamealpha arrived", ingress)
+        self.assertTrue(all(call.kwargs["ingress"] is None for call in redact.call_args_list))
+        record.assert_not_called()

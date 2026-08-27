@@ -611,12 +611,19 @@ class TelegramPoller:
         """
         time.sleep(delay)
         self._send_typing(chat_id)
+        from apps.pii.provisional import PiiIngress
+
         self._forward_to_container(
             chat_id,
             tenant,
             message_text,
             raw_user_text=owner_text,
             provider_event_id=provider_event_id,
+            pii_ingress=PiiIngress(
+                channel="telegram",
+                provider_event_id=str(provider_event_id) if provider_event_id is not None else None,
+                occurred_at=timezone.now(),
+            ),
         )
 
     def _download_photo(self, message: dict) -> str | None:
@@ -816,6 +823,8 @@ class TelegramPoller:
 
     def _handle_update(self, update: dict) -> None:
         """Core routing logic for a single update."""
+        from apps.pii.provisional import PiiIngress
+
         provider_event_id = update.get("update_id")
         # Handle /start TOKEN for account linking
         link_response = handle_start_command(update)
@@ -931,6 +940,13 @@ class TelegramPoller:
                                         context_msg,
                                         raw_user_text=pending_owner_text,
                                         provider_event_id=pending_event_id,
+                                        pii_ingress=PiiIngress(
+                                            channel="telegram",
+                                            provider_event_id=(
+                                                str(pending_event_id) if pending_event_id is not None else None
+                                            ),
+                                            occurred_at=timezone.now(),
+                                        ),
                                     )
                                 else:
                                     # Container didn't come up in time — tell user, let them resend
@@ -956,6 +972,11 @@ class TelegramPoller:
                             pending_text,
                             raw_user_text=pending_owner_text,
                             provider_event_id=pending_event_id,
+                            pii_ingress=PiiIngress(
+                                channel="telegram",
+                                provider_event_id=str(pending_event_id) if pending_event_id is not None else None,
+                                occurred_at=timezone.now(),
+                            ),
                         )
 
                 return
@@ -1143,6 +1164,11 @@ class TelegramPoller:
             raw_user_text=raw_user_text,
             is_image=had_photo,
             provider_event_id=provider_event_id,
+            pii_ingress=PiiIngress(
+                channel="telegram",
+                provider_event_id=str(provider_event_id) if provider_event_id is not None else None,
+                occurred_at=timezone.now(),
+            ),
         )
 
     # ── Contextual recall ──────────────────────────────────────────────────
@@ -1499,6 +1525,7 @@ class TelegramPoller:
         raw_user_text: str | None = None,
         is_image: bool = False,
         provider_event_id: int | str | None = None,
+        pii_ingress=None,
     ) -> None:
         """Pre-process the message and enqueue it on the per-tenant
         serialization queue.
@@ -1547,17 +1574,12 @@ class TelegramPoller:
         # ``pii_entity_map``; outbound rehydration is already wired in the
         # relay path so the user still sees the real values. Its text remains
         # fail-open while the outcome records whether redaction completed.
-        from apps.pii.provisional import PiiIngress, record_provisional_sightings
+        from apps.pii.provisional import record_provisional_sightings
         from apps.pii.redactor import redact_user_message_checked
 
-        ingress = PiiIngress(
-            channel="telegram",
-            provider_event_id=str(provider_event_id) if provider_event_id is not None else None,
-            occurred_at=timezone.now(),
-        )
         owner_text = raw_user_text
 
-        message_redaction = redact_user_message_checked(message_text, tenant, ingress=ingress)
+        message_redaction = redact_user_message_checked(message_text, tenant, ingress=pii_ingress)
         message_text = message_redaction.text
         # When raw_user_text was not provided by the caller it was aliased to
         # the same string as message_text (above). In that case reuse the
@@ -1566,10 +1588,11 @@ class TelegramPoller:
         raw_redaction = (
             message_redaction
             if _raw_aliases_message
-            else redact_user_message_checked(raw_user_text, tenant, ingress=ingress)
+            else redact_user_message_checked(raw_user_text, tenant, ingress=pii_ingress)
         )
         raw_user_text = raw_redaction.text
-        record_provisional_sightings(tenant, owner_text, ingress)
+        if pii_ingress is not None:
+            record_provisional_sightings(tenant, owner_text, pii_ingress)
 
         user_tz = tenant.user.timezone or "UTC"
 

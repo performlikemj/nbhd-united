@@ -1279,6 +1279,8 @@ class LineWebhookView(View):
         raw_user_text = owner_text  # apology fallback should not include framing
 
         # Forward to container (pass reply_token for free Reply API)
+        from apps.pii.provisional import PiiIngress
+
         self._forward_to_container(
             line_user_id,
             tenant,
@@ -1287,6 +1289,11 @@ class LineWebhookView(View):
             is_voice=msg_type == "audio",
             raw_user_text=raw_user_text,
             webhook_event_id=event.get("webhookEventId"),
+            pii_ingress=PiiIngress(
+                channel="line",
+                provider_event_id=event.get("webhookEventId"),
+                occurred_at=timezone.now(),
+            ),
         )
 
     def _send_onboarding_reply(self, line_user_id: str, reply) -> None:
@@ -1349,6 +1356,7 @@ class LineWebhookView(View):
         is_voice: bool = False,
         raw_user_text: str | None = None,
         webhook_event_id: str | None = None,
+        pii_ingress=None,
     ) -> None:
         """Pre-process the message and enqueue it on the per-tenant
         serialization queue.
@@ -1383,21 +1391,17 @@ class LineWebhookView(View):
         # rehydration is already wired (line 657), so [PERSON_N] placeholders
         # round-trip. The checked wrapper preserves fail-open delivery text and
         # records whether the redactor genuinely completed for this queue row.
-        from apps.pii.provisional import PiiIngress, record_provisional_sightings
+        from apps.pii.provisional import record_provisional_sightings
         from apps.pii.redactor import redact_user_message_checked
 
-        ingress = PiiIngress(
-            channel="line",
-            provider_event_id=webhook_event_id,
-            occurred_at=timezone.now(),
-        )
         owner_text = raw_user_text
 
-        message_redaction = redact_user_message_checked(message_text, tenant, ingress=ingress)
+        message_redaction = redact_user_message_checked(message_text, tenant, ingress=pii_ingress)
         message_text = message_redaction.text
-        raw_redaction = redact_user_message_checked(raw_user_text, tenant, ingress=ingress)
+        raw_redaction = redact_user_message_checked(raw_user_text, tenant, ingress=pii_ingress)
         raw_user_text = raw_redaction.text
-        record_provisional_sightings(tenant, owner_text, ingress)
+        if pii_ingress is not None:
+            record_provisional_sightings(tenant, owner_text, pii_ingress)
 
         lang = tenant.user.language or "en"
 

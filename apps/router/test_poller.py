@@ -470,9 +470,13 @@ class TelegramPollerForwardTest(TestCase):
         return _post, captured
 
     def test_framed_and_owner_passes_share_ingress_and_record_once(self):
+        from django.utils import timezone
+
+        from apps.pii.provisional import PiiIngress
         from apps.pii.redactor import RedactionOutcome
 
         framed = '[Replying to: "Fixture quote"]\n\nFakenamealpha arrived'
+        ingress = PiiIngress(channel="telegram", provider_event_id="987", occurred_at=timezone.now())
         with (
             patch(
                 "apps.pii.redactor.redact_user_message_checked",
@@ -487,6 +491,7 @@ class TelegramPollerForwardTest(TestCase):
                 framed,
                 raw_user_text="Fakenamealpha arrived",
                 provider_event_id=987,
+                pii_ingress=ingress,
             )
 
         self.assertEqual(redact.call_count, 2)
@@ -495,6 +500,28 @@ class TelegramPollerForwardTest(TestCase):
         self.assertEqual(first_ingress, second_ingress)
         self.assertEqual(first_ingress.provider_event_id, "987")
         record.assert_called_once_with(self.tenant, "Fakenamealpha arrived", first_ingress)
+
+    def test_agent_button_payload_is_not_pii_ingress(self):
+        from apps.pii.redactor import RedactionOutcome
+
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("masked", True, "redacted"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+            patch("apps.router.pending_queue.enqueue_message_for_tenant"),
+        ):
+            self.poller._forward_to_container(
+                123,
+                self.tenant,
+                '[User tapped button: "Fakenamealpha"]',
+                raw_user_text="Fakenamealpha",
+                provider_event_id=987,
+            )
+
+        self.assertTrue(all(call.kwargs["ingress"] is None for call in redact.call_args_list))
+        record.assert_not_called()
 
     @patch("apps.router.pending_queue.httpx.post")
     def test_photo_forward_is_marked_is_image_singleton(self, mock_post):
