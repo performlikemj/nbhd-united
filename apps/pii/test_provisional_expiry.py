@@ -86,8 +86,35 @@ class ProvisionalExpiryTests(TestCase):
         tenant.refresh_from_db()
         entry = tenant.pii_entity_map["[PERSON_1]"]
         self.assertFalse(entry.get("retired", False))
-        self.assertEqual(entry["first_seen_at"], self.NOW.isoformat())
-        self.assertEqual(len(entry["seen_events"]), 1)
+        self.assertEqual(len(entry["seen_events"]), 2)
+        self.assertEqual(entry["seen_dates"], ["2026-08-20", "2026-08-28"])
+
+    def test_expired_binding_with_two_events_promotes_on_returning_third(self):
+        tenant = _tenant(
+            {
+                "[PERSON_1]": {
+                    "name": "Fakenamealpha",
+                    "provisional": True,
+                    "first_seen_at": "2026-08-20T00:00:00+00:00",
+                    "last_seen_at": "2026-08-20T01:00:00+00:00",
+                    "retired": True,
+                    "retired_at": "2026-08-24T00:00:00+00:00",
+                    "retired_reason": "provisional-expired",
+                    "seen_events": ["0" * 32, "1" * 32],
+                    "seen_dates": ["2026-08-20"],
+                }
+            }
+        )
+        ingress = PiiIngress(channel="fixture", provider_event_id="return-3", occurred_at=self.NOW)
+        result = record_provisional_sightings(tenant, "Fakenamealpha returned", ingress)[0]
+
+        self.assertEqual(result.outcome, "promoted")
+        tenant.refresh_from_db()
+        entry = tenant.pii_entity_map["[PERSON_1]"]
+        self.assertFalse(entry["provisional"])
+        self.assertEqual(entry["promoted_by"], "recurrence")
+        self.assertEqual(len(entry["seen_events"]), 3)
+        self.assertEqual(entry["first_seen_at"], "2026-08-20T00:00:00+00:00")
 
     def test_reactivation_never_overrides_denylist(self):
         tenant = _tenant(
