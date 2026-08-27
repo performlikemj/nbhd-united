@@ -164,6 +164,9 @@ def transition_binding(
                     retired_reason="owner",
                 )
                 changed, outcome = True, "owner-retired"
+            elif action == "keep" and not entry.get("provisional") and not blocked:
+                entry = to_storage_value(name, existing=entry, reviewed_at=now_iso)
+                changed, outcome = entry != raw, "kept"
             elif action in {"keep", "promote"} and not blocked:
                 entry = to_storage_value(
                     name,
