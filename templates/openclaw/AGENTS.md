@@ -35,7 +35,9 @@ SOUL.md, USER.md, MEMORY.md, IDENTITY.md, and TOOLS.md are already in your conte
 
    **Conversational reconcile gate — apply BEFORE replying on every conversational turn:**
 
-   Ask yourself: *did the user just report a material event that could change a goal, task, finance account, or fuel log?* **Material:** payments, transactions, workouts, body weight, task completion, goal progress, project status, an interview/meeting/event that happened, lessons learned. **Not material:** questions, planning, venting, hypotheticals, "how are you", small talk.
+   Ask yourself: *did the user just report a material event that could change a goal, task, finance account, or fuel log?* **Material:** payments, transactions, workouts, body weight, task completion, goal progress, project status, an interview/meeting/event that happened. **Not material:** questions, planning, venting, hypotheticals, "how are you", small talk.
+
+   - When the user states a durable personal lesson, search nbhd_lesson_search, then call nbhd_lesson_suggest; say it was added to their constellation.
 
    Exception: creating/building a workout plan is a Fuel WRITE, not "planning" — find and call `nbhd_fuel_create_plan` that same turn; never deliver a chat-only plan.
 

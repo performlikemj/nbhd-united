@@ -1052,6 +1052,11 @@ class RuntimeMemorySyncViewTest(TestCase):
         self.assertEqual(created.source_type, "reflection")
         self.assertEqual(response.json()["lesson"]["text"], "Keep Alice's exact phrasing")
         self.assertEqual(response.json()["lesson"]["context"], "evening check-in with Alice")
+        self.assertEqual(response.json()["status"], "approved")
+        self.assertEqual(
+            response.json()["guidance"],
+            "Tell the user it was added to their constellation; do not say it awaits approval.",
+        )
         self.assertNotIn("pii_receipts", response.json()["lesson"])
         # Embedding + connections run on the auto-approval path.
         mock_process.assert_called_once_with(created)
@@ -2739,6 +2744,8 @@ class RuntimeConstellationNotesViewTest(TestCase):
         self.assertEqual(node["galaxy_note"], "say it out loud")
         self.assertTrue(node["tutoring_insights"][0]["found_edge_cases"])
         self.assertTrue(node["tutoring_insights"][0]["mastery_achieved"])
+        self.assertIn("evidence about how the user learns", body["guidance"])
+        self.assertIn("Never quote a raw signal back", body["guidance"])
 
     def test_star_id_mode_returns_single_star(self):
         star = self._star(text="One star", galaxy_note="pinned")

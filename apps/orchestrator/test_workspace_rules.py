@@ -9,6 +9,7 @@ file share under workspace/rules/<filename> on config refresh. This test ensures
 
 from __future__ import annotations
 
+from unittest.mock import call as mock_call
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -102,7 +103,6 @@ class SubagentWorkspaceRulesTest(TestCase):
                 "messaging.md",
                 "onboarding.md",
                 "reply-markers.md",
-                "voice-journal.md",
                 "week-ahead.md",
             },
         )
@@ -182,10 +182,14 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
             f"memory.md not found in uploaded rules: {rules_paths}",
         )
         self.assertNotIn("workspace/rules/subagents.md", rules_paths)
-        mock_delete_workspace_file.assert_called_once_with(
-            str(self.tenant.id),
-            "workspace/rules/subagents.md",
+        mock_delete_workspace_file.assert_has_calls(
+            [
+                mock_call(str(self.tenant.id), "workspace/rules/voice-journal.md"),
+                mock_call(str(self.tenant.id), "workspace/rules/subagents.md"),
+            ],
+            any_order=True,
         )
+        self.assertEqual(mock_delete_workspace_file.call_count, 2)
         memory_upload = next(
             call for call in mock_upload_workspace_file.call_args_list if call.args[1] == "workspace/rules/memory.md"
         )
@@ -204,7 +208,7 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
     )
     @patch("apps.orchestrator.azure_client.delete_workspace_file")
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
-    def test_enabled_tenant_does_not_delete_subagent_rule(
+    def test_enabled_tenant_keeps_subagent_rule_and_deletes_retired_voice_rule(
         self,
         mock_upload_workspace_file,
         mock_delete_workspace_file,
@@ -219,7 +223,10 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
         with override_settings(SUBAGENT_TENANT_IDS=str(self.tenant.id)):
             update_tenant_config(str(self.tenant.id))
 
-        mock_delete_workspace_file.assert_not_called()
+        mock_delete_workspace_file.assert_called_once_with(
+            str(self.tenant.id),
+            "workspace/rules/voice-journal.md",
+        )
         uploaded_paths = [call.args[1] for call in mock_upload_workspace_file.call_args_list]
         self.assertIn("workspace/rules/subagents.md", uploaded_paths)
 

@@ -19,7 +19,6 @@ _CRON_INDEX_ROWS = (
     ("rules/onboarding.md", "Onboarding"),
     ("rules/messaging.md", "Cron delivery, check-in windows, automated routines"),
     ("rules/week-ahead.md", "Weekly review"),
-    ("rules/voice-journal.md", "Voice journal"),
     ("rules/fuel.md", "Fuel"),
     ("rules/reply-markers.md", "Reply markers"),
     ("rules/document-ingestion.md", "Uploaded documents"),

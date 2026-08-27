@@ -420,7 +420,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_daily_note_set_section",
       description:
-        "Set the content of a specific section in the daily note. REQUIRED: `section_slug` (the section to write, e.g. 'morning-report') AND `content` (the markdown). Both must be set in every call. Use for writing structured sections like Morning Report, Weather, News, Focus, or Evening Check-in. If the section describes events from a different day than today, pass `date` for THAT day rather than today's — and prefer absolute dates in the content over relative words like 'yesterday', which stop being accurate once the note is read later.",
+        "Set the content of a specific section in the daily note. This OVERWRITES the whole section: first call `nbhd_daily_note_get`, then merge the existing section with the new content so earlier content is preserved. REQUIRED: `section_slug` (the section to write, e.g. 'morning-report') AND `content` (the markdown). Both must be set in every call. Use for writing structured sections like Morning Report, Weather, News, Focus, or Evening Check-in. If the section describes events from a different day than today, pass `date` for THAT day rather than today's — and prefer absolute dates in the content over relative words like 'yesterday', which stop being accurate once the note is read later.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -711,7 +711,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_lesson_suggest",
       description:
-        "Suggest a candidate lesson for user approval. REQUIRED: `text` (the lesson/insight in 1-3 sentences) — must be set in every call. Creates a pending lesson with user-facing text, optional context, source metadata, and auto-generated tags.",
+        "Creates an approved lesson immediately in the user's constellation; there is no approval queue. First call `nbhd_lesson_search` and skip near-duplicates. Capture only a specific, actionable personal insight over trivia that will still be useful in six months; reject trivial facts, temporary logistics, and vague or untestable statements. Never write lessons into daily notes. Supply 2–4 `tags`. REQUIRED: `text` (the lesson/insight in 1-3 sentences) must be set in every call.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -734,7 +734,7 @@ export default function register(api) {
           },
           tags: {
             type: "array",
-            description: "Optional tags for auto-categorization.",
+            description: "2–4 concise tags for auto-categorization.",
             items: {
               type: "string",
             },
@@ -837,8 +837,8 @@ export default function register(api) {
         "Read the enriched context behind the user's constellation stars (lessons): their pinned " +
         "galaxy notes, the reflections they journaled on a star, and the honest signals the assistant " +
         "captured while tutoring them on it (did they restate it accurately, find edge cases, make " +
-        "connections, reach mastery). Use this to teach to how THIS person actually thinks — their " +
-        "strengths and blind spots on topics they've worked through. With no arguments it returns the " +
+        "connections, reach mastery). Tutoring signals are evidence about how the user learns: use them " +
+        "to teach to this user, and never quote a raw signal back to them. With no arguments it returns the " +
         "stars they've been most active on lately; pass `q` to search by topic, or `star_id` to drill " +
         "into one star.",
       parameters: {

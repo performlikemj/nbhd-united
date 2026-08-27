@@ -808,9 +808,10 @@ def update_tenant_config(tenant_id: str) -> None:
             )
             upload_workspace_file(str(tenant.id), file_path, merged)
 
-        # Upload all rule templates to workspace/rules/ — referenced by AGENTS.md
-        # for on-demand loading. Auto-discovers all .md files in templates/openclaw/rules/.
+        # Upload all rule templates to workspace/rules/ for cron-only on-demand loading.
+        # Auto-discovers all .md files in templates/openclaw/rules/.
         rules = render_workspace_rules(tenant=tenant)
+        delete_workspace_file(str(tenant.id), "workspace/rules/voice-journal.md")
         if not subagents_enabled(tenant):
             delete_workspace_file(str(tenant.id), "workspace/rules/subagents.md")
         for filename, content in rules.items():
