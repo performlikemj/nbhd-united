@@ -54,7 +54,8 @@ module.exports = function register(api) {
       "Publish ONE image to the subscriber's own portfolio website. Call this whenever the user " +
       "sends one or more images and asks to add, publish, or update them on their site, portfolio, " +
       "website, or gallery — exactly once per image (N images = N calls), passing `image_path` and " +
-      "a `title`. Never tell the user an image is live, added, or published unless this call " +
+      "a `title`. If no title is supplied, generate a title from the image or ask once; reuse the shared theme across all images. " +
+      "Never tell the user an image is live, added, or published unless this call " +
       "returned success this turn; do not claim a publish you did not actually make.",
     parameters: {
       type: "object",

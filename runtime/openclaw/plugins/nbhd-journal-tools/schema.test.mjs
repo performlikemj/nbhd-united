@@ -154,6 +154,12 @@ test("journal_query.window.kind keeps its TIME-WINDOW enum (must not be clobbere
   assert.ok(!wkind.enum.includes("daily"), "must NOT have been replaced by the document enum");
 });
 
+test("purpose_update matches the runtime update statuses", () => {
+  const tool = collectTools()["nbhd_purpose_update"];
+  assert.deepEqual(tool.parameters.properties.status.enum, ["evolving", "confirmed"]);
+  assert.doesNotMatch(tool.description, /status=['\"]retired|set status.*retired/i);
+});
+
 test("omission-prone tools name their required params in the description", () => {
   const tools = collectTools();
   const expect = {

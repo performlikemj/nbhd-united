@@ -253,7 +253,7 @@ export default function register(api) {
   registerTool(api, {
     name: "nbhd_reddit_digest",
     description:
-      "Get top posts from one or more subreddits. If the user's request is ambiguous or no subreddit is specified, ask which subreddit(s) they want before calling this tool.",
+      "Get top posts from the required `subreddits[]` list. If the user's request is ambiguous or no subreddits are specified, ask which subreddit(s) they want before calling this tool.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -299,15 +299,18 @@ export default function register(api) {
       }
 
       // Fetch each subreddit separately — REDDIT_GET_R_TOP takes one subreddit at a time
-      const parts = [];
+      const digests = [];
       for (const subreddit of subreddits) {
         const payload = await callRedditTool(api, {
           action: "digest",
           params: { subreddit, sort, limit, t: timeFilter },
         });
-        parts.push(`**r/${subreddit}**\n${JSON.stringify(payload, null, 2)}`);
+        digests.push({ subreddit, payload });
       }
-      return renderText(parts.join("\n\n"));
+      return renderPayload({
+        digests,
+        guidance: "surface a digest at most once per day unless asked",
+      });
     },
   });
 
