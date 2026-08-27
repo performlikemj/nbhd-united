@@ -482,7 +482,7 @@ class SharedDetectorServer:
                     total_ms=(time.monotonic() - received_at) * 1000,
                 )
                 return
-            while not job.done.wait(0.01):
+            while not job.done.wait(0.1):
                 if _client_disconnected(connection):
                     job.cancelled = True
                     job.cancel_reason = "disconnect"
