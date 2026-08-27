@@ -1,7 +1,7 @@
 """Extract and record assistant insights from outbound reply markup.
 
 The assistant emits ``[[insight:topic_slug]]statement[[/insight]]`` markers
-inline in its replies (see ``templates/openclaw/rules/reply-markers.md``).
+inline in its replies (see ``templates/openclaw/AGENTS.md``).
 The topic spec optionally carries a pillar prefix —
 ``[[insight:<pillar>/<slug>]]`` (e.g. ``[[insight:fuel/sleep_quality]]``) —
 so a single fleet-wide reply path can file insights against the right pillar
@@ -13,7 +13,7 @@ instead of forcing everything into one. This module:
    stray ``/``) falls back safely to the caller-supplied ``pillar`` default.
 3. Enforces the Gravity kill switch: a marker that resolves to the ``gravity``
    pillar is only ever persisted for a tenant with ``finance_active`` true.
-   ``rules/reply-markers.md`` teaches the gravity taxonomy to every assistant
+   The always-loaded ``AGENTS.md`` teaches the gravity taxonomy to every assistant
    fleet-wide, so a ``gravity/``-prefixed marker can arrive for a tenant who
    never opted into finance; ``Tenant.finance_active`` is the authoritative
    kill switch (mirrors the ``_OBSERVATION_GATE`` gate in
@@ -157,7 +157,7 @@ def extract_and_record_insights_with_ids(
         marker_pillar, slug = _split_pillar_slug(raw, default_pillar=pillar)
 
         # Gravity kill switch. finance_active is the authoritative gate for all
-        # Gravity data (Tenant.finance_active); the fleet-wide reply-markers doc
+        # Gravity data (Tenant.finance_active); the always-loaded marker section
         # teaches the gravity taxonomy to every assistant, so a gravity marker
         # can surface for a tenant who never opted into finance. Refuse the
         # write — keep the statement visible, persist nothing structured.

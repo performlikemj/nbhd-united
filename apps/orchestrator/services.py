@@ -812,6 +812,7 @@ def update_tenant_config(tenant_id: str) -> None:
         # Auto-discovers all .md files in templates/openclaw/rules/.
         rules = render_workspace_rules(tenant=tenant)
         delete_workspace_file(str(tenant.id), "workspace/rules/voice-journal.md")
+        delete_workspace_file(str(tenant.id), "workspace/rules/reply-markers.md")
         if not subagents_enabled(tenant):
             delete_workspace_file(str(tenant.id), "workspace/rules/subagents.md")
         for filename, content in rules.items():

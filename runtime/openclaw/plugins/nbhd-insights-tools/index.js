@@ -394,7 +394,7 @@ export default function register(api) {
     wrap({
       name: "nbhd_insights_record",
       description:
-        "Record an observation you've just raised with the user — your interpretation of a pattern, not a raw number. Status starts as 'open' until the user confirms or refutes. Use `evidence_refs` to point to the specific snapshots/window that support the claim (e.g. {snapshot_ids: [...], window: '8w'}). The `topic` accepts either a canonical slug or a natural string; if it's new, the registry creates a 'proposed' topic that ops can later promote. Skip noise — single-week blips, <10% baseline deltas, things the user already explicitly mentioned.",
+        "Primarily record new observations inline in the reply as `[[insight:pillar/slug]]…[[/insight]]`; use this direct tool only as a rare fallback. Record an observation you've just raised with the user — your interpretation of a pattern, not a raw number. Status starts as 'open' until the user confirms or refutes. Use `evidence_refs` to point to the specific snapshots/window that support the claim (e.g. {snapshot_ids: [...], window: '8w'}). The `topic` accepts either a canonical slug or a natural string; if it's new, the registry creates a 'proposed' topic that ops can later promote. Skip noise — single-week blips, <10% baseline deltas, things the user already explicitly mentioned.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -451,7 +451,7 @@ export default function register(api) {
     wrap({
       name: "nbhd_insights_confirm",
       description:
-        "Mark an existing insight as confirmed by the user. Call this when the user agrees with an observation you raised. Idempotent — re-confirms just append to the response history.",
+        "Use this to confirm an existing insight after evidence: call when the user agrees with an observation you raised. Idempotent — re-confirms just append to the response history.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -490,7 +490,7 @@ export default function register(api) {
     wrap({
       name: "nbhd_insights_refute",
       description:
-        "Mark an existing insight as refuted — the user corrected you. The row stays on record so you remember being wrong (and don't re-raise the same thing). Be quick to refute; refusing to admit wrong is the failure mode.",
+        "Use this to refute an existing insight after evidence: call when the user corrects you. The row stays on record so you remember being wrong (and don't re-raise the same thing). Be quick to refute; refusing to admit wrong is the failure mode.",
       parameters: {
         type: "object",
         additionalProperties: false,

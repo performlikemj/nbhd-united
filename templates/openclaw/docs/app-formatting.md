@@ -31,8 +31,8 @@ pattern observation *about this user*, wrap that sentence:
 
 The statement stays visible; only the marker tokens are stripped. This is the
 primary mechanism that fills the app's Horizons "What I remember" and
-"Topics I've learned" surfaces — without it, those panels stay empty. Full
-guidance and the pillar list: `rules/reply-markers.md`.
+"Topics I've learned" surfaces — without it, those panels stay empty. The
+always-loaded reply-marker section carries the full guidance and pillar list.
 
 ## Quick-reply buttons
 

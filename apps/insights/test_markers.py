@@ -244,7 +244,7 @@ class MarkerPillarParsingTests(TestCase):
 class GravityFinanceGateTests(TestCase):
     """Gravity insight markers are gated on ``Tenant.finance_active``.
 
-    ``rules/reply-markers.md`` teaches the gravity taxonomy to every assistant
+    The always-loaded ``AGENTS.md`` teaches the gravity taxonomy to every assistant
     fleet-wide, so a gravity-prefixed marker can surface for a tenant who never
     enabled the finance module. ``finance_active`` is the authoritative kill
     switch for Gravity data — such a marker must be refused (no row written),
