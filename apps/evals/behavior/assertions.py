@@ -205,8 +205,8 @@ def _two_turn_marker_contract(run: ScenarioRun, pattern: re.Pattern[str], *, lab
 
 
 def _check_chart_marker_contract(run: ScenarioRun, tenant, assertion: HardAssertion) -> tuple[bool, str]:
-    """A numeric-over-time reply carries a chart marker; the following generic
-    chart question does not."""
+    """A platform-backed personal trend reply carries a chart marker; the
+    following generic chart question does not."""
     return _two_turn_marker_contract(run, _CHART_MARKER, label="chart")
 
 

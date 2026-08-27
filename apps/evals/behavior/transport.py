@@ -64,18 +64,21 @@ _THREADS_PATH = "/api/v1/chat/threads/"
 _SCOPE_THREAD_TITLE = "eval-behavior-scope"
 _TERMINAL_STATUSES = frozenset({"ready", "error"})
 _HTTP_TIMEOUT_SECONDS = 15.0
-# Warm-turn poll deadline. The chat probe's warm SLO is ~45s; 60s gives slack while
-# keeping the SUITE's worst-case arithmetic inside the 300s gunicorn ceiling (see
-# SUITE_BUDGET_SECONDS in apps/evals/suites/behavior.py — a 2-turn scenario must
-# fit 180 + 60 + judge within the budget). A warm turn slower than 60s is exactly
-# the sickness the suite should surface as a failed turn, not wait out.
-DEFAULT_DEADLINE_SECONDS = 60.0
-# The FIRST turn of a run may find the behavior tenant HIBERNATED — a cold start
-# "regularly past 2 min" (apps/orchestrator/hibernation.py) — so it gets a
-# wake-aware deadline aligned with the wake probe's SLO (~180s,
-# docs/evals-wave-b-plan.md Probe 4). Every later turn is warm.
-FIRST_TURN_DEADLINE_SECONDS = 180.0
+# Warm-turn poll deadline. The chat probe's warm SLO is ~45s; 50s gives slack while
+# keeping pre-warm + scenario worst-case arithmetic inside the 300s gunicorn ceiling
+# (see SUITE_BUDGET_SECONDS in apps/evals/suites/behavior.py). A warm turn slower
+# than 50s is exactly the sickness the suite should surface as a failed turn, not wait
+# out.
+DEFAULT_DEADLINE_SECONDS = 50.0
+# Pre-warm is outside the suite scenario budget, but remains capped below the
+# worker ceiling. Cold starts regularly pass two minutes; 130s allows for that
+# while a tenant that still has not answered fails the run instead of burning
+# scenarios. The disposable-thread POST has its own 15s cap, so thread open +
+# pre-warm + the 140s scenario budget totals 285s, retaining 15s under the 300s
+# worker ceiling.
+PREWARM_DEADLINE_SECONDS = 130.0
 DEFAULT_POLL_INTERVAL_SECONDS = 2.0
+_PREWARM_TEXT = "Behavior evaluation pre-warm. Reply with a short acknowledgement."
 
 
 @dataclass
@@ -116,9 +119,13 @@ class BehaviorTransport(Protocol):
     """Drives one scenario turn against the behavior tenant and returns the reply.
 
     ``deadline_seconds`` overrides the transport's default poll deadline for THIS
-    turn — the suite passes the wake-aware ``FIRST_TURN_DEADLINE_SECONDS`` for the
-    run's first turn and the default for the rest.
+    turn. The suite pre-warms through the normal chat path before its budget starts,
+    so scenario turns all use the warm default.
     """
+
+    def prewarm(self) -> TurnResult:
+        """Wake the tenant through normal chat and wait for one capped reply."""
+        ...
 
     def open_conversation(self, *, channel: str = "ios") -> str:
         """Open a FRESH conversation scope for the next scenario, make it active for
@@ -173,6 +180,16 @@ class HttpxBehaviorTransport:
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._pat}", "Content-Type": "application/json"}
+
+    def prewarm(self) -> TurnResult:
+        """Wake and prove readiness through the existing chat POST/poll path.
+
+        ``POST /chat/messages/`` is the normal entry point whose platform handler
+        wakes a hibernated tenant. A disposable fresh thread keeps this synthetic
+        acknowledgement turn out of every scenario transcript.
+        """
+        self.open_conversation()
+        return self.send_turn(text=_PREWARM_TEXT, deadline_seconds=PREWARM_DEADLINE_SECONDS)
 
     def open_conversation(self, *, channel: str = "ios") -> str:
         """Mint a FRESH thread (its own OpenClaw session) and make it the active
@@ -249,7 +266,12 @@ class HttpxBehaviorTransport:
         turn_deadline = deadline_seconds if deadline_seconds is not None else self._deadline
         try:
             try:
-                resp = client.post(post_url, json=post_body, headers=self._headers())
+                resp = client.post(
+                    post_url,
+                    json=post_body,
+                    headers=self._headers(),
+                    timeout=min(_HTTP_TIMEOUT_SECONDS, turn_deadline),
+                )
             except httpx.HTTPError:
                 result.error = "post_error"
                 logger.warning("behavior transport: POST failed")
@@ -263,10 +285,23 @@ class HttpxBehaviorTransport:
                 return self._finalize(result, body)
 
             deadline = started + turn_deadline
-            while time.monotonic() < deadline:
-                time.sleep(self._poll_interval)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(self._poll_interval, remaining))
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
                 try:
-                    resp = client.get(detail_url, headers=self._headers())
+                    # Bound the final poll by the wall deadline too. Without this,
+                    # a GET begun just before the deadline could add the client's
+                    # full 15s timeout, defeating the pre-warm cap.
+                    resp = client.get(
+                        detail_url,
+                        headers=self._headers(),
+                        timeout=min(_HTTP_TIMEOUT_SECONDS, remaining),
+                    )
                 except httpx.HTTPError:
                     continue
                 if resp.status_code != 200:
