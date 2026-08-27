@@ -51,7 +51,7 @@ env:
   ACA_APP: ${{ vars.ACA_APP }}
   SWA_NAME: nbhd-united-frontend
   PII_DETECTOR_ENGINE: deberta
-  PII_DETECTOR_TRANSPORT: local
+  PII_DETECTOR_TRANSPORT: shared
 
 # Serialize the pipeline so concurrent merges can never race the production
 # deploy. The app runs in single-revision mode (Telegram poller 409 avoidance),
