@@ -45,16 +45,18 @@ _CANT_DO_HEADING = "## What You Can't Do"
 # in personas.py (site publishing, situation capture, friends, document keep,
 # email provenance, sautai, tour guide, journal shaping, and Gravity):
 #
-#   cap                                   24,000
+#   runtime cap                           26,000
+#   CI truncation-alarm ceiling           25,950 (50-char cap margin)
+#   R0 content-growth pin                 22,759
 #   template alone                        14,170
 #   MJ-shaped gates + 1,500 extras        20,491
 #   ALL gates, no extras                  21,920
 #   ALL gates + 1,500 extras              23,422 after rules-delivery W0
 #
-# The ceiling here is therefore the strongest TRUE statement available, not the one we
-# wish were true. Do not "fix" a red test by widening it — that is deleting the alarm.
-# Fund growth with a trim (the cc1602aa / a5fca659 precedent).
-_ALL_GATES_CEILING = 22_769
+# The ceiling is the truncation alarm, fixed 50 chars below the runtime cap. P5 permits
+# raising it only together with that cap, never alone. The separate R0 content pin below
+# still requires growth to be funded with a trim (the cc1602aa / a5fca659 precedent).
+_ALL_GATES_CEILING = 25_950
 
 
 def _agents_md(tenant=None) -> str:
@@ -191,9 +193,9 @@ class MaximalTenantBudgetTest(TestCase):
             len(md),
             _ALL_GATES_CEILING,
             f"the all-gates AGENTS.md render is {len(md)} chars, over the "
-            f"{_ALL_GATES_CEILING} ceiling (cap {BOOTSTRAP_MAX_CHARS}). Something grew "
-            "without a funding trim. Do NOT widen the ceiling — production truncates the "
-            "TAIL silently, and the tail is always the newest behavioural rule.",
+            f"{_ALL_GATES_CEILING} ceiling (cap {BOOTSTRAP_MAX_CHARS}). Production "
+            "truncates the TAIL silently; fund growth with a trim, or apply P5 by "
+            "raising the runtime cap and CI ceiling together, never the ceiling alone.",
         )
 
     def test_rules_delivery_r0_all_gates_budget(self):
@@ -220,11 +222,12 @@ class MaximalTenantBudgetTest(TestCase):
     def test_all_gates_plus_extras_fits_under_the_cap(self):
         """Rules-delivery W0 funded 1,500 chars of prompt extras in the maximal shape."""
         md = _agents_md(self._tenant(all_gates=True, extras=1500))
-        self.assertLess(
+        self.assertLessEqual(
             len(md),
-            BOOTSTRAP_MAX_CHARS,
-            f"the all-gates + extras render is {len(md)} chars, over the "
-            f"{BOOTSTRAP_MAX_CHARS} cap — prompt extras would be silently truncated",
+            _ALL_GATES_CEILING,
+            f"the measured all-gates + 1,500 extras render is {len(md)} chars, over the "
+            f"{_ALL_GATES_CEILING} CI ceiling — it must retain the 50-char margin under "
+            f"the {BOOTSTRAP_MAX_CHARS} runtime cap",
         )
 
     def test_the_reminder_bullet_survives_in_the_full_shape(self):

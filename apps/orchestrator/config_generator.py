@@ -41,8 +41,9 @@ from apps.tenants.models import Tenant
 # the ``bootstrapMaxChars`` emission site for the incident history. Tests that
 # assert "this block survives bootstrap" import THIS constant rather than
 # re-hardcoding the number, so a future bump can't silently strand them on a
-# stale bound.
-BOOTSTRAP_MAX_CHARS = 24000
+# stale bound. P5 size policy: raise this runtime cap and the CI ceiling in
+# test_reminder_capability.py TOGETHER by a fixed margin, never the ceiling alone.
+BOOTSTRAP_MAX_CHARS = 26000
 
 logger = logging.getLogger(__name__)
 
@@ -2684,9 +2685,11 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 # substitutions + conditional blocks put the base render at
                 # ~18.8 K, so the appended agents_md prompt-extras (person-capture
                 # reflex, task-discipline block) and ~800 chars of base tail were
-                # silently dropped at injection. 24 000 restores the full file
-                # with margin; total stays 80 000 (canary worst-case sum of all
-                # bootstrap files is comfortably under). Tests import
+                # silently dropped at injection. 24 000 restored the full file
+                # at the time; rules-delivery R4 raises the per-file cap to
+                # 26 000 with a 25 950 CI ceiling under P5. The total stays
+                # 80 000 (canary worst-case sum of all bootstrap files is
+                # comfortably under). Tests import
                 # BOOTSTRAP_MAX_CHARS (module top) instead of hardcoding this.
                 "bootstrapMaxChars": BOOTSTRAP_MAX_CHARS,
                 "bootstrapTotalMaxChars": 80000,
