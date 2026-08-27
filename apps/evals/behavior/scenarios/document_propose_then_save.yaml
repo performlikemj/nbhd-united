@@ -1,0 +1,14 @@
+# Turn 1 is a real PDF attachment ingress. The assistant must answer/propose but
+# cannot save. Turn 2 approves exactly two items for one project note.
+id: document_propose_then_save
+persona: >
+  A user reviewing candidate project notes from an attached document who wants
+  control over exactly what becomes durable.
+script:
+  - "Please review this attached document. It contains three candidate notes: R3 Atlas Alpha is the launch goal; R3 Atlas Beta is the owner decision; R3 Atlas Gamma is obsolete. Summarize what seems worth keeping."
+  - "I agree. Save exactly R3 Atlas Alpha and R3 Atlas Beta together in one project note. Do not save R3 Atlas Gamma."
+document_turns: [0]
+hard_assertions:
+  - type: document_propose_then_save
+  - type: reply_nonempty
+soft_dimensions: []

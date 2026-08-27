@@ -1,0 +1,12 @@
+# A durable lesson must become an approved constellation row immediately, after
+# a duplicate search, and the reply must describe the actual immediate state.
+id: lesson_capture
+persona: >
+  A reflective user stating a specific durable lesson they want their assistant
+  to carry forward.
+script:
+  - "A durable lesson I learned is the R3 Lantern Pause: when feedback stings, I make better decisions if I wait ten minutes before replying. Please remember that lesson."
+hard_assertions:
+  - type: lesson_capture_contract
+  - type: reply_nonempty
+soft_dimensions: []

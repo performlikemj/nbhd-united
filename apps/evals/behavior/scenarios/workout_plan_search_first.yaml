@@ -1,0 +1,13 @@
+# Creating a plan must pass through the exercise catalog first. Fuel's runtime
+# persists a content-free searched_before_write flag, so this checks call order,
+# not whether the assistant merely mentions searching.
+id: workout_plan_search_first
+persona: >
+  A user asking for a concrete plan that needs accessory and mobility exercise
+  selection from the illustrated catalog.
+script:
+  - "Create a two-week, three-day workout plan starting next Monday, with a dumbbell accessory and hip mobility work."
+hard_assertions:
+  - type: plan_search_before_write
+  - type: reply_nonempty
+soft_dimensions: []
