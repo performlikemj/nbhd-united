@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ class _Job:
     done: threading.Event = field(default_factory=threading.Event)
     response: dict[str, Any] | None = None
     cancelled: bool = False
+    cancel_reason: str | None = None
 
 
 def _env_int(name: str, default: int) -> int:
@@ -56,6 +58,14 @@ def _env_int(name: str, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return value if value > 0 else default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) and value >= 0 else default
 
 
 def _recv_exact(connection: socket.socket, size: int) -> bytes:
@@ -102,7 +112,7 @@ def _client_disconnected(connection: socket.socket) -> bool:
         if not readable:
             return False
         return connection.recv(1, socket.MSG_PEEK) == b""
-    except OSError:
+    except (OSError, ValueError):
         return True
 
 
@@ -150,8 +160,11 @@ class SharedDetectorServer:
         self.socket_path = socket_path or os.environ.get("PII_SHARED_SOCKET", DEFAULT_SOCKET_PATH)
         self.engine = resolve_detector_engine(engine or os.environ.get("PII_DETECTOR_ENGINE", DEFAULT_DETECTOR_ENGINE))
         self.queue_max = queue_max or _env_int("PII_SHARED_QUEUE_MAX", DEFAULT_QUEUE_MAX)
-        self.pipeline_loader = pipeline_loader or _local_pipeline_loader
-        self.configure_runtime = configure_runtime
+        self.fake_backend = os.environ.get("PII_SHARED_FAKE_BACKEND") == "1" and pipeline_loader is None
+        self.pipeline_loader = (
+            self._load_fake_pipeline if self.fake_backend else pipeline_loader or _local_pipeline_loader
+        )
+        self.configure_runtime = configure_runtime and not self.fake_backend
         self.ready = threading.Event()
         self.stopped = threading.Event()
         self._jobs: queue.Queue[_Job | None] = queue.Queue(maxsize=self.queue_max)
@@ -160,6 +173,55 @@ class SharedDetectorServer:
         self._worker: threading.Thread | None = None
         self._handlers: set[threading.Thread] = set()
         self._handlers_lock = threading.Lock()
+        self._fake_stats_path = os.environ.get("PII_SHARED_FAKE_STATS_PATH")
+        self._fake_stats_lock = threading.Lock()
+        self._fake_stats = {
+            "calls": 0,
+            "completed": 0,
+            "active": 0,
+            "max_active": 0,
+            "queue_full": 0,
+            "expired": 0,
+            "cancelled": 0,
+        }
+        self._write_fake_stats()
+
+    def _write_fake_stats(self) -> None:
+        if not self.fake_backend or not self._fake_stats_path:
+            return
+        path = Path(self._fake_stats_path)
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(json.dumps(self._fake_stats, sort_keys=True))
+        os.replace(temporary, path)
+
+    def _fake_increment(self, key: str) -> None:
+        if not self.fake_backend:
+            return
+        with self._fake_stats_lock:
+            self._fake_stats[key] += 1
+            self._write_fake_stats()
+
+    def _load_fake_pipeline(self, _engine: str) -> Callable[[str], list[dict[str, Any]]]:
+        time.sleep(_env_float("PII_SHARED_FAKE_WARM_S", 0.0))
+        return self._fake_inference
+
+    def _fake_inference(self, text: str) -> list[dict[str, Any]]:
+        with self._fake_stats_lock:
+            self._fake_stats["calls"] += 1
+            self._fake_stats["active"] += 1
+            self._fake_stats["max_active"] = max(self._fake_stats["max_active"], self._fake_stats["active"])
+            self._write_fake_stats()
+        try:
+            time.sleep(_env_float("PII_SHARED_FAKE_DELAY_S", 0.0))
+            start = text.find("Alice")
+            if start < 0:
+                return []
+            return [{"entity_group": "FIRSTNAME", "score": 0.99, "start": start, "end": start + 5}]
+        finally:
+            with self._fake_stats_lock:
+                self._fake_stats["active"] -= 1
+                self._fake_stats["completed"] += 1
+                self._write_fake_stats()
 
     def _prepare_socket(self) -> socket.socket:
         path = Path(self.socket_path)
@@ -243,7 +305,12 @@ class SharedDetectorServer:
                 continue
             if job is None:
                 return
-            if job.cancelled or time.monotonic() >= job.deadline or _client_disconnected(job.connection):
+            disconnected = _client_disconnected(job.connection)
+            if job.cancelled or time.monotonic() >= job.deadline or disconnected:
+                if job.cancel_reason == "disconnect" or disconnected:
+                    self._fake_increment("cancelled")
+                elif job.cancel_reason != "expired":
+                    self._fake_increment("expired")
                 job.response = {"v": PROTOCOL_VERSION, "error": "expired"}
                 job.done.set()
                 continue
@@ -279,16 +346,21 @@ class SharedDetectorServer:
             raise ValueError("invalid entity group")
         if (
             isinstance(score, bool)
-            or not isinstance(score, (int, float))
+            or not isinstance(score, Real)
             or not math.isfinite(float(score))
             or not 0.0 <= float(score) <= 1.0
         ):
             raise ValueError("invalid score")
-        if isinstance(start, bool) or not isinstance(start, int) or isinstance(end, bool) or not isinstance(end, int):
+        if (
+            isinstance(start, bool)
+            or not isinstance(start, Integral)
+            or isinstance(end, bool)
+            or not isinstance(end, Integral)
+        ):
             raise ValueError("invalid offsets")
         if start < 0 or end > text_length or start >= end:
             raise ValueError("invalid offsets")
-        return {"entity_group": entity_group, "score": float(score), "start": start, "end": end}
+        return {"entity_group": entity_group, "score": float(score), "start": int(start), "end": int(end)}
 
     def _handle_connection(self, connection: socket.socket) -> None:
         try:
@@ -323,14 +395,18 @@ class SharedDetectorServer:
             try:
                 self._jobs.put_nowait(job)
             except queue.Full:
+                self._fake_increment("queue_full")
                 self._send(connection, {"v": PROTOCOL_VERSION, "error": "queue_full"})
                 return
             while not job.done.wait(0.01):
                 if _client_disconnected(connection):
                     job.cancelled = True
+                    job.cancel_reason = "disconnect"
                     return
                 if time.monotonic() >= deadline:
                     job.cancelled = True
+                    job.cancel_reason = "expired"
+                    self._fake_increment("expired")
                     self._send(connection, {"v": PROTOCOL_VERSION, "error": "expired"})
                     return
             if job.response is not None:
