@@ -33,3 +33,14 @@
 - Smoke requires `/api/v1/tenants/me/` to expose `is_synthetic=true` and `is_eval_sink=false`; this checkout's current serializer does not expose those fields, so smoke fails closed until that API contract is available.
 - Re-running smoke after its stop-hiding step is not guaranteed to reproduce the initial two-redaction state because the public PII API retires mappings and has no full-reset operation.
 - Tenant log digest remains unavailable until commit `860b8982` (or its successor) is merged/deployed and Azure query RBAC is verified.
+
+## Fix round 1
+
+- Removed production development/localhost support. The host-installed skill now authorizes only `scripts/e2e/nbhd_e2e_skill.py`, whose runtime command allowlist rejects global flags and all argument shapes outside the fixed production commands.
+- Disabled redirects on every HTTP request and made every 3xx a hard, content-free error.
+- Added `is_synthetic` and `is_eval_sink` to `/api/v1/tenants/me/`; the universal tenant gate now requires the allowlisted ID, `is_synthetic=true`, and `is_eval_sink=false` after login, stored-token authentication, and refresh. Missing fields fail closed with the required deployment-contract message. This supersedes the earlier note that the serializer did not expose those fields.
+- Hardened `allowed-tenants.json` to an exact tenant UUID4/account-email schema and refuse placeholders, symlinks, non-regular files, unexpected keys, duplicate keys, wrong ownership, and group/world-writable files.
+- Closed output and argument surfaces: server free strings normalize to closed enums or `other`, timestamps and IDs are shape-checked, login has no account argument, receipt IDs and cursors are bounded, and `pii keep` discovers and intersects only current fixed-fixture bindings.
+- Threaded one absolute monotonic deadline through authentication, requests, `Retry-After`, polling, and managed-thread cleanup. Managed creation records the thread ID before response validation, cleans up validation failures, and reports cleanup failure without replacing a primary error.
+- Replaced split token items with one atomic JSON Keychain item (`account=credentials`), added migration reads from the former items, and persist rotated refresh tokens with the new access token only after the tenant gate passes.
+- Expanded the pure mocked CLI suite to 28 tests covering all nine findings. `ruff check scripts/e2e`, `ruff format --check scripts/e2e`, `py_compile` for every changed Python file, and `git diff --check` pass. The isolated `/tenants/me/` serializer test also passes against a dedicated test database. No real host was contacted.
