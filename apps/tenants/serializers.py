@@ -85,8 +85,6 @@ class TenantSerializer(serializers.ModelSerializer):
             "user",
             "status",
             "model_tier",
-            "is_synthetic",
-            "is_eval_sink",
             "has_active_subscription",
             "trial_days_remaining",
             "trial_started_at",
