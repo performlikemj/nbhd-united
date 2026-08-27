@@ -15,6 +15,7 @@ from rest_framework.test import APIClient
 
 from apps.journal.lifecycle_views import _search_variants
 from apps.journal.models import Document, Goal, Task
+from apps.pii.testsupport import neural_ran
 from apps.tenants.models import Tenant, User
 
 
@@ -169,7 +170,7 @@ class TaskGoalListCreateTests(TestCase):
         self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
         self.tenant.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
 
-        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+        with patch("apps.pii.redactor._detect_pii", side_effect=neural_ran([])):
             resp = self.client.post(
                 "/api/v1/journal/tasks/",
                 {"title": "Call Alice"},

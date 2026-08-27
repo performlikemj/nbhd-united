@@ -19,6 +19,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.test import APIClient
 
 from apps.journal.models import Task
+from apps.pii.testsupport import neural_ran
 from apps.tenants.models import Tenant, User
 
 from . import digest, envelope, projection, services
@@ -183,8 +184,8 @@ class TaskLinkageTest(TestCase):
         self.a.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
         self.a.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
         with (
-            patch("apps.pii.redactor._detect_pii", return_value=[]),
-            patch("apps.pii.authoring._detect_pii", return_value=[]),
+            patch("apps.pii.redactor._detect_pii", side_effect=neural_ran([])),
+            patch("apps.pii.authoring._detect_pii", side_effect=neural_ran([])),
         ):
             result = services.add_mission_task(
                 self.a,

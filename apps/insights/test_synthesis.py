@@ -25,6 +25,7 @@ from apps.insights.pillars import Pillar
 from apps.insights.synthesis import generate_weekly_reflection
 from apps.insights.tasks import _is_sunday_morning_local, weekly_gravity_reflection_task
 from apps.journal.models import Document
+from apps.pii.testsupport import neural_ran
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
@@ -99,8 +100,8 @@ class GenerateWeeklyReflectionTests(TestCase):
         )
 
         with (
-            patch("apps.pii.redactor._detect_pii", return_value=[]),
-            patch("apps.pii.authoring._detect_pii", return_value=[]),
+            patch("apps.pii.redactor._detect_pii", side_effect=neural_ran([])),
+            patch("apps.pii.authoring._detect_pii", side_effect=neural_ran([])),
         ):
             result = generate_weekly_reflection(self.tenant, now=self.now)
 

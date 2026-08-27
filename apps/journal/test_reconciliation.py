@@ -17,6 +17,7 @@ from apps.journal.reconciliation import (
     gather_reconciliation_context,
     undo_task_action,
 )
+from apps.pii.testsupport import neural_ran
 from apps.tenants.models import Tenant, User
 
 
@@ -190,8 +191,8 @@ class ApplySubtaskCreateTest(TestCase):
         parent = Task.objects.create(tenant=tenant, title="Parent")
 
         with (
-            patch("apps.pii.redactor._detect_pii", return_value=[]),
-            patch("apps.pii.authoring._detect_pii", return_value=[]),
+            patch("apps.pii.redactor._detect_pii", side_effect=neural_ran([])),
+            patch("apps.pii.authoring._detect_pii", side_effect=neural_ran([])),
         ):
             subtask_action = apply_subtask_create(
                 tenant=tenant,

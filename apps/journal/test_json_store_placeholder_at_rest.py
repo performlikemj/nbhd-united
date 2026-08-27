@@ -13,6 +13,7 @@ from apps.journal.extraction import _create_pending_extraction
 from apps.journal.md_utils import parse_daily_note
 from apps.journal.models import DailyNote, PendingExtraction, Purpose
 from apps.journal.serializers import JournalEntrySerializer, WeeklyReviewRuntimeSerializer
+from apps.pii.testsupport import neural_ran
 from apps.tenants.models import Tenant, User
 
 
@@ -132,8 +133,8 @@ class JsonStoreFlagOffTests(_JsonStoreBase):
 class JsonStoreFlagOnTests(_JsonStoreBase):
     def _checked(self):
         return (
-            patch("apps.pii.redactor._detect_pii", return_value=[]),
-            patch("apps.pii.authoring._detect_pii", return_value=[]),
+            patch("apps.pii.redactor._detect_pii", side_effect=neural_ran([])),
+            patch("apps.pii.authoring._detect_pii", side_effect=neural_ran([])),
         )
 
     def _use_alice_as_daily_note_author(self):
