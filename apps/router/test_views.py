@@ -23,30 +23,78 @@ class TelegramWebhookViewTest(TestCase):
 
     def test_capture_uses_update_id_for_provisional_sighting(self):
         from apps.pii.redactor import RedactionOutcome
-        from apps.router.views import _capture_telegram_webhook_transcript
+        from apps.router.views import _redact_telegram_webhook_ingress
 
         tenant = create_tenant(display_name="Fixture User", telegram_chat_id=999000113)
-        tenant.recall_capture_enabled = True
-        tenant.save(update_fields=["recall_capture_enabled", "updated_at"])
         with (
             patch(
                 "apps.pii.redactor.redact_user_message_checked",
                 return_value=RedactionOutcome("masked", False, "fixture"),
             ) as redact,
             patch("apps.pii.provisional.record_provisional_sightings") as record,
-            patch("apps.transcripts.capture.quarantine_transcript_event"),
         ):
-            _capture_telegram_webhook_transcript(
+            _outcome, ingress = _redact_telegram_webhook_ingress(
                 tenant,
-                update_id=4321,
-                raw_user_text="Fakenamealpha arrived",
-                result={},
+                4321,
+                "Fakenamealpha arrived",
             )
 
-        ingress = redact.call_args.kwargs["ingress"]
+        self.assertEqual(redact.call_args.kwargs["ingress"], ingress)
         self.assertEqual(ingress.channel, "telegram-webhook")
         self.assertEqual(ingress.provider_event_id, "4321")
         record.assert_called_once_with(tenant, "Fakenamealpha arrived", ingress)
+
+    @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
+    def test_failed_turn_still_records_webhook_ingress(self, mock_forward):
+        from apps.pii.redactor import RedactionOutcome
+
+        tenant = create_tenant(display_name="Failed Turn", telegram_chat_id=999000114)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-failed.internal.azurecontainerapps.io"
+        tenant.save(update_fields=["status", "container_fqdn", "updated_at"])
+        mock_forward.return_value = None
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("[PERSON_1] arrived", True, "redacted"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+        ):
+            response = self._post_update(
+                {"update_id": 4322, "message": {"text": "Fakenamealpha arrived", "chat": {"id": 999000114}}}
+            )
+
+        self.assertEqual(response.status_code, 200)
+        ingress = redact.call_args.kwargs["ingress"]
+        record.assert_called_once_with(tenant, "Fakenamealpha arrived", ingress)
+        forwarded_update = mock_forward.await_args.args[1]
+        self.assertIn("[PERSON_1] arrived", forwarded_update["message"]["text"])
+        self.assertNotIn("Fakenamealpha", forwarded_update["message"]["text"])
+
+    @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
+    def test_capture_disabled_still_records_webhook_ingress(self, mock_forward):
+        from apps.pii.redactor import RedactionOutcome
+
+        tenant = create_tenant(display_name="Capture Disabled", telegram_chat_id=999000115)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-disabled.internal.azurecontainerapps.io"
+        tenant.recall_capture_enabled = False
+        tenant.save(update_fields=["status", "container_fqdn", "recall_capture_enabled", "updated_at"])
+        mock_forward.return_value = {"ok": True}
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("masked", True, "redacted"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+        ):
+            response = self._post_update(
+                {"update_id": 4323, "message": {"text": "Fakenamealpha", "chat": {"id": 999000115}}}
+            )
+
+        self.assertEqual(response.status_code, 200)
+        ingress = redact.call_args.kwargs["ingress"]
+        record.assert_called_once_with(tenant, "Fakenamealpha", ingress)
 
     def _post_update(self, payload: dict, secret: str = "test-secret"):
         extra_headers = {}

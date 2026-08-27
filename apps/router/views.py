@@ -37,7 +37,8 @@ def _capture_telegram_webhook_transcript(
     tenant: Tenant,
     *,
     update_id: object,
-    raw_user_text: str,
+    user_outcome,
+    occurred_at,
     result: object,
 ) -> None:
     """Fail-closed capture for the live Telegram webhook path."""
@@ -45,12 +46,10 @@ def _capture_telegram_webhook_transcript(
         return
 
     try:
-        from apps.pii.provisional import PiiIngress, record_provisional_sightings
         from apps.pii.redactor import (
             RedactionOutcome,
             as_confirmed,
             confirm_assistant_output,
-            redact_user_message_checked,
         )
         from apps.router.pending_queue import _extract_ai_response
         from apps.transcripts.capture import (
@@ -66,14 +65,6 @@ def _capture_telegram_webhook_transcript(
             TranscriptEvent.SourceType.TELEGRAM_WEBHOOK,
             source_event_id,
         )
-        occurred_at = timezone.now()
-        ingress = PiiIngress(
-            channel="telegram-webhook",
-            provider_event_id=str(update_id) if update_id is not None else None,
-            occurred_at=occurred_at,
-        )
-        user_outcome = redact_user_message_checked(raw_user_text, tenant, ingress=ingress)
-        record_provisional_sightings(tenant, raw_user_text, ingress)
         confirmed_user = as_confirmed(user_outcome)
         if confirmed_user is not None:
             capture_transcript_event(
@@ -140,6 +131,21 @@ def _capture_telegram_webhook_transcript(
             str(tenant.id)[:8],
             str(update_id)[:32],
         )
+
+
+def _redact_telegram_webhook_ingress(tenant: Tenant, update_id: object, raw_user_text: str):
+    """Redact and reconcile one raw webhook event before downstream work."""
+    from apps.pii.provisional import PiiIngress, record_provisional_sightings
+    from apps.pii.redactor import redact_user_message_checked
+
+    ingress = PiiIngress(
+        channel="telegram-webhook",
+        provider_event_id=str(update_id) if update_id is not None else None,
+        occurred_at=timezone.now(),
+    )
+    outcome = redact_user_message_checked(raw_user_text, tenant, ingress=ingress)
+    record_provisional_sightings(tenant, raw_user_text, ingress)
+    return outcome, ingress
 
 
 def _coerce_non_negative_int(value: object) -> int:
@@ -503,6 +509,11 @@ def telegram_webhook(request):
         # Capture the user's original text BEFORE the in-place decoration below
         # so the conversation digest stores real content, not agent markers.
         raw_user_text = msg.get("text") or msg.get("caption") or ""
+        user_outcome, ingress = _redact_telegram_webhook_ingress(tenant, update_id, raw_user_text)
+        capture_source_payload["redaction"] = {
+            "confirmed": user_outcome.confirmed,
+            "reason": user_outcome.reason,
+        }
         if "text" in msg:
             # Mark this as a conversational turn (not a scheduled cron run)
             # so the agent skips the heavy AGENTS.md "Session Start"
@@ -511,8 +522,10 @@ def telegram_webhook(request):
                 proactive_block
                 + build_datetime_context(user_timezone)
                 + build_chat_context_marker("telegram")
-                + msg["text"]
+                + user_outcome.text
             )
+        elif "caption" in msg:
+            msg["caption"] = user_outcome.text
 
         # Reasoning models need more time; the agent replies directly via bot
         # token even if this times out, but a longer window lets us capture
@@ -538,7 +551,8 @@ def telegram_webhook(request):
         _capture_telegram_webhook_transcript(
             tenant,
             update_id=update_id,
-            raw_user_text=raw_user_text,
+            user_outcome=user_outcome,
+            occurred_at=ingress.occurred_at,
             result=result,
         )
         # Capture the turn for the USER.md "Conversation so far" digest so
