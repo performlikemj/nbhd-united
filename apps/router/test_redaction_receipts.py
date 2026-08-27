@@ -1,12 +1,13 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from django.test import TestCase, override_settings
+from rest_framework.test import APIClient
 
 from apps.pii.redactor import RedactionOutcome, redaction_receipt
 from apps.pii.testsupport import neural_ran
 from apps.router.chat_views import enqueue_tenant_turn
 from apps.router.line_webhook import LineWebhookView
-from apps.router.models import BufferedMessage, ChatThread, PendingMessage
+from apps.router.models import AppChatMessage, BufferedMessage, ChatThread, PendingMessage
 from apps.router.pending_queue import _build_batch_chat_content
 from apps.router.poller import TelegramPoller
 from apps.router.wake_on_message import handle_hibernated_message
@@ -92,6 +93,109 @@ class PendingMessageReceiptTest(TestCase):
         self.assertEqual(payload["webhook_event_id"], "line-event-7")
         self.assertEqual(payload["redaction"], {"confirmed": True, "reason": "redacted"})
         self.assertEqual(enqueue.call_args.kwargs["user_text_excerpt"], "masked line")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key", NBHD_DISABLE_BACKGROUND_THREADS=True)
+class AppChatMessageReceiptTest(TestCase):
+    def setUp(self):
+        self.user = _user(suffix="app-row")
+        self.tenant = _tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _post(self, client_msg_id: str, text: str = "hello"):
+        return self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": text, "client_msg_id": client_msg_id},
+            format="json",
+        )
+
+    @patch("apps.router.chat_views.enqueue_message_for_tenant")
+    @patch("apps.pii.redactor._detect_pii", side_effect=neural_ran([]))
+    def test_confirmed_receipt_is_persisted_and_serialized_in_all_history_seams(self, _detect, _enqueue):
+        response = self._post("confirmed")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIs(response.data["redaction_confirmed"], True)
+        self.assertEqual(response.data["redaction_reason"], "redacted")
+
+        row = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="confirmed")
+        self.assertIs(row.redaction_confirmed, True)
+        self.assertEqual(row.redaction_reason, "redacted")
+
+        detail = self.client.get("/api/v1/chat/messages/confirmed/")
+        self.assertEqual(detail.status_code, 200, detail.content)
+        self.assertIs(detail.data["redaction_confirmed"], True)
+        self.assertEqual(detail.data["redaction_reason"], "redacted")
+
+        thread_history = self.client.get(f"/api/v1/chat/threads/{row.thread_id}/messages/")
+        self.assertEqual(thread_history.status_code, 200, thread_history.content)
+        thread_row = thread_history.data["messages"][0]
+        self.assertIs(thread_row["redaction_confirmed"], True)
+        self.assertEqual(thread_row["redaction_reason"], "redacted")
+
+        flat_history = self.client.get("/api/v1/chat/messages/")
+        self.assertEqual(flat_history.status_code, 200, flat_history.content)
+        user_row = next(
+            item
+            for item in flat_history.data["messages"]
+            if item.get("client_msg_id") == "confirmed" and item["role"] == "user"
+        )
+        self.assertIs(user_row["redaction_confirmed"], True)
+        self.assertEqual(user_row["redaction_reason"], "redacted")
+
+    @patch("apps.router.chat_views.enqueue_message_for_tenant")
+    @patch("apps.pii.redactor._redact_user_message", side_effect=RuntimeError("detector down"))
+    def test_redaction_error_receipt_is_persisted_and_serialized(self, _redact, _enqueue):
+        response = self._post("redaction-error")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIs(response.data["redaction_confirmed"], False)
+        self.assertEqual(response.data["redaction_reason"], "redaction-error")
+        row = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="redaction-error")
+        self.assertIs(row.redaction_confirmed, False)
+        self.assertEqual(row.redaction_reason, "redaction-error")
+
+    @patch("apps.router.chat_views.enqueue_message_for_tenant")
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    def test_neural_unavailable_receipt_is_persisted(self, _detect, _enqueue):
+        response = self._post("neural-unavailable")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIs(response.data["redaction_confirmed"], False)
+        self.assertEqual(response.data["redaction_reason"], "neural-unavailable")
+        row = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="neural-unavailable")
+        self.assertIs(row.redaction_confirmed, False)
+        self.assertEqual(row.redaction_reason, "neural-unavailable")
+
+    def test_historical_row_serializes_null_empty_receipt(self):
+        thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True)
+        AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=thread,
+            client_msg_id="historical",
+            user_text="old row",
+        )
+
+        detail = self.client.get("/api/v1/chat/messages/historical/")
+        self.assertEqual(detail.status_code, 200, detail.content)
+        self.assertIsNone(detail.data["redaction_confirmed"])
+        self.assertEqual(detail.data["redaction_reason"], "")
+
+        thread_history = self.client.get(f"/api/v1/chat/threads/{thread.id}/messages/")
+        thread_row = thread_history.data["messages"][0]
+        self.assertIsNone(thread_row["redaction_confirmed"])
+        self.assertEqual(thread_row["redaction_reason"], "")
+
+        flat_history = self.client.get("/api/v1/chat/messages/")
+        user_row = next(
+            item
+            for item in flat_history.data["messages"]
+            if item.get("client_msg_id") == "historical" and item["role"] == "user"
+        )
+        self.assertIsNone(user_row["redaction_confirmed"])
+        self.assertEqual(user_row["redaction_reason"], "")
 
 
 class BufferedMessageReceiptTest(TestCase):

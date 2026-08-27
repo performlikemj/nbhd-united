@@ -836,6 +836,12 @@ class AppChatMessage(models.Model):
     # mirroring where ``reply_text`` lands.
     user_redactions = models.JSONField(null=True, blank=True, default=None)
     reply_redactions = models.JSONField(null=True, blank=True, default=None)
+    # Content-free receipt for the inbound redaction attempt. ``null`` / ``""``
+    # means the row predates receipt persistence (or never entered the tenant
+    # redaction path, such as an on-device turn). The reason is a machine code,
+    # never source text or detector output.
+    redaction_confirmed = models.BooleanField(null=True)
+    redaction_reason = models.CharField(max_length=32, blank=True, default="")
     # Up to 3 short tappable choice labels parsed from a trailing
     # ``[[quick-replies: A | B | C]]`` marker on the assistant reply (see
     # ``apps.router.quick_replies.extract_quick_replies``). Rides the SAME
