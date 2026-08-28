@@ -197,7 +197,11 @@ class RetryProvisioningView(APIView):
         tenant.save(update_fields=["status", "updated_at"])
 
         try:
-            publish_task("provision_tenant", str(tenant.id))
+            publish_task(
+                "provision_tenant",
+                str(tenant.id),
+                idempotency_key=f"provision-{tenant.id}-retry-{int(timezone.now().timestamp())}",
+            )
             logger.info(
                 "tenant_provisioning tenant_id=%s user_id=%s stage=user_retry_queued",
                 tenant.id,

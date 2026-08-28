@@ -1029,6 +1029,18 @@ class Tenant(models.Model):
         help_text="Latest available config version; > config_version means update pending",
     )
     provisioned_at = models.DateTimeField(null=True, blank=True)
+    provision_lease_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Heartbeat stamped by the run that atomically claimed provisioning "
+            "for this tenant. A PROVISIONING row is only reclaimable once this "
+            "goes stale (see orchestrator.services._PROVISION_LEASE_STALE) — "
+            "without it, concurrent runs (QStash redelivery, Stripe retry "
+            "racing checkout) both mint an internal API key and the DB/KV "
+            "values diverge, bricking every authenticated container call."
+        ),
+    )
     config_refreshed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

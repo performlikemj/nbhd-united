@@ -5,11 +5,14 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.db import close_old_connections, connection
+from django.db.utils import OperationalError
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.orchestrator.first_session_welcome import (
@@ -222,29 +225,33 @@ def _mock_provision_dependencies():
 )
 class FirstSessionWelcomeProvisioningTest(TestCase):
     def test_greeting_row_exists_before_active_is_observable(self):
+        from apps.orchestrator import services as orchestrator_services
+
         user = User.objects.create_user(username="welcome-before-active", display_name="Ordered")
         tenant = Tenant.objects.create(user=user, status=Tenant.Status.PENDING)
-        original_save = Tenant.save
-        observed_active_saves = 0
+        original_finish = orchestrator_services._finish_provisioning
+        observed_active_finishes = 0
 
-        def save_with_order_check(instance, *args, **kwargs):
-            nonlocal observed_active_saves
-            update_fields = kwargs.get("update_fields") or []
-            if instance.pk == tenant.pk and instance.status == Tenant.Status.ACTIVE and "status" in update_fields:
-                observed_active_saves += 1
+        def finish_with_order_check(instance, *, status, **values):
+            nonlocal observed_active_finishes
+            if instance.pk == tenant.pk and status == Tenant.Status.ACTIVE:
+                observed_active_finishes += 1
                 self.assertTrue(
                     AppChatMessage.objects.filter(tenant=tenant, status=AppChatMessage.Status.READY).exists()
                 )
                 self.assertTrue(ProactiveOutbound.objects.filter(tenant=tenant, channel="app").exists())
-            return original_save(instance, *args, **kwargs)
+            return original_finish(instance, status=status, **values)
 
         with (
             _mock_provision_dependencies(),
-            patch.object(Tenant, "save", autospec=True, side_effect=save_with_order_check),
+            patch(
+                "apps.orchestrator.services._finish_provisioning",
+                side_effect=finish_with_order_check,
+            ),
         ):
             provision_tenant(str(tenant.id))
 
-        self.assertEqual(observed_active_saves, 1)
+        self.assertEqual(observed_active_finishes, 1)
 
     def test_double_provision_creates_exactly_one_greeting(self):
         user = User.objects.create_user(username="double-provision", display_name="Double")
@@ -299,6 +306,7 @@ class FirstSessionWelcomeProvisioningTest(TestCase):
 
             def execute_provision(task_name, *args, **kwargs):
                 if task_name == "provision_tenant":
+                    kwargs.pop("idempotency_key", None)
                     provision_tenant(*args, **kwargs)
 
             publish.side_effect = execute_provision
@@ -320,6 +328,7 @@ class FirstSessionWelcomeProvisioningTest(TestCase):
 
             def execute_provision(task_name, *args, **kwargs):
                 if task_name == "provision_tenant":
+                    kwargs.pop("idempotency_key", None)
                     provision_tenant(*args, **kwargs)
 
             publish.side_effect = execute_provision
@@ -343,11 +352,180 @@ class FirstSessionWelcomeProvisioningTest(TestCase):
             container_fqdn="oc-existing.internal",
         )
 
-        provision_tenant(str(tenant.id))
+        with patch("apps.cron.publish.publish_task") as publish:
+            provision_tenant(str(tenant.id))
 
+        publish.assert_not_called()
         self.assertFalse(ProactiveOutbound.objects.filter(tenant=tenant).exists())
         tenant.refresh_from_db()
         self.assertNotIn(FIRST_SESSION_WELCOME_KEY, tenant.welcomes_sent)
+
+    def test_live_lease_is_not_stolen(self):
+        user = User.objects.create_user(username="live-provision-lease", display_name="Live")
+        live_lease = timezone.now() - timedelta(minutes=1)
+        tenant = Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.PROVISIONING,
+            provision_lease_at=live_lease,
+        )
+
+        with (
+            _mock_provision_dependencies() as (publish, _send_push),
+            patch("apps.orchestrator.services.generate_openclaw_config") as generate_config,
+        ):
+            provision_tenant(str(tenant.id))
+
+        generate_config.assert_not_called()
+        publish.assert_called_once_with(
+            "provision_tenant",
+            str(tenant.id),
+            delay_seconds=publish.call_args.kwargs["delay_seconds"],
+            idempotency_key=f"provision-{tenant.id}-lease-{int(live_lease.timestamp())}",
+        )
+        remaining_plus_buffer = (live_lease + timedelta(minutes=30) - timezone.now()).total_seconds() + 60
+        self.assertAlmostEqual(
+            publish.call_args.kwargs["delay_seconds"],
+            remaining_plus_buffer,
+            delta=5,
+        )
+        tenant.refresh_from_db()
+        self.assertEqual(tenant.status, Tenant.Status.PROVISIONING)
+        self.assertEqual(tenant.provision_lease_at, live_lease)
+
+    def test_pending_loser_schedules_recovery_for_fresh_live_row(self):
+        from django.db.models.query import QuerySet
+
+        user = User.objects.create_user(username="pending-lease-loser", display_name="Pending Loser")
+        tenant = Tenant.objects.create(user=user, status=Tenant.Status.PENDING)
+        live_lease = timezone.now()
+        original_update = QuerySet.update
+
+        def competing_claim_wins(_queryset, **_updates):
+            original_update(
+                Tenant.objects.filter(pk=tenant.pk),
+                status=Tenant.Status.PROVISIONING,
+                provision_lease_at=live_lease,
+                updated_at=live_lease,
+            )
+            return 0
+
+        with (
+            patch.object(QuerySet, "update", autospec=True, side_effect=competing_claim_wins),
+            patch("apps.cron.publish.publish_task") as publish,
+        ):
+            provision_tenant(str(tenant.id))
+
+        publish.assert_called_once_with(
+            "provision_tenant",
+            str(tenant.id),
+            delay_seconds=publish.call_args.kwargs["delay_seconds"],
+            idempotency_key=f"provision-{tenant.id}-lease-{int(live_lease.timestamp())}",
+        )
+        remaining_plus_buffer = (live_lease + timedelta(minutes=30) - timezone.now()).total_seconds() + 60
+        self.assertAlmostEqual(
+            publish.call_args.kwargs["delay_seconds"],
+            remaining_plus_buffer,
+            delta=5,
+        )
+
+    def test_live_lease_follow_up_publish_failure_is_best_effort(self):
+        user = User.objects.create_user(username="live-lease-publish-failure", display_name="Live Failure")
+        live_lease = timezone.now() - timedelta(minutes=1)
+        tenant = Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.PROVISIONING,
+            provision_lease_at=live_lease,
+        )
+
+        with patch("apps.cron.publish.publish_task", side_effect=RuntimeError("qstash down")) as publish:
+            provision_tenant(str(tenant.id))
+
+        publish.assert_called_once()
+        tenant.refresh_from_db()
+        self.assertEqual(tenant.status, Tenant.Status.PROVISIONING)
+        self.assertEqual(tenant.provision_lease_at, live_lease)
+
+    def test_stale_lease_is_reclaimed_and_cleared_on_success(self):
+        user = User.objects.create_user(username="stale-provision-lease", display_name="Stale")
+        stale_lease = timezone.now() - timedelta(minutes=31)
+        tenant = Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.PROVISIONING,
+            provision_lease_at=stale_lease,
+        )
+
+        with (
+            _mock_provision_dependencies(),
+            patch(
+                "apps.orchestrator.services.generate_openclaw_config",
+                return_value={"gateway": {}},
+            ) as generate_config,
+        ):
+            provision_tenant(str(tenant.id))
+
+        generate_config.assert_called_once_with(tenant)
+        tenant.refresh_from_db()
+        self.assertEqual(tenant.status, Tenant.Status.ACTIVE)
+        self.assertIsNone(tenant.provision_lease_at)
+
+    def test_failure_clears_lease(self):
+        user = User.objects.create_user(username="failed-provision-lease", display_name="Failed")
+        tenant = Tenant.objects.create(user=user, status=Tenant.Status.PENDING)
+
+        with (
+            _mock_provision_dependencies(),
+            patch(
+                "apps.orchestrator.services.create_managed_identity",
+                side_effect=RuntimeError("identity failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "identity failed"),
+        ):
+            provision_tenant(str(tenant.id))
+
+        tenant.refresh_from_db()
+        self.assertEqual(tenant.status, Tenant.Status.PENDING)
+        self.assertIsNone(tenant.provision_lease_at)
+
+    def test_renewal_moves_lease_forward(self):
+        from apps.orchestrator.services import _renew_provision_lease
+
+        user = User.objects.create_user(username="renew-provision-lease", display_name="Renew")
+        prior_lease = timezone.now() - timedelta(minutes=1)
+        tenant = Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.PROVISIONING,
+            provision_lease_at=prior_lease,
+        )
+
+        _renew_provision_lease(tenant)
+
+        tenant.refresh_from_db()
+        self.assertGreater(tenant.provision_lease_at, prior_lease)
+
+    def test_post_azure_db_write_reconnects_and_restores_rls_once(self):
+        from apps.orchestrator.services import _retry_provision_db_write
+
+        user = User.objects.create_user(username="provision-db-reconnect", display_name="Reconnect")
+        tenant = Tenant.objects.create(user=user, status=Tenant.Status.PROVISIONING)
+        attempts = 0
+
+        def operation():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OperationalError("idle connection closed")
+            return 1
+
+        with (
+            patch("apps.orchestrator.services.connection.close") as close_connection,
+            patch("apps.tenants.middleware.set_rls_context") as set_rls_context,
+        ):
+            result = _retry_provision_db_write(tenant, operation)
+
+        self.assertEqual(result, 1)
+        self.assertEqual(attempts, 2)
+        close_connection.assert_called_once_with()
+        set_rls_context.assert_called_once_with(tenant_id=tenant.id, service_role=True)
 
     def test_active_tenant_repair_cannot_greet(self):
         user = User.objects.create_user(username="active-repair", display_name="Existing Repair")
@@ -368,21 +546,30 @@ class FirstSessionWelcomeProvisioningTest(TestCase):
     OPENROUTER_PER_TENANT_KEYS_ENABLED=False,
 )
 class FirstSessionWelcomeConcurrencyTest(TransactionTestCase):
-    def test_concurrent_provision_uses_real_row_lock_and_creates_one_greeting(self):
+    def test_concurrent_provision_claims_once_and_keeps_db_key_equal_to_kv(self):
         user = User.objects.create_user(username="welcome-race", display_name="Race")
         tenant = Tenant.objects.create(user=user, status=Tenant.Status.PENDING)
-        provision_barrier = threading.Barrier(2)
-        welcome_barrier = threading.Barrier(2)
         errors: list[BaseException] = []
         error_lock = threading.Lock()
+        config_calls: list[str] = []
+        kv_keys: list[str] = []
+        side_effect_lock = threading.Lock()
+        winner_in_config = threading.Event()
+        release_winner = threading.Event()
+        one_run_finished = threading.Event()
 
-        def synchronized_config(_tenant):
-            provision_barrier.wait(timeout=10)
+        def counted_config(_tenant):
+            with side_effect_lock:
+                config_calls.append(str(_tenant.id))
+            winner_in_config.set()
+            if not release_winner.wait(timeout=10):
+                raise TimeoutError("concurrent lease loser did not return")
             return {"gateway": {}}
 
-        def synchronized_welcome(fresh_tenant):
-            welcome_barrier.wait(timeout=10)
-            return seed_first_session_welcome(fresh_tenant)
+        def capture_kv_key(_tenant_id, internal_api_key):
+            with side_effect_lock:
+                kv_keys.append(internal_api_key)
+            return f"tenant-{_tenant_id}-internal-key"
 
         def provision_from_fresh_connection():
             close_old_connections()
@@ -393,22 +580,37 @@ class FirstSessionWelcomeConcurrencyTest(TransactionTestCase):
                     errors.append(exc)
             finally:
                 close_old_connections()
+                one_run_finished.set()
 
         with (
+            override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="keyvault"),
             _mock_provision_dependencies(),
-            patch("apps.orchestrator.services.generate_openclaw_config", side_effect=synchronized_config),
             patch(
-                "apps.orchestrator.first_session_welcome.seed_first_session_welcome",
-                side_effect=synchronized_welcome,
+                "apps.orchestrator.services.generate_openclaw_config",
+                side_effect=counted_config,
+            ),
+            patch(
+                "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
+                side_effect=capture_kv_key,
             ),
             ThreadPoolExecutor(max_workers=2) as pool,
         ):
-            futures = [pool.submit(provision_from_fresh_connection) for _ in range(2)]
-            for future in futures:
-                future.result(timeout=30)
+            winner = pool.submit(provision_from_fresh_connection)
+            self.assertTrue(winner_in_config.wait(timeout=10))
+            loser = pool.submit(provision_from_fresh_connection)
+            try:
+                self.assertTrue(one_run_finished.wait(timeout=10))
+            finally:
+                release_winner.set()
+            loser.result(timeout=30)
+            winner.result(timeout=30)
 
         self.assertEqual(errors, [])
+        self.assertEqual(len(config_calls), 1)
+        self.assertEqual(len(kv_keys), 1)
         self.assertEqual(ProactiveOutbound.objects.filter(tenant=tenant).count(), 1)
         self.assertEqual(AppChatMessage.objects.filter(tenant=tenant).count(), 1)
         tenant.refresh_from_db()
+        self.assertEqual(tenant.internal_api_key, kv_keys[0])
+        self.assertIsNone(tenant.provision_lease_at)
         self.assertIn(FIRST_SESSION_WELCOME_KEY, tenant.welcomes_sent)
