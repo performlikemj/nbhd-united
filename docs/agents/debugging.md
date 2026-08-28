@@ -52,6 +52,10 @@ Several unrelated `nbhd_*` tools timing out at `20000ms` within minutes = Django
 
 Suspects, in order: QStash dedup-id 400s (`Log_s contains 'DeduplicationId'` over 7 days — the publish error is a swallowed WARNING); reaped idle DB connection wedging a status row (see invariants §8); the log line you're grepping for was redaction-dropped (a zero count in logs is unreliable evidence of absence — verify by effect, e.g. file-share contents, DB rows).
 
+- Inbound claim seam: `inbound_lost_infra` = DB/connection failure; `inbound_lost_poison` = handler bug/data;
+  `inbound_ack_unconfirmed` = Telegram acked without a confirmed forward. If any fire, start with the parked
+  `DIRECTIVE_inbound_claim_release.md` v2 + critiques.
+
 ## Prod DB access
 
 Live control-plane DB = Supabase **us-west-1** `dljqtpunnobyztampxus` (query via the Supabase MCP with that explicit project_id). Local `.env` points at a DEV db. Verify any DB connection's freshness with `select max(updated_at) from cron_cronjob` before trusting or writing. Avoid `az containerapp exec` (needs a TTY).

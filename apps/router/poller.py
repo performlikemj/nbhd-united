@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 from django.conf import settings
-from django.db import close_old_connections
+from django.db import InterfaceError, OperationalError, close_old_connections
 from django.utils import timezone
 
 from apps.billing.services import (
@@ -819,10 +819,24 @@ class TelegramPoller:
 
         try:
             self._handle_update(update)
-        except Exception:
-            # Poison update (a bug handling THIS message, not infra): log
-            # and let the offset advance below so one bad update can't wedge
-            # the poller re-fetching it on every poll.
+        except Exception as exc:
+            # Classify the failure for observability, then preserve the
+            # existing swallow-and-advance behavior below.
+            chat_id = extract_chat_id(update)
+            if isinstance(exc, (OperationalError, InterfaceError)):
+                logger.error(
+                    "inbound_lost_infra channel=telegram_poller update_id=%s chat_id=%s exc=%s",
+                    update_id,
+                    chat_id,
+                    exc,
+                )
+            else:
+                logger.error(
+                    "inbound_lost_poison channel=telegram_poller update_id=%s chat_id=%s exc=%s",
+                    update_id,
+                    chat_id,
+                    exc,
+                )
             logger.exception("Unhandled error processing update %s", update_id)
 
         # Handled (or logged as poison) — now it's safe to advance past it.

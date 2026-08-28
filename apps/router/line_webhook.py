@@ -22,6 +22,7 @@ import threading
 
 import httpx
 from django.conf import settings
+from django.db import InterfaceError, OperationalError
 from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -959,7 +960,21 @@ class LineWebhookView(View):
                 self._handle_postback(event)
             else:
                 logger.debug("LINE webhook: unhandled event type %s", event_type)
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, (OperationalError, InterfaceError)):
+                logger.error(
+                    "inbound_lost_infra channel=line event=%s type=%s exc=%s",
+                    webhook_event_id,
+                    event.get("type"),
+                    exc,
+                )
+            else:
+                logger.error(
+                    "inbound_lost_poison channel=line event=%s type=%s exc=%s",
+                    webhook_event_id,
+                    event.get("type"),
+                    exc,
+                )
             logger.exception("Error handling LINE event: %s", event.get("type"))
 
     def _handle_follow(self, event: dict) -> None:

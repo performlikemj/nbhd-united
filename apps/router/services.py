@@ -316,6 +316,7 @@ async def forward_to_openclaw(
     timeout: float = 10.0,
     max_retries: int = 0,
     retry_delay: float = 5.0,
+    failure_sink: dict | None = None,
 ) -> dict | None:
     """Forward a Telegram update to an OpenClaw instance's gateway.
 
@@ -357,9 +358,23 @@ async def forward_to_openclaw(
                 container_fqdn,
                 attempt,
             )
+            if failure_sink is not None:
+                failure_sink["reason"] = "timeout"
+            return None
+        except httpx.ConnectError as e:
+            logger.error("Error forwarding to %s: %s", container_fqdn, e)
+            if failure_sink is not None:
+                failure_sink["reason"] = "connect_error"
+            return None
+        except httpx.HTTPStatusError as e:
+            logger.error("Error forwarding to %s: %s", container_fqdn, e)
+            if failure_sink is not None:
+                failure_sink["reason"] = f"http_{e.response.status_code}"
             return None
         except httpx.HTTPError as e:
             logger.error("Error forwarding to %s: %s", container_fqdn, e)
+            if failure_sink is not None:
+                failure_sink["reason"] = "http_error"
             return None
 
 
