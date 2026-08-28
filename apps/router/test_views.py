@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from apps.router.models import BufferedMessage
 from apps.router.services import clear_cache, clear_rate_limits
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -95,6 +96,56 @@ class TelegramWebhookViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         ingress = redact.call_args.kwargs["ingress"]
         record.assert_called_once_with(tenant, "Fakenamealpha", ingress)
+
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant", return_value=True)
+    def test_hibernated_caption_is_buffered_and_records_recurrence(self, _wake):
+        from apps.pii.redactor import RedactionOutcome
+
+        tenant = create_tenant(display_name="Fixture Caption", telegram_chat_id=999000116)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-caption.internal.azurecontainerapps.io"
+        tenant.hibernated_at = timezone.now()
+        tenant.pii_entity_map = {
+            "[PERSON_1]": {
+                "name": "Fakenamealpha",
+                "provisional": True,
+                "first_seen_at": "2026-08-27T00:00:00+00:00",
+                "last_seen_at": "2026-08-27T00:00:00+00:00",
+                "seen_events": [],
+                "seen_dates": [],
+            }
+        }
+        tenant.save(
+            update_fields=[
+                "status",
+                "container_fqdn",
+                "hibernated_at",
+                "pii_entity_map",
+                "updated_at",
+            ]
+        )
+        with patch(
+            "apps.pii.redactor.redact_user_message_checked",
+            return_value=RedactionOutcome("[PERSON_1] returned", True, "redacted"),
+        ):
+            response = self._post_update(
+                {
+                    "update_id": 4324,
+                    "message": {
+                        "photo": [{"file_id": "photo-fixture"}],
+                        "caption": "Fakenamealpha returned",
+                        "chat": {"id": 999000116},
+                    },
+                }
+            )
+
+        self.assertEqual(response.status_code, 200)
+        tenant.refresh_from_db()
+        entry = tenant.pii_entity_map["[PERSON_1]"]
+        self.assertEqual(len(entry["seen_events"]), 1)
+        self.assertEqual(len(entry["seen_dates"]), 1)
+        buffered = BufferedMessage.objects.get(tenant=tenant)
+        self.assertEqual(buffered.user_text, "[PERSON_1] returned")
 
     def _post_update(self, payload: dict, secret: str = "test-secret"):
         extra_headers = {}

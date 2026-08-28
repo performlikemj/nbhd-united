@@ -448,6 +448,23 @@ def telegram_webhook(request):
         _hibernate_for_quota(tenant)
         return JsonResponse(_build_budget_exhausted_message(chat_id, tenant, budget_reason))
 
+    # Extract the raw owner-authored segment before the hibernation return. A
+    # Telegram caption is just as much owner ingress as typed text; media and
+    # provider metadata remain outside this value and receive no provenance.
+    msg = update.get("message") or update.get("edited_message") or {}
+    raw_user_text = msg.get("text") or msg.get("caption") or ""
+    from apps.pii.provisional import PiiIngress
+
+    hibernation_ingress = (
+        PiiIngress(
+            channel="telegram-webhook",
+            provider_event_id=str(update_id) if update_id is not None else None,
+            occurred_at=timezone.now(),
+        )
+        if raw_user_text
+        else None
+    )
+
     # Hibernated tenant — buffer message and wake container
     from apps.router.wake_on_message import (
         ACK_FRESH,
@@ -456,12 +473,12 @@ def telegram_webhook(request):
         handle_hibernated_message,
     )
 
-    msg_text = (update.get("message") or {}).get("text", "")
     wake_result = handle_hibernated_message(
         tenant,
         "telegram",
         update,
-        msg_text,
+        raw_user_text,
+        pii_ingress=hibernation_ingress,
     )
     if wake_result == ACK_FRESH:
         lang = tenant.user.language or "en"
@@ -505,10 +522,8 @@ def telegram_webhook(request):
 
         proactive_block = surface_proactive_context(tenant=tenant)
 
-        msg = update.get("message") or update.get("edited_message") or {}
         # Capture the user's original text BEFORE the in-place decoration below
         # so the conversation digest stores real content, not agent markers.
-        raw_user_text = msg.get("text") or msg.get("caption") or ""
         user_outcome, ingress = _redact_telegram_webhook_ingress(tenant, update_id, raw_user_text)
         capture_source_payload["redaction"] = {
             "confirmed": user_outcome.confirmed,
