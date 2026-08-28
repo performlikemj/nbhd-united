@@ -426,6 +426,7 @@ jobs:
       SENTRY_ORG: by-way-of-mj
       SENTRY_PROJECT: python-django
       PII_DETECTOR_TRANSPORT: shared
+      PII_PROVISIONAL_TENANT_IDS: ${{ vars.PII_PROVISIONAL_TENANT_IDS }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -641,7 +642,8 @@ jobs:
             --sentry-release ${{ github.sha }} \
             --django-base-url https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io \
             --pii-detector-engine ${{ env.PII_DETECTOR_ENGINE }} \
-            --pii-detector-transport ${{ env.PII_DETECTOR_TRANSPORT }}
+            --pii-detector-transport ${{ env.PII_DETECTOR_TRANSPORT }} \
+            --pii-provisional-tenant-ids ${{ env.PII_PROVISIONAL_TENANT_IDS }}
           az containerapp update \
             --name ${{ env.ACA_APP }} \
             --resource-group ${{ env.AZURE_RG }} \

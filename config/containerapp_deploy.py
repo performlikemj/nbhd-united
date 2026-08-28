@@ -101,6 +101,7 @@ def main() -> None:
         choices=sorted(SUPPORTED_DETECTOR_TRANSPORTS),
         default=DEFAULT_DETECTOR_TRANSPORT,
     )
+    parser.add_argument("--pii-provisional-tenant-ids", default="")
     args = parser.parse_args()
 
     app = json.loads(args.spec.read_text())
@@ -114,6 +115,7 @@ def main() -> None:
             "DJANGO_BASE_URL": args.django_base_url,
             "PII_DETECTOR_ENGINE": args.pii_detector_engine,
             "PII_DETECTOR_TRANSPORT": args.pii_detector_transport,
+            "PII_PROVISIONAL_TENANT_IDS": args.pii_provisional_tenant_ids,
         },
     )
     args.spec.write_text(json.dumps(app, separators=(",", ":")))

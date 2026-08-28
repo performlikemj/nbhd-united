@@ -1,10 +1,14 @@
+import json
+import sys
 from copy import deepcopy
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from django.test import Client, SimpleTestCase, override_settings
 
 from apps.pii.config import DEFAULT_DETECTOR_ENGINE, DEFAULT_DETECTOR_TRANSPORT
-from config.containerapp_deploy import prepare_deployment
+from config.containerapp_deploy import main, prepare_deployment
 
 
 class PrepareContainerAppDeploymentTests(SimpleTestCase):
@@ -22,6 +26,7 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
                                 {"name": "SENTRY_RELEASE", "value": "old-sha"},
                                 {"name": "PII_DETECTOR_ENGINE", "value": "liquid"},
                                 {"name": "PII_DETECTOR_TRANSPORT", "value": "shared"},
+                                {"name": "PII_PROVISIONAL_TENANT_IDS", "value": "old-tenant"},
                             ],
                             "probes": [
                                 {"type": "Liveness", "tcpSocket": {"port": 8000}},
@@ -46,6 +51,7 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
                 "SENTRY_RELEASE": "new-sha",
                 "PII_DETECTOR_ENGINE": DEFAULT_DETECTOR_ENGINE,
                 "PII_DETECTOR_TRANSPORT": DEFAULT_DETECTOR_TRANSPORT,
+                "PII_PROVISIONAL_TENANT_IDS": "tenant-a,tenant-b",
             },
         )
 
@@ -70,6 +76,10 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
         self.assertEqual(
             next(item for item in container["env"] if item["name"] == "PII_DETECTOR_TRANSPORT")["value"],
             "local",
+        )
+        self.assertEqual(
+            next(item for item in container["env"] if item["name"] == "PII_PROVISIONAL_TENANT_IDS")["value"],
+            "tenant-a,tenant-b",
         )
         self.assertEqual(result["properties"]["configuration"], original["properties"]["configuration"])
 
@@ -151,6 +161,35 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
                 environment={"PII_DETECTOR_TRANSPORT": "remote"},
             )
 
+    def test_cli_defaults_provisional_tenant_ids_to_empty(self):
+        with TemporaryDirectory() as directory:
+            spec = Path(directory) / "containerapp.json"
+            spec.write_text(json.dumps(self.definition))
+            argv = [
+                "containerapp_deploy",
+                "--spec",
+                str(spec),
+                "--container-name",
+                "django",
+                "--image",
+                "registry/new:sha",
+                "--openclaw-image-tag",
+                "oc-sha",
+                "--sentry-release",
+                "new-sha",
+                "--django-base-url",
+                "https://example.com",
+            ]
+
+            with patch.object(sys, "argv", argv):
+                main()
+
+            container = json.loads(spec.read_text())["properties"]["template"]["containers"][0]
+            self.assertEqual(
+                next(item for item in container["env"] if item["name"] == "PII_PROVISIONAL_TENANT_IDS")["value"],
+                "",
+            )
+
     def test_ci_deploy_applies_the_prepared_readiness_spec(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/ci-cd.yml").read_text()
 
@@ -158,6 +197,7 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
         self.assertIn('--yaml "$DEPLOY_SPEC"', workflow)
         self.assertIn("PII_DETECTOR_ENGINE: deberta", workflow)
         self.assertIn("PII_DETECTOR_TRANSPORT: shared", workflow)
+        self.assertIn("PII_PROVISIONAL_TENANT_IDS: ${{ vars.PII_PROVISIONAL_TENANT_IDS }}", workflow)
         self.assertIn("PII_MODEL_TAG=deberta-only-a038061af92047b0", workflow)
         self.assertIn("--build-arg INCLUDE_LIQUID=false", workflow)
         self.assertIn("shelved Liquid bundle present in serving image", workflow)
@@ -165,6 +205,7 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
         self.assertNotIn("PII_MODEL_TAG=deberta-finetuned-pii-v2", workflow)
         self.assertIn("--pii-detector-engine ${{ env.PII_DETECTOR_ENGINE }}", workflow)
         self.assertIn("--pii-detector-transport ${{ env.PII_DETECTOR_TRANSPORT }}", workflow)
+        self.assertIn("--pii-provisional-tenant-ids ${{ env.PII_PROVISIONAL_TENANT_IDS }}", workflow)
 
         dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text()
         self.assertIn(
