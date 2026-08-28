@@ -199,6 +199,13 @@ test("Reddit digest description matches the current plural contract", () => {
   assert.equal(digest.parameters.properties.subreddits.items.type, "string");
 });
 
+test("Reddit activity description truthfully names profile/about and recent activity", () => {
+  const { api, tools } = buildApi();
+  register(api);
+
+  assert.match(tools.get("nbhd_reddit_my_activity").description, /profile\/about data and recent activity/);
+});
+
 // ---------------------------------------------------------------------------
 // nbhd_reddit_post
 // ---------------------------------------------------------------------------
@@ -223,6 +230,30 @@ test("nbhd_reddit_post — happy path self post", async () => {
   assert.equal(body.subreddit, "test");
   assert.equal(body.title, "Hello World");
   assert.equal(body.kind, "self");
+});
+
+test("nbhd_reddit_post — exposes and forwards optional confirm_token", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  let body;
+  global.fetch = async (_url, options) => {
+    body = JSON.parse(options.body);
+    return mockResponse({ payload: { post_url: "https://reddit.test/post" } });
+  };
+
+  register(api);
+  const tool = tools.get("nbhd_reddit_post");
+  assert.match(tool.description, /first call returns a preview \+ confirm_token/i);
+  assert.equal(tool.parameters.properties.confirm_token.type, "string");
+
+  await tool.execute("post-confirm", {
+    subreddit: "test",
+    title: "Hello",
+    text: "Body",
+    confirm_token: "signed-post-token",
+  });
+
+  assert.equal(body.confirm_token, "signed-post-token");
 });
 
 test("nbhd_reddit_post — rejects title over 300 chars", async () => {
@@ -290,6 +321,29 @@ test("nbhd_reddit_reply — happy path with valid t3_ thing_id", async () => {
   assert.equal(body.action, "reply");
   assert.equal(body.thing_id, "t3_abc123");
   assert.equal(body.text, "Great post!");
+});
+
+test("nbhd_reddit_reply — exposes and forwards optional confirm_token", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  let body;
+  global.fetch = async (_url, options) => {
+    body = JSON.parse(options.body);
+    return mockResponse({ payload: { comment_url: "https://reddit.test/comment" } });
+  };
+
+  register(api);
+  const tool = tools.get("nbhd_reddit_reply");
+  assert.match(tool.description, /first call returns a preview \+ confirm_token/i);
+  assert.equal(tool.parameters.properties.confirm_token.type, "string");
+
+  await tool.execute("reply-confirm", {
+    thing_id: "t1_abc123",
+    text: "Reply",
+    confirm_token: "signed-reply-token",
+  });
+
+  assert.equal(body.confirm_token, "signed-reply-token");
 });
 
 test("nbhd_reddit_reply — happy path with valid t1_ thing_id", async () => {

@@ -199,6 +199,42 @@ test("lesson and journal descriptions carry the rules-delivery contracts", () =>
   assert.match(constellation, /never quote a raw signal back to them/);
 });
 
+test("workspace_delete exposes and forwards the preview confirmation token", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalBaseUrl = process.env.NBHD_API_BASE_URL;
+  const originalTenantId = process.env.NBHD_TENANT_ID;
+  const originalInternalKey = process.env.NBHD_INTERNAL_API_KEY;
+  process.env.NBHD_API_BASE_URL = "https://nbhd.test";
+  process.env.NBHD_TENANT_ID = "tenant-123";
+  process.env.NBHD_INTERNAL_API_KEY = "internal-key";
+  let request;
+
+  try {
+    globalThis.fetch = async (_url, options) => {
+      request = options;
+      return { ok: true, status: 200, async text() { return "{}"; } };
+    };
+    const tool = collectTools().nbhd_workspace_delete;
+    assert.match(tool.description, /first call returns a preview \+ confirm_token/i);
+    assert.equal(tool.parameters.properties.confirm_token.type, "string");
+
+    await tool.execute("workspace-confirm", {
+      slug: "work",
+      confirm_token: "signed-workspace-token",
+    });
+
+    assert.deepEqual(JSON.parse(request.body), { confirm_token: "signed-workspace-token" });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.NBHD_API_BASE_URL;
+    else process.env.NBHD_API_BASE_URL = originalBaseUrl;
+    if (originalTenantId === undefined) delete process.env.NBHD_TENANT_ID;
+    else process.env.NBHD_TENANT_ID = originalTenantId;
+    if (originalInternalKey === undefined) delete process.env.NBHD_INTERNAL_API_KEY;
+    else process.env.NBHD_INTERNAL_API_KEY = originalInternalKey;
+  }
+});
+
 test("memory and journal descriptions carry the W3 rules-delivery contracts", () => {
   const tools = collectTools();
 

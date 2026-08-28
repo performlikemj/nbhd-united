@@ -354,7 +354,7 @@ async function callRuntime(api, { path, method = "GET", query, body }) {
     if (!response.ok) {
       const normalized = asObject(payload);
       const code = asTrimmedString(normalized.error) || "runtime_request_failed";
-      if (code === "plan_rotation_required" || code.startsWith("catalog_")) {
+      if (code === "confirmation_required" || code === "plan_rotation_required" || code.startsWith("catalog_")) {
         const structuredError = new Error(`NBHD runtime error ${response.status}: ${code}`);
         structuredError.runtimePayload = normalized;
         throw structuredError;
@@ -796,7 +796,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_delete_workout",
       description:
-        "Delete a workout. Use when the user wants to remove a logged workout entirely — duplicates, mistakes, or workouts they don't want tracked. Confirm with the user before deleting. Get the workout_id from nbhd_fuel_summary.",
+        "Delete a workout with a mandatory preview→confirm handshake. The first call returns a preview + confirm_token and does not delete; show it, ask the user, then call again with the token. Use for duplicates or mistakes. Get workout_id from nbhd_fuel_summary.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -804,6 +804,10 @@ export default function register(api) {
           workout_id: {
             type: "string",
             description: "UUID of the workout to delete.",
+          },
+          confirm_token: {
+            type: "string",
+            description: "Token returned by the first preview call. Omit initially; replay unchanged only after explicit approval.",
           },
         },
         required: ["workout_id"],
@@ -813,10 +817,12 @@ export default function register(api) {
           const input = asObject(params);
           const workoutId = asTrimmedString(input.workout_id);
           if (!workoutId) throw new Error("workout_id is required");
+          const confirmToken = asTrimmedString(input.confirm_token);
 
           const payload = await callRuntime(api, {
             path: fuelPath(api, `/workouts/${encodeURIComponent(workoutId)}/`),
             method: "DELETE",
+            body: confirmToken ? { confirm_token: confirmToken } : undefined,
           });
           return renderPayload(payload);
         } catch (error) {
@@ -874,7 +880,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_delete_body_weight",
       description:
-        "Delete a body weight entry by date. Use when the user wants to remove a logged weight — typos, mistakes, or duplicates. Confirm with the user before deleting.",
+        "Delete a body weight entry by date with a mandatory preview→confirm handshake. The first call returns a preview + confirm_token and does not delete; show it, ask the user, then call again with the token.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -882,6 +888,10 @@ export default function register(api) {
           date: {
             type: "string",
             description: "Date of the weight entry to delete, in YYYY-MM-DD format.",
+          },
+          confirm_token: {
+            type: "string",
+            description: "Token returned by the first preview call. Omit initially; replay unchanged only after explicit approval.",
           },
         },
         required: ["date"],
@@ -891,11 +901,13 @@ export default function register(api) {
           const input = asObject(params);
           const dateStr = asTrimmedString(input.date);
           if (!dateStr) throw new Error("date is required");
+          const confirmToken = asTrimmedString(input.confirm_token);
 
           const payload = await callRuntime(api, {
             path: fuelPath(api, "/body-weight/"),
             method: "DELETE",
             query: { date: dateStr },
+            body: confirmToken ? { confirm_token: confirmToken } : undefined,
           });
           return renderPayload(payload);
         } catch (error) {
@@ -1398,7 +1410,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_delete_plan",
       description:
-        "Delete a workout plan. Removes all future planned workouts. Completed workouts are preserved but unlinked from the plan. Always confirm with the user before calling this.",
+        "Delete a workout plan with a mandatory preview→confirm handshake. The first call returns a preview + confirm_token and does not delete; show it, ask the user, then call again with the token. Future planned workouts are removed; completed workouts are preserved but unlinked.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1406,6 +1418,10 @@ export default function register(api) {
           plan_id: {
             type: "string",
             description: "UUID of the plan to delete.",
+          },
+          confirm_token: {
+            type: "string",
+            description: "Token returned by the first preview call. Omit initially; replay unchanged only after explicit approval.",
           },
         },
         required: ["plan_id"],
@@ -1415,11 +1431,14 @@ export default function register(api) {
           const input = asObject(params);
           const planId = asTrimmedString(input.plan_id);
           if (!planId) throw new Error("plan_id is required");
+          const confirmToken = asTrimmedString(input.confirm_token);
 
-          await callRuntime(api, {
+          const payload = await callRuntime(api, {
             path: fuelPath(api, `/plans/${encodeURIComponent(planId)}/`),
             method: "DELETE",
+            body: confirmToken ? { confirm_token: confirmToken } : undefined,
           });
+          if (payload.status === "confirmation_required") return renderPayload(payload);
           return renderPayload({ deleted: true, plan_id: planId });
         } catch (error) {
           return renderCaughtError(error);

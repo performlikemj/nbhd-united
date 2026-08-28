@@ -1364,7 +1364,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_workspace_delete",
       description:
-        "Delete a workspace label. The default workspace cannot be deleted. Workspaces no longer route chat messages — deletion only removes the label, not any conversation history. Always confirm with the user before deleting.",
+        "Delete a workspace label with a mandatory preview→confirm handshake. The first call returns a preview + confirm_token and does not delete; show it, ask the user, then call again with the token. The default workspace cannot be deleted. Deletion removes only the label, not conversation history.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1373,6 +1373,10 @@ export default function register(api) {
             type: "string",
             description: "The workspace slug to delete.",
           },
+          confirm_token: {
+            type: "string",
+            description: "Token returned by the first preview call. Omit initially; replay unchanged only after explicit approval.",
+          },
         },
         required: ["slug"],
       },
@@ -1380,9 +1384,11 @@ export default function register(api) {
         const input = asObject(params);
         const slug = asTrimmedString(input.slug);
         if (!slug) throw new Error("slug is required");
+        const confirmToken = asTrimmedString(input.confirm_token);
         const payload = await callRuntime(api, {
           path: tenantPath(api, `/workspaces/${encodeURIComponent(slug)}/`),
           method: "DELETE",
+          body: confirmToken ? { confirm_token: confirmToken } : undefined,
         });
         return renderPayload(payload);
       },
