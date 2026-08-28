@@ -6,6 +6,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -116,6 +117,20 @@ def message_shape(*, receipt: bool = True) -> dict:
 
 
 class ProductionBoundaryTests(unittest.TestCase):
+    def test_missing_requests_names_repo_venv_without_traceback(self):
+        result = subprocess.run(
+            [sys.executable, "-S", Path(nbhd_e2e.__file__).resolve(), "--help"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stderr,
+            "error: requests is unavailable; use the repo venv python: .venv/bin/python\n",
+        )
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_localhost_and_development_flag_do_not_exist(self):
         with self.assertRaises(HarnessError):
             NBHDClient(base_url="http://localhost:8000")
@@ -506,16 +521,36 @@ class AtomicKeychainTests(unittest.TestCase):
 
         self.assertEqual(run.call_count, 1)
         argv = run.call_args.args[0]
-        self.assertEqual(argv[-1], "-w")
-        self.assertIn(keychain.CREDENTIALS_ACCOUNT, argv)
+        self.assertEqual(argv, ["security", "-i"])
         self.assertNotIn("memory-access", argv)
         self.assertNotIn("memory-refresh", argv)
-        self.assertEqual(
-            json.loads(run.call_args.kwargs["input"]),
+        payload = json.dumps(
             {"access": "memory-access", "refresh": "memory-refresh"},
+            sort_keys=True,
+            separators=(",", ":"),
         )
+        self.assertEqual(
+            run.call_args.kwargs["input"],
+            (f'add-generic-password -U -a "credentials" -s "org.nbhd.e2e" -w \'{payload}\'\n'),
+        )
+        self.assertIn("memory-access", run.call_args.kwargs["input"])
+        self.assertIn("memory-refresh", run.call_args.kwargs["input"])
         self.assertTrue(run.call_args.kwargs["capture_output"])
         self.assertEqual(run.call_args.kwargs["timeout"], 30.0)
+
+    @mock.patch("keychain.subprocess.run")
+    def test_credential_tokens_with_command_unsafe_characters_are_rejected(self, run):
+        for unsafe in ('"', "\\", "\n", "\x1f", "'"):
+            with (
+                self.subTest(unsafe=repr(unsafe)),
+                self.assertRaisesRegex(keychain.KeychainError, "invalid Keychain credential payload"),
+            ):
+                keychain.write_credentials(
+                    keychain.Credentials(access=f"access{unsafe}token", refresh="refresh-token"),
+                    deadline=200.0,
+                    monotonic=FakeClock().monotonic,
+                )
+        run.assert_not_called()
 
     @mock.patch("keychain.subprocess.run")
     def test_atomic_item_read_is_captured_in_memory(self, run):
@@ -551,7 +586,11 @@ class AtomicKeychainTests(unittest.TestCase):
 
     @mock.patch("keychain.subprocess.run")
     def test_legacy_pair_is_verified_then_both_items_are_deleted(self, run):
-        atomic_payload = json.dumps({"access": "legacy-access", "refresh": "legacy-refresh"})
+        atomic_payload = json.dumps(
+            {"access": "legacy-access", "refresh": "legacy-refresh"},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         run.side_effect = [
             subprocess.CompletedProcess([], 44, "", ""),
             subprocess.CompletedProcess([], 0, "legacy-access\n", ""),
@@ -566,11 +605,12 @@ class AtomicKeychainTests(unittest.TestCase):
         self.assertEqual(credentials, keychain.Credentials("legacy-access", "legacy-refresh"))
         self.assertEqual(run.call_count, 7)
         write_argv = run.call_args_list[3].args[0]
-        self.assertIn(keychain.CREDENTIALS_ACCOUNT, write_argv)
-        self.assertEqual(
-            json.loads(run.call_args_list[3].kwargs["input"]),
-            {"access": "legacy-access", "refresh": "legacy-refresh"},
-        )
+        self.assertEqual(write_argv, ["security", "-i"])
+        write_input = run.call_args_list[3].kwargs["input"]
+        self.assertIn(keychain.CREDENTIALS_ACCOUNT, write_input)
+        self.assertIn(atomic_payload, write_input)
+        self.assertNotIn("legacy-access", write_argv)
+        self.assertNotIn("legacy-refresh", write_argv)
         self.assertIn(keychain.CREDENTIALS_ACCOUNT, run.call_args_list[4].args[0])
         self.assertIn("access", run.call_args_list[5].args[0])
         self.assertIn("refresh", run.call_args_list[6].args[0])

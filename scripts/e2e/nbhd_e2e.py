@@ -10,18 +10,25 @@ import sys
 from typing import Any
 
 import fixtures
-import smoke
-from client import (
-    LEGACY_BASE_URL,
-    POLL_DEADLINE_SECONDS,
-    PRIMARY_BASE_URL,
-    READ_DEADLINE_SECONDS,
-    HarnessError,
-    MessageObservation,
-    NBHDClient,
-    validate_cursor,
-    validate_harness_message_id,
-)
+
+try:
+    import smoke
+    from client import (
+        LEGACY_BASE_URL,
+        POLL_DEADLINE_SECONDS,
+        PRIMARY_BASE_URL,
+        READ_DEADLINE_SECONDS,
+        HarnessError,
+        MessageObservation,
+        NBHDClient,
+        validate_cursor,
+        validate_harness_message_id,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != "requests":
+        raise
+    print("error: requests is unavailable; use the repo venv python: .venv/bin/python", file=sys.stderr)
+    raise SystemExit(1) from None
 
 _SAFE_LITERAL_STRINGS = frozenset(
     {
