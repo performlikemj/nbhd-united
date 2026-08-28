@@ -429,12 +429,29 @@ class TelegramWebhookViewTest(TestCase):
         tenant.status = Tenant.Status.ACTIVE
         tenant.container_fqdn = "oc-failing.internal.azurecontainerapps.io"
         tenant.save(update_fields=["status", "container_fqdn", "updated_at"])
-        mock_forward.return_value = None
 
-        response = self._post_update({"message": {"chat": {"id": 987654}}})
+        async def timeout_failure(*_args, failure_sink=None, **_kwargs):
+            failure_sink["reason"] = "timeout"
+            return None
+
+        mock_forward.side_effect = timeout_failure
+
+        with self.assertLogs("apps.router.views", level="WARNING") as captured:
+            response = self._post_update(
+                {
+                    "update_id": 8765,
+                    "message": {"chat": {"id": 987654}},
+                }
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b"ok")
+        self.assertTrue(
+            any(
+                "inbound_ack_unconfirmed channel=telegram_webhook update_id=8765 reason=timeout" in line
+                for line in captured.output
+            )
+        )
 
 
 @override_settings(TELEGRAM_WEBHOOK_SECRET="test-secret", ROUTER_RATE_LIMIT_PER_MINUTE=1)

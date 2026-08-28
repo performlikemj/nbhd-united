@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import httpx
+from django.db import OperationalError
 from django.test import TestCase, override_settings
 
 from apps.router.poller import TelegramPoller
@@ -1030,8 +1031,43 @@ class TelegramPollerOffsetAdvanceTest(TestCase):
     @patch("apps.router.poller.TelegramPoller._handle_update")
     @patch("apps.router.inbound_dedup.claim_inbound_event", return_value=True)
     @patch("apps.tenants.middleware.set_rls_context")
+    def test_infra_update_logs_marker_and_advances_offset(self, _rls, _claim, mock_handle):
+        mock_handle.side_effect = OperationalError("database unavailable")
+
+        with self.assertLogs("apps.router.poller", level="ERROR") as captured:
+            self.poller._process_update(
+                {
+                    "update_id": 9000,
+                    "message": {"text": "retry?", "chat": {"id": 12345}},
+                }
+            )
+
+        self.assertTrue(
+            any(
+                "inbound_lost_infra channel=telegram_poller update_id=9000 chat_id=12345" in line
+                for line in captured.output
+            )
+        )
+        self.assertEqual(self.poller.offset, 9001)
+
+    @patch("apps.router.poller.TelegramPoller._handle_update")
+    @patch("apps.router.inbound_dedup.claim_inbound_event", return_value=True)
+    @patch("apps.tenants.middleware.set_rls_context")
     def test_poison_update_advances_offset_to_avoid_wedge(self, _rls, _claim, mock_handle):
         # A bug handling THIS specific update must not wedge the poller.
         mock_handle.side_effect = ValueError("bad message shape")
-        self.poller._process_update({"update_id": 9001, "message": {"text": "poison"}})
+        with self.assertLogs("apps.router.poller", level="ERROR") as captured:
+            self.poller._process_update(
+                {
+                    "update_id": 9001,
+                    "message": {"text": "poison", "chat": {"id": 67890}},
+                }
+            )
+
+        self.assertTrue(
+            any(
+                "inbound_lost_poison channel=telegram_poller update_id=9001 chat_id=67890" in line
+                for line in captured.output
+            )
+        )
         self.assertEqual(self.poller.offset, 9002)

@@ -525,6 +525,7 @@ def telegram_webhook(request):
     tenant.save(update_fields=["last_message_at"])
 
     # Forward to the correct OpenClaw instance
+    failure_sink: dict[str, str] = {}
     loop = asyncio.new_event_loop()
     try:
         user_timezone = tenant.user.timezone or "UTC"
@@ -581,6 +582,7 @@ def telegram_webhook(request):
                 timeout=wh_timeout,
                 max_retries=1,
                 retry_delay=5.0,
+                failure_sink=failure_sink,
             )
         )
     finally:
@@ -616,6 +618,11 @@ def telegram_webhook(request):
     # Forwarding timed out — the agent likely received the message and will
     # reply asynchronously via the bot token.  Silently ack to Telegram
     # instead of sending a confusing "try again" message.
+    logger.warning(
+        "inbound_ack_unconfirmed channel=telegram_webhook update_id=%s reason=%s",
+        update_id,
+        failure_sink.get("reason", "unknown"),
+    )
     return HttpResponse("ok")
 
 

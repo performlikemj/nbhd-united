@@ -159,6 +159,7 @@ class ForwardingBehaviorTest(TestCase):
         mock_client = AsyncMock()
         mock_client.post.side_effect = httpx.TimeoutException("timeout")
         mock_async_client.return_value.__aenter__.return_value = mock_client
+        failure_sink = {}
 
         result = asyncio.run(
             forward_to_openclaw(
@@ -166,9 +167,11 @@ class ForwardingBehaviorTest(TestCase):
                 {"message": {"chat": {"id": 1}}},
                 max_retries=1,
                 retry_delay=0.0,
+                failure_sink=failure_sink,
             )
         )
         self.assertIsNone(result)
+        self.assertEqual(failure_sink["reason"], "timeout")
         self.assertEqual(mock_client.post.call_count, 2)  # initial + 1 retry
 
     @patch("apps.router.services.httpx.AsyncClient")
@@ -200,15 +203,63 @@ class ForwardingBehaviorTest(TestCase):
         mock_client = AsyncMock()
         mock_client.post.side_effect = httpx.HTTPError("bad gateway")
         mock_async_client.return_value.__aenter__.return_value = mock_client
+        failure_sink = {}
 
         result = asyncio.run(
             forward_to_openclaw(
                 "oc-router.internal.azurecontainerapps.io",
                 {"message": {"chat": {"id": 1}}},
                 max_retries=0,
+                failure_sink=failure_sink,
             )
         )
         self.assertIsNone(result)
+        self.assertEqual(failure_sink["reason"], "http_error")
+
+    @patch("apps.router.services.httpx.AsyncClient")
+    def test_forward_to_openclaw_connect_error_records_reason(self, mock_async_client):
+        mock_client = AsyncMock()
+        request = httpx.Request("POST", "https://oc-router.internal.azurecontainerapps.io/telegram-webhook")
+        mock_client.post.side_effect = httpx.ConnectError("connection refused", request=request)
+        mock_async_client.return_value.__aenter__.return_value = mock_client
+        failure_sink = {}
+
+        result = asyncio.run(
+            forward_to_openclaw(
+                "oc-router.internal.azurecontainerapps.io",
+                {"message": {"chat": {"id": 1}}},
+                failure_sink=failure_sink,
+            )
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(failure_sink["reason"], "connect_error")
+
+    @patch("apps.router.services.httpx.AsyncClient")
+    def test_forward_to_openclaw_http_status_records_reason(self, mock_async_client):
+        mock_client = AsyncMock()
+        request = httpx.Request("POST", "https://oc-router.internal.azurecontainerapps.io/telegram-webhook")
+        response = httpx.Response(502, request=request)
+        mock_response = Mock(content=b"bad gateway")
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "bad gateway",
+            request=request,
+            response=response,
+        )
+        mock_client.post.return_value = mock_response
+        mock_async_client.return_value.__aenter__.return_value = mock_client
+        failure_sink = {}
+
+        result = asyncio.run(
+            forward_to_openclaw(
+                "oc-router.internal.azurecontainerapps.io",
+                {"message": {"chat": {"id": 1}}},
+                failure_sink=failure_sink,
+            )
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(failure_sink["reason"], "http_502")
 
     @patch("apps.router.services.httpx.AsyncClient")
     def test_forward_url_uses_port_80(self, mock_async_client):

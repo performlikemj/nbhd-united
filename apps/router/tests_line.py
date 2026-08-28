@@ -11,6 +11,7 @@ import time
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
+from django.db import OperationalError
 from django.test import RequestFactory, TestCase, override_settings
 from django.utils import timezone
 
@@ -137,6 +138,36 @@ class LineWebhookEventTest(TestCase):
 
         user.refresh_from_db()
         self.assertIsNone(user.line_user_id)
+
+    @patch("apps.router.inbound_dedup.claim_inbound_event", return_value=True)
+    @patch("apps.router.line_webhook.LineWebhookView._handle_message")
+    def test_infra_message_error_logs_marker_and_is_swallowed(self, mock_handle, _claim):
+        from apps.router.line_webhook import LineWebhookView
+
+        mock_handle.side_effect = OperationalError("database unavailable")
+        event = {"webhookEventId": "line-infra-1", "type": "message"}
+
+        with self.assertLogs("apps.router.line_webhook", level="ERROR") as captured:
+            LineWebhookView()._handle_event(event)
+
+        self.assertTrue(
+            any("inbound_lost_infra channel=line event=line-infra-1 type=message" in line for line in captured.output)
+        )
+
+    @patch("apps.router.inbound_dedup.claim_inbound_event", return_value=True)
+    @patch("apps.router.line_webhook.LineWebhookView._handle_message")
+    def test_poison_message_error_logs_marker_and_is_swallowed(self, mock_handle, _claim):
+        from apps.router.line_webhook import LineWebhookView
+
+        mock_handle.side_effect = ValueError("bad event shape")
+        event = {"webhookEventId": "line-poison-1", "type": "message"}
+
+        with self.assertLogs("apps.router.line_webhook", level="ERROR") as captured:
+            LineWebhookView()._handle_event(event)
+
+        self.assertTrue(
+            any("inbound_lost_poison channel=line event=line-poison-1 type=message" in line for line in captured.output)
+        )
 
     @patch("apps.router.line_webhook._send_line_push")
     def test_follow_event_sends_welcome(self, mock_push):
