@@ -73,8 +73,8 @@ class BumpAllTenantImagesTest(TestCase):
         self.assertEqual(t2.container_image_tag, _TARGET_TAG)
 
     @patch("apps.orchestrator.management.commands.bump_all_tenant_images.update_container_image")
-    def test_skips_tenants_already_on_target_tag(self, mock_update):
-        """Idempotent: rerunning is a no-op for tenants on the target tag."""
+    def test_skips_tenants_already_on_target_tag_despite_revision_nonce(self, mock_update):
+        """The stable image tag, not a per-attempt revision nonce, drives the short-circuit."""
         already_current = _make_tenant(suffix=3, image_tag=_TARGET_TAG)
         stale = _make_tenant(suffix=4, image_tag=_OLDER_TAG)
 
