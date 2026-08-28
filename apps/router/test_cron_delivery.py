@@ -11,8 +11,10 @@ from rest_framework.test import APIClient
 from apps.cron.models import CronJob
 from apps.journal.models import Document
 from apps.router.cron_delivery import (
+    _CLAIM_STALE,
     _claim_delivery_attempt,
     _rate_counts,
+    _reclaim_stale_delivery_attempt,
     _split_message,
     degraded_occurrence_key,
 )
@@ -582,7 +584,7 @@ class DeliveryDedupTest(TestCase):
             ),
         )
 
-    def test_unique_constraint_claim_race_suppresses_existing_claim(self):
+    def test_live_claim_suppresses_existing_claim(self):
         occurrence_key = degraded_occurrence_key(
             tenant_id=self.tenant.id,
             job_name="hourly-heartbeat",
@@ -607,6 +609,116 @@ class DeliveryDedupTest(TestCase):
         self.assertEqual(duplicate.data["status"], "duplicate_suppressed")
         self.assertEqual(duplicate.data["prior_state"], DeliveryAttempt.State.CLAIMED)
         self.assertEqual(DeliveryAttempt.objects.get(tenant=self.tenant).id, winner.id)
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_stale_claim_is_reclaimed_and_sent_once(self, mock_client_cls):
+        mock_http = self._successful_http(mock_client_cls)
+        occurrence_key = degraded_occurrence_key(
+            tenant_id=self.tenant.id,
+            job_name="hourly-heartbeat",
+            fired_at=self.fired_at,
+        )
+        abandoned = DeliveryAttempt.objects.create(
+            tenant=self.tenant,
+            occurrence_key=occurrence_key,
+            job_name="hourly-heartbeat",
+            channel="telegram",
+        )
+        DeliveryAttempt.objects.filter(pk=abandoned.pk).update(
+            claimed_at=self.fired_at - _CLAIM_STALE - timedelta(minutes=1)
+        )
+
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING") as logs:
+            response = self._post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "sent")
+        self.assertEqual(mock_http.post.call_count, 1)
+        attempt = DeliveryAttempt.objects.get(tenant=self.tenant)
+        self.assertEqual(attempt.id, abandoned.id)
+        self.assertEqual(attempt.state, DeliveryAttempt.State.SENT)
+        self.assertEqual(attempt.claimed_at, self.fired_at)
+        self.assertIn("delivery_stale_claim_reclaimed", "\n".join(logs.output))
+
+    def test_two_stale_reclaim_attempts_have_one_conditional_update_winner(self):
+        occurrence_key = degraded_occurrence_key(
+            tenant_id=self.tenant.id,
+            job_name="hourly-heartbeat",
+            fired_at=self.fired_at,
+        )
+        abandoned = DeliveryAttempt.objects.create(
+            tenant=self.tenant,
+            occurrence_key=occurrence_key,
+            job_name="hourly-heartbeat",
+            channel="telegram",
+        )
+        stale_at = self.fired_at - _CLAIM_STALE - timedelta(minutes=1)
+        DeliveryAttempt.objects.filter(pk=abandoned.pk).update(claimed_at=stale_at)
+
+        first_snapshot = DeliveryAttempt.objects.get(pk=abandoned.pk)
+        second_snapshot = DeliveryAttempt.objects.get(pk=abandoned.pk)
+
+        first_result, first_count = _reclaim_stale_delivery_attempt(first_snapshot, now=self.fired_at)
+        second_result, second_count = _reclaim_stale_delivery_attempt(second_snapshot, now=self.fired_at)
+
+        self.assertEqual(first_result, "reclaimed")
+        self.assertEqual(first_count, 1)
+        self.assertEqual(second_result, "lost")
+        self.assertEqual(second_count, 1)
+        self.assertEqual(DeliveryAttempt.objects.get(pk=abandoned.pk).claimed_at, self.fired_at)
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_stale_reclaim_cap_marks_attempt_failed_with_reason(self, mock_client_cls):
+        mock_http = self._successful_http(mock_client_cls)
+        occurrence_key = degraded_occurrence_key(
+            tenant_id=self.tenant.id,
+            job_name="hourly-heartbeat",
+            fired_at=self.fired_at,
+        )
+        abandoned = DeliveryAttempt.objects.create(
+            tenant=self.tenant,
+            occurrence_key=occurrence_key,
+            job_name="hourly-heartbeat",
+            channel="telegram",
+        )
+
+        for _ in range(3):
+            DeliveryAttempt.objects.filter(pk=abandoned.pk).update(
+                claimed_at=self.fired_at - _CLAIM_STALE - timedelta(minutes=1)
+            )
+            with (
+                patch("apps.router.cron_delivery.timezone.now", return_value=self.fired_at),
+                self.assertLogs("apps.router.cron_delivery", level="WARNING"),
+            ):
+                claimed, duplicate = _claim_delivery_attempt(
+                    tenant=self.tenant,
+                    occurrence_key=occurrence_key,
+                    job_name="hourly-heartbeat",
+                    channel="telegram",
+                )
+            self.assertEqual(claimed.id, abandoned.id)
+            self.assertIsNone(duplicate)
+
+        DeliveryAttempt.objects.filter(pk=abandoned.pk).update(
+            claimed_at=self.fired_at - _CLAIM_STALE - timedelta(minutes=1)
+        )
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING") as logs:
+            response = self._post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "reclaim_exhausted")
+        mock_http.post.assert_not_called()
+        attempt = DeliveryAttempt.objects.get(pk=abandoned.pk)
+        self.assertEqual(attempt.state, DeliveryAttempt.State.FAILED)
+        self.assertIsNotNone(attempt.resolved_at)
+        self.assertIn("stale claim reclaim limit reached", attempt.response_excerpt)
+        self.assertIn("delivery_stale_claim_reclaim_exhausted", "\n".join(logs.output))
+
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING"):
+            repeated = self._post()
+        self.assertEqual(repeated.json()["status"], "reclaim_exhausted")
+        self.assertEqual(DeliveryAttempt.objects.get(pk=abandoned.pk).id, abandoned.id)
+        mock_http.post.assert_not_called()
 
 
 @override_settings(

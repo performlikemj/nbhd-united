@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from django.conf import settings
@@ -34,6 +34,15 @@ RATE_LIMIT_PER_HOUR = 20
 # In-memory rate tracking (reset on process restart, which is fine)
 _rate_counts: dict[str, list[float]] = {}
 
+# Transport calls time out after 10s and the 8,192-character payload can take a
+# few sequential Telegram calls, while Gunicorn kills the whole request at
+# 300s. Ten minutes clears that real worst case with a full worker-shutdown
+# margin, without leaving a crashed worker's claim stuck for an hour.
+_CLAIM_STALE = timedelta(minutes=10)
+_MAX_STALE_RECLAIMS = 3
+_RECLAIM_EXHAUSTED_REASON = "stale claim reclaim limit reached after 3 reclaims"
+_RECLAIM_COUNT_PREFIX = "stale claim reclaimed "
+
 
 def degraded_occurrence_key(*, tenant_id, job_name: str, fired_at: datetime) -> str:
     """Return the P0 receipt-hour identity for one proactive delivery."""
@@ -51,6 +60,55 @@ def _delivery_dedup_enabled(tenant) -> bool:
     if configured == "*":
         return True
     return str(tenant.id) in {value.strip() for value in configured.split(",") if value.strip()}
+
+
+def _stale_reclaim_count(response_excerpt: str) -> int:
+    """Read internal reclaim metadata without adding a schema field."""
+    if not response_excerpt.startswith(_RECLAIM_COUNT_PREFIX):
+        return 0
+    count_text = response_excerpt.removeprefix(_RECLAIM_COUNT_PREFIX).partition("/")[0]
+    try:
+        return int(count_text)
+    except ValueError:
+        return 0
+
+
+def _duplicate_response(*, channel: str, prior_state: str, status: str = "duplicate_suppressed") -> Response:
+    return Response(
+        {
+            "status": status,
+            "channel": channel,
+            "prior_state": prior_state,
+        }
+    )
+
+
+def _reclaim_stale_delivery_attempt(prior, *, now: datetime) -> tuple[str, int]:
+    """CAS one stale claim; return its transition and persisted reclaim count."""
+    from apps.router.models import DeliveryAttempt
+
+    reclaim_count = _stale_reclaim_count(prior.response_excerpt)
+    stale_claim = DeliveryAttempt.objects.filter(
+        pk=prior.pk,
+        state=DeliveryAttempt.State.CLAIMED,
+        resolved_at__isnull=True,
+        claimed_at=prior.claimed_at,
+        claimed_at__lt=now - _CLAIM_STALE,
+    )
+    if reclaim_count >= _MAX_STALE_RECLAIMS:
+        rows = stale_claim.update(
+            state=DeliveryAttempt.State.FAILED,
+            resolved_at=now,
+            response_excerpt=_RECLAIM_EXHAUSTED_REASON,
+        )
+        return ("exhausted" if rows == 1 else "lost"), reclaim_count
+
+    next_reclaim_count = reclaim_count + 1
+    rows = stale_claim.update(
+        claimed_at=now,
+        response_excerpt=f"{_RECLAIM_COUNT_PREFIX}{next_reclaim_count}/{_MAX_STALE_RECLAIMS}",
+    )
+    return ("reclaimed" if rows == 1 else "lost"), next_reclaim_count
 
 
 def _claim_delivery_attempt(*, tenant, occurrence_key: str, job_name: str, channel: str):
@@ -80,7 +138,53 @@ def _claim_delivery_attempt(*, tenant, occurrence_key: str, job_name: str, chann
                     # A failed claimant may have released the row between our
                     # unique violation and lookup. Retry the insert.
                     continue
+                if prior.state == DeliveryAttempt.State.FAILED and prior.response_excerpt == _RECLAIM_EXHAUSTED_REASON:
+                    logger.warning(
+                        "delivery_stale_claim_reclaim_exhausted tenant=%s occurrence=%s channel=%s",
+                        str(tenant.id)[:8],
+                        occurrence_key[:12],
+                        channel,
+                    )
+                    return None, _duplicate_response(
+                        channel=channel,
+                        prior_state=DeliveryAttempt.State.FAILED,
+                        status="reclaim_exhausted",
+                    )
                 if prior.state != DeliveryAttempt.State.FAILED:
+                    now = timezone.now()
+                    if (
+                        prior.state == DeliveryAttempt.State.CLAIMED
+                        and prior.resolved_at is None
+                        and prior.claimed_at < now - _CLAIM_STALE
+                    ):
+                        reclaim_result, reclaim_count = _reclaim_stale_delivery_attempt(prior, now=now)
+                        if reclaim_result == "exhausted":
+                            logger.warning(
+                                "delivery_stale_claim_reclaim_exhausted tenant=%s occurrence=%s channel=%s reclaims=%d",
+                                str(tenant.id)[:8],
+                                occurrence_key[:12],
+                                channel,
+                                reclaim_count,
+                            )
+                            return None, _duplicate_response(
+                                channel=channel,
+                                prior_state=DeliveryAttempt.State.FAILED,
+                                status="reclaim_exhausted",
+                            )
+                        if reclaim_result == "reclaimed":
+                            prior.claimed_at = now
+                            prior.response_excerpt = f"{_RECLAIM_COUNT_PREFIX}{reclaim_count}/{_MAX_STALE_RECLAIMS}"
+                            logger.warning(
+                                "delivery_stale_claim_reclaimed tenant=%s occurrence=%s channel=%s reclaim=%d/%d",
+                                str(tenant.id)[:8],
+                                occurrence_key[:12],
+                                channel,
+                                reclaim_count,
+                                _MAX_STALE_RECLAIMS,
+                            )
+                            return prior, None
+                        continue
+
                     logger.warning(
                         "delivery_duplicate_suppressed tenant=%s occurrence=%s channel=%s prior_state=%s",
                         str(tenant.id)[:8],
@@ -88,12 +192,9 @@ def _claim_delivery_attempt(*, tenant, occurrence_key: str, job_name: str, chann
                         channel,
                         prior.state,
                     )
-                    return None, Response(
-                        {
-                            "status": "duplicate_suppressed",
-                            "channel": channel,
-                            "prior_state": prior.state,
-                        }
+                    return None, _duplicate_response(
+                        channel=channel,
+                        prior_state=prior.state,
                     )
 
                 # A definitive failure is safe to retry. Delete and recreate
