@@ -509,7 +509,7 @@ def handle_checkout_completed(session_data: dict) -> None:
         restore_tenant_runtime(tenant)
 
     if should_provision:
-        publish_task("provision_tenant", str(tenant.id))
+        publish_task("provision_tenant", str(tenant.id), idempotency_key=f"provision-{tenant.id}")
         logger.info("Triggered provisioning for tenant %s", tenant.id)
 
 

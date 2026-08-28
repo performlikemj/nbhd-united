@@ -371,7 +371,9 @@ class ExchangeProvisionsTenantTests(TestCase):
         self.assertEqual(tenant.status, Tenant.Status.PROVISIONING)
         self.assertTrue(tenant.is_trial)
         self.assertEqual(tenant.model_tier, Tenant.ModelTier.STARTER)
-        mock_publish.assert_called_once_with("provision_tenant", str(tenant.id))
+        mock_publish.assert_called_once_with(
+            "provision_tenant", str(tenant.id), idempotency_key=f"provision-{tenant.id}"
+        )
 
     @patch("apps.cron.publish.publish_task")
     def test_exchange_is_idempotent_for_existing_tenant(self, mock_publish):

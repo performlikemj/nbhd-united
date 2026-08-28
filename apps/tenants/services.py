@@ -68,7 +68,7 @@ def _publish_tenant_provisioning(tenant_id: str, user_id: str) -> bool:
     from apps.cron.publish import publish_task
 
     try:
-        publish_task("provision_tenant", tenant_id)
+        publish_task("provision_tenant", tenant_id, idempotency_key=f"provision-{tenant_id}")
         logger.info(
             "tenant_provisioning tenant_id=%s user_id=%s stage=publish_provision_task error=",
             tenant_id,

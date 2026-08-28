@@ -554,7 +554,9 @@ class OnboardTenantViewTest(TestCase):
             tenant.trial_ends_at,
             after_signup + timedelta(days=30),
         )
-        mock_publish.assert_called_once_with("provision_tenant", str(tenant.id))
+        mock_publish.assert_called_once_with(
+            "provision_tenant", str(tenant.id), idempotency_key=f"provision-{tenant.id}"
+        )
         mock_seed.assert_called_once_with(tenant=tenant)
 
     @patch("apps.cron.publish.publish_task", side_effect=RuntimeError("qstash down"))
@@ -640,7 +642,39 @@ class RetryProvisioningViewTest(TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.data["tenant_status"], Tenant.Status.PROVISIONING)
         self.assertFalse(response.data["ready"])
-        mock_publish.assert_called_once_with("provision_tenant", str(tenant.id))
+        mock_publish.assert_called_once()
+        self.assertEqual(mock_publish.call_args.args, ("provision_tenant", str(tenant.id)))
+        self.assertRegex(
+            mock_publish.call_args.kwargs["idempotency_key"],
+            rf"^provision-{tenant.id}-retry-\d+$",
+        )
+
+    @patch("apps.tenants.views.publish_task")
+    def test_two_manual_retries_publish_different_retry_keys(self, mock_publish):
+        tenant = create_tenant(display_name="Retry Twice", telegram_chat_id=609)
+        tenant.status = Tenant.Status.PENDING
+        tenant.save(update_fields=["status", "updated_at"])
+        self.client.force_authenticate(user=tenant.user)
+        next_tick = timezone.now() + timedelta(seconds=10)
+
+        def advancing_now():
+            nonlocal next_tick
+            next_tick += timedelta(seconds=1)
+            return next_tick
+
+        with (
+            patch("apps.tenants.views.RetryProvisioningView.RETRY_COOLDOWN_SECONDS", 0),
+            patch("apps.tenants.views.timezone.now", side_effect=advancing_now),
+        ):
+            first = self.client.post("/api/v1/tenants/retry-provisioning/")
+            second = self.client.post("/api/v1/tenants/retry-provisioning/")
+
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 202)
+        self.assertEqual(mock_publish.call_count, 2)
+        keys = [call.kwargs["idempotency_key"] for call in mock_publish.call_args_list]
+        self.assertNotEqual(keys[0], keys[1])
+        self.assertTrue(all(key.startswith(f"provision-{tenant.id}-retry-") for key in keys))
 
     @patch("apps.tenants.views.publish_task")
     def test_retry_provisioning_returns_ready_for_active_tenant(self, mock_publish):

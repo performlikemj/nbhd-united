@@ -38,7 +38,9 @@ class BillingWebhookServiceTest(TestCase):
         self.assertEqual(self.tenant.model_tier, Tenant.ModelTier.STARTER)
         self.assertEqual(self.tenant.stripe_customer_id, "cus_123")
         self.assertEqual(self.tenant.stripe_subscription_id, "sub_123")
-        mock_publish.assert_called_once_with("provision_tenant", str(self.tenant.id))
+        mock_publish.assert_called_once_with(
+            "provision_tenant", str(self.tenant.id), idempotency_key=f"provision-{self.tenant.id}"
+        )
 
     @patch("apps.cron.publish.publish_task")
     def test_checkout_completed_invalid_tier_defaults_to_basic(self, mock_publish):

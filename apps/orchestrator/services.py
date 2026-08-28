@@ -5,9 +5,13 @@ from __future__ import annotations
 import logging
 import secrets as secrets_lib
 import time
+from collections.abc import Callable
+from datetime import timedelta
 
 from django.conf import settings
-from django.db import models
+from django.db import connection, models
+from django.db.models import Q
+from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 
 from apps.common.eval_sink import suppresses_real_transport
@@ -42,6 +46,72 @@ from .personas import render_workspace_files
 from .recall_search_key import begin_delete_recall_search_key
 
 logger = logging.getLogger(__name__)
+
+_PROVISION_LEASE_STALE = timedelta(minutes=30)
+
+
+class _ProvisionLeaseLost(RuntimeError):
+    pass
+
+
+def _retry_provision_db_write(tenant: Tenant, operation: Callable[[], int | None]) -> int | None:
+    """Retry one post-Azure write after replacing an idle DB connection."""
+    try:
+        return operation()
+    except (OperationalError, InterfaceError):
+        from apps.tenants.middleware import set_rls_context
+
+        logger.warning(
+            "Provisioning DB connection died after Azure work for tenant %s; reconnecting once",
+            tenant.id,
+        )
+        connection.close()
+        set_rls_context(tenant_id=tenant.id, service_role=True)
+        return operation()
+
+
+def _renew_provision_lease(tenant: Tenant) -> None:
+    """Renew only the provisioning lease currently owned by this run."""
+    prior_lease = tenant.provision_lease_at
+    if prior_lease is None:
+        raise _ProvisionLeaseLost(f"Tenant {tenant.id} has no provisioning lease to renew")
+
+    now = timezone.now()
+
+    def renew() -> int:
+        return Tenant.objects.filter(
+            pk=tenant.pk,
+            status=Tenant.Status.PROVISIONING,
+            provision_lease_at=prior_lease,
+        ).update(provision_lease_at=now, updated_at=now)
+
+    if _retry_provision_db_write(tenant, renew) != 1:
+        raise _ProvisionLeaseLost(f"Tenant {tenant.id} provisioning lease is no longer owned by this run")
+    tenant.provision_lease_at = now
+
+
+def _finish_provisioning(tenant: Tenant, *, status: str, **values) -> None:
+    """Write terminal provisioning state and clear this run's lease atomically."""
+    owned_lease = tenant.provision_lease_at
+    now = timezone.now()
+    updates = {
+        **values,
+        "status": status,
+        "provision_lease_at": None,
+        "updated_at": now,
+    }
+
+    def finish() -> int:
+        return Tenant.objects.filter(
+            pk=tenant.pk,
+            status=Tenant.Status.PROVISIONING,
+            provision_lease_at=owned_lease,
+        ).update(**updates)
+
+    if _retry_provision_db_write(tenant, finish) != 1:
+        raise _ProvisionLeaseLost(f"Tenant {tenant.id} provisioning lease was lost before terminal write")
+    for field, value in updates.items():
+        setattr(tenant, field, value)
 
 
 def _log_provisioning_event(*, tenant_id: str, user_id: str | None, stage: str, error: str = "") -> None:
@@ -227,18 +297,59 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
         str(getattr(settings, "OPENCLAW_CONTAINER_SECRET_BACKEND", "keyvault") or "keyvault").strip().lower()
     )
 
-    if tenant.status not in (Tenant.Status.PENDING, Tenant.Status.PROVISIONING):
+    now = timezone.now()
+    claimed = (
+        Tenant.objects.filter(
+            pk=tenant.pk,
+            status__in=[Tenant.Status.PENDING, Tenant.Status.PROVISIONING],
+        )
+        .filter(Q(provision_lease_at__isnull=True) | Q(provision_lease_at__lt=now - _PROVISION_LEASE_STALE))
+        .update(
+            status=Tenant.Status.PROVISIONING,
+            provision_lease_at=now,
+            updated_at=now,
+        )
+    )
+    if claimed != 1:
+        current = Tenant.objects.filter(pk=tenant.pk).values("status", "provision_lease_at").first()
+        current_status = current["status"] if current else "missing"
+        current_lease = current["provision_lease_at"] if current else None
         _log_provisioning_event(
             tenant_id=str(tenant.id),
             user_id=user_id,
-            stage="provision_skipped_unexpected_status",
-            error=tenant.status,
+            stage="provision_skipped_live_claim",
+            error=current_status,
         )
-        logger.warning("Tenant %s in unexpected state %s for provisioning", tenant_id, tenant.status)
+        logger.info(
+            "provision already claimed by a live run for tenant %s status=%s",
+            tenant_id,
+            current_status,
+        )
+
+        stale_before = now - _PROVISION_LEASE_STALE
+        currently_live = bool(
+            current_status == Tenant.Status.PROVISIONING and current_lease and current_lease > stale_before
+        )
+        if currently_live:
+            remaining = (current_lease + _PROVISION_LEASE_STALE - now).total_seconds()
+            try:
+                from apps.cron.publish import publish_task
+
+                publish_task(
+                    "provision_tenant",
+                    str(tenant.id),
+                    delay_seconds=int(remaining) + 60,
+                    idempotency_key=(f"provision-{tenant.id}-lease-{int(current_lease.timestamp())}"),
+                )
+            except Exception:
+                logger.exception(
+                    "Could not schedule provisioning lease recovery for tenant %s",
+                    tenant_id,
+                )
         return
 
     tenant.status = Tenant.Status.PROVISIONING
-    tenant.save(update_fields=["status", "updated_at"])
+    tenant.provision_lease_at = now
 
     try:
         # 1. Generate OpenClaw config
@@ -252,6 +363,7 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
         # 2. Create Managed Identity
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="create_managed_identity")
         identity = create_managed_identity(str(tenant.id))
+        _renew_provision_lease(tenant)
 
         # 2a. (Phase 1b) Generate per-tenant internal API key, write to Key
         # Vault as `tenant-<uuid>-internal-key`, and stash on the Tenant
@@ -268,8 +380,12 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
             internal_api_key_kv_secret_name = store_tenant_internal_key_in_key_vault(
                 str(tenant.id), internal_api_key_plain
             )
+            _renew_provision_lease(tenant)
         tenant.internal_api_key = internal_api_key_plain
-        tenant.save(update_fields=["internal_api_key", "updated_at"])
+        _retry_provision_db_write(
+            tenant,
+            lambda: tenant.save(update_fields=["internal_api_key", "updated_at"]),
+        )
 
         # 2a3. (Encryption-at-rest Phase 1 PR5) Mint the tenant's Data
         # Encryption Key (DEK), wrapped under a freshly-created per-tenant
@@ -300,6 +416,7 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
         from apps.crypto.keys import mint_and_wrap_dek
 
         mint_and_wrap_dek(tenant)
+        _renew_provision_lease(tenant)
 
         # Encryption-at-rest Phase 2 — runs immediately after the DEK mint
         # above (which fail-closed proves a key exists): turn chat encryption
@@ -389,15 +506,21 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
                 api_key, key_hash = create_sub_key(label, limit_dollars=limit, limit_reset="monthly")
                 openrouter_kv_secret_name = secret_name_for_tenant(tenant)
                 _write_secret_to_kv(openrouter_kv_secret_name, api_key)
+                _renew_provision_lease(tenant)
                 tenant.openrouter_key_secret_name = openrouter_kv_secret_name
                 tenant.openrouter_key_hash = key_hash
-                tenant.save(
-                    update_fields=[
-                        "openrouter_key_secret_name",
-                        "openrouter_key_hash",
-                        "updated_at",
-                    ]
+                _retry_provision_db_write(
+                    tenant,
+                    lambda: tenant.save(
+                        update_fields=[
+                            "openrouter_key_secret_name",
+                            "openrouter_key_hash",
+                            "updated_at",
+                        ]
+                    ),
                 )
+            except _ProvisionLeaseLost:
+                raise
             except OpenRouterAdminError as exc:
                 logger.warning(
                     "OpenRouter sub-key creation failed for tenant %s; falling back to shared key: %s",
@@ -422,20 +545,25 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
             if openrouter_kv_secret_name:
                 secret_names_to_grant.append(openrouter_kv_secret_name)
             assign_key_vault_role(identity["principal_id"], secret_names=secret_names_to_grant)
+            _renew_provision_lease(tenant)
 
         # 2b2. Grant identity ACR pull access for container image
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="assign_acr_pull_role")
         assign_acr_pull_role(identity["principal_id"])
+        _renew_provision_lease(tenant)
 
         # 2c. Create Azure File Share and register with Container Environment
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="create_file_share")
         create_tenant_file_share(str(tenant.id))
+        _renew_provision_lease(tenant)
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="register_environment_storage")
         register_environment_storage(str(tenant.id))
+        _renew_provision_lease(tenant)
 
         # 2f2. Write config to file share so OpenClaw reads it on first boot
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="upload_config")
         upload_config_to_file_share(str(tenant.id), config_json)
+        _renew_provision_lease(tenant)
 
         # 2g. Render workspace templates based on persona
         persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
@@ -455,6 +583,7 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
             internal_api_key_plain_value=internal_api_key_plain,
             openrouter_kv_secret_name=openrouter_kv_secret_name,
         )
+        _renew_provision_lease(tenant)
 
         # 4. Seed the app's first-session assistant greeting before ACTIVE is
         # observable. The helper stamps before writing for at-most-once
@@ -469,27 +598,22 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
                 logger.warning("Could not seed first-session welcome for tenant %s", tenant_id, exc_info=True)
 
         # 4a. Update tenant record
-        tenant.container_id = result["name"]
-        tenant.container_fqdn = result["fqdn"]
-        tenant.managed_identity_id = identity["id"]
-        tenant.container_image_tag = getattr(settings, "OPENCLAW_IMAGE_TAG", "latest") or "latest"
-        tenant.status = Tenant.Status.ACTIVE
-        tenant.provisioned_at = timezone.now()
-        tenant.save(
-            update_fields=[
-                "container_id",
-                "container_fqdn",
-                "managed_identity_id",
-                "container_image_tag",
-                "status",
-                "provisioned_at",
-                "updated_at",
-            ]
+        _finish_provisioning(
+            tenant,
+            status=Tenant.Status.ACTIVE,
+            container_id=result["name"],
+            container_fqdn=result["fqdn"],
+            managed_identity_id=identity["id"],
+            container_image_tag=getattr(settings, "OPENCLAW_IMAGE_TAG", "latest") or "latest",
+            provisioned_at=timezone.now(),
         )
 
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="provision_success")
         logger.info("Provisioned tenant %s → container %s", tenant_id, result["name"])
 
+    except _ProvisionLeaseLost:
+        logger.info("Provisioning run for tenant %s stopped after losing its lease", tenant_id)
+        return
     except Exception as exc:
         _log_provisioning_event(
             tenant_id=str(tenant.id),
@@ -498,8 +622,10 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
             error=str(exc),
         )
         logger.exception("Failed to provision tenant %s", tenant_id)
-        tenant.status = Tenant.Status.PENDING
-        tenant.save(update_fields=["status", "updated_at"])
+        try:
+            _finish_provisioning(tenant, status=Tenant.Status.PENDING)
+        except _ProvisionLeaseLost:
+            logger.info("Failure for tenant %s did not overwrite a newer provisioning owner", tenant_id)
         raise
 
     # --- Post-provision steps (non-critical) ---
