@@ -469,7 +469,7 @@ class TelegramPollerForwardTest(TestCase):
 
         return _post, captured
 
-    def test_framed_and_owner_passes_share_ingress_and_record_once(self):
+    def test_only_owner_pass_carries_ingress_and_records_once(self):
         from django.utils import timezone
 
         from apps.pii.provisional import PiiIngress
@@ -497,8 +497,8 @@ class TelegramPollerForwardTest(TestCase):
         self.assertEqual(redact.call_count, 2)
         first_ingress = redact.call_args_list[0].kwargs["ingress"]
         second_ingress = redact.call_args_list[1].kwargs["ingress"]
-        self.assertEqual(first_ingress, second_ingress)
         self.assertEqual(first_ingress.provider_event_id, "987")
+        self.assertIsNone(second_ingress)
         record.assert_called_once_with(self.tenant, "Fakenamealpha arrived", first_ingress)
 
     def test_agent_button_payload_is_not_pii_ingress(self):
@@ -781,6 +781,40 @@ class TelegramPollerExtractTextTest(TestCase):
         result = self.poller._extract_message_text(update)
         self.assertIn("sticker", result)
         self.assertIn("😀", result)
+
+    def test_owner_segment_accepts_only_typed_text_and_user_captions(self):
+        cases = (
+            ({"message": {"text": "typed fixture"}}, "typed fixture"),
+            ({"message": {"photo": [{}], "caption": "caption fixture"}}, "caption fixture"),
+            ({"message": {"video": {}, "caption": "video caption fixture"}}, "video caption fixture"),
+        )
+        for update, expected in cases:
+            with self.subTest(update=update):
+                framed = self.poller._extract_message_text(update)
+                self.assertEqual(self.poller._extract_owner_text(update, framed), expected)
+
+    def test_successful_voice_transcript_is_owner_segment(self):
+        update = {"message": {"voice": {"file_id": "fixture"}}}
+        framed = '🎤 Voice message: "voice fixture"'
+        self.assertEqual(self.poller._extract_owner_text(update, framed), "voice fixture")
+
+    def test_generated_and_non_owner_kinds_have_no_owner_segment(self):
+        cases = (
+            ({"message": {"photo": [{}]}}, "User sent a photo"),
+            ({"message": {"voice": {"file_id": "fixture"}}}, "[Voice message — couldn't transcribe]"),
+            ({"message": {"sticker": {"emoji": "😀"}}}, "[User sent a sticker 😀]"),
+            ({"message": {"document": {"file_name": "fixture.txt"}}}, "extracted document fixture"),
+            ({"message": {"video": {"duration": 2}}}, "[User sent a video]"),
+            ({"message": {"location": {"latitude": 1, "longitude": 2}}}, "location metadata fixture"),
+            ({"message": {"contact": {"first_name": "Fixture"}}}, "contact metadata fixture"),
+            (
+                {"message": {"text": "forwarded fixture", "forward_from": {"first_name": "Fixture"}}},
+                "[Forwarded from Fixture]\nforwarded fixture",
+            ),
+        )
+        for update, framed in cases:
+            with self.subTest(update=update):
+                self.assertIsNone(self.poller._extract_owner_text(update, framed))
 
     def test_no_message(self):
         self.assertIsNone(self.poller._extract_message_text({}))

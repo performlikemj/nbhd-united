@@ -42,6 +42,19 @@ MAX_BACKOFF = 60  # max seconds between retries on error
 STILL_THINKING_DELAY = 45.0  # seconds before sending "still thinking" notice
 
 
+def _telegram_owner_ingress(owner_text: str | None, provider_event_id: int | str | None):
+    """Build provenance only for an explicitly extracted owner-authored segment."""
+    if owner_text is None:
+        return None
+    from apps.pii.provisional import PiiIngress
+
+    return PiiIngress(
+        channel="telegram",
+        provider_event_id=str(provider_event_id) if provider_event_id is not None else None,
+        occurred_at=timezone.now(),
+    )
+
+
 class TelegramPoller:
     """Long-polls Telegram getUpdates and routes messages to tenant containers."""
 
@@ -53,7 +66,7 @@ class TelegramPoller:
         self._running = False
         self._backoff = 1
         self._http: httpx.Client | None = None
-        self._pending_messages: dict[int, tuple[str, str, int | str | None]] = {}
+        self._pending_messages: dict[int, tuple[str, str | None, int | str | None]] = {}
         self._update_in_progress: set[int] = set()  # chat_ids currently being updated
 
     # ------------------------------------------------------------------
@@ -611,19 +624,13 @@ class TelegramPoller:
         """
         time.sleep(delay)
         self._send_typing(chat_id)
-        from apps.pii.provisional import PiiIngress
-
         self._forward_to_container(
             chat_id,
             tenant,
             message_text,
             raw_user_text=owner_text,
             provider_event_id=provider_event_id,
-            pii_ingress=PiiIngress(
-                channel="telegram",
-                provider_event_id=str(provider_event_id) if provider_event_id is not None else None,
-                occurred_at=timezone.now(),
-            ),
+            pii_ingress=_telegram_owner_ingress(owner_text, provider_event_id),
         )
 
     def _download_photo(self, message: dict) -> str | None:
@@ -823,8 +830,6 @@ class TelegramPoller:
 
     def _handle_update(self, update: dict) -> None:
         """Core routing logic for a single update."""
-        from apps.pii.provisional import PiiIngress
-
         provider_event_id = update.get("update_id")
         # Handle /start TOKEN for account linking
         link_response = handle_start_command(update)
@@ -940,12 +945,9 @@ class TelegramPoller:
                                         context_msg,
                                         raw_user_text=pending_owner_text,
                                         provider_event_id=pending_event_id,
-                                        pii_ingress=PiiIngress(
-                                            channel="telegram",
-                                            provider_event_id=(
-                                                str(pending_event_id) if pending_event_id is not None else None
-                                            ),
-                                            occurred_at=timezone.now(),
+                                        pii_ingress=_telegram_owner_ingress(
+                                            pending_owner_text,
+                                            pending_event_id,
                                         ),
                                     )
                                 else:
@@ -972,10 +974,9 @@ class TelegramPoller:
                             pending_text,
                             raw_user_text=pending_owner_text,
                             provider_event_id=pending_event_id,
-                            pii_ingress=PiiIngress(
-                                channel="telegram",
-                                provider_event_id=str(pending_event_id) if pending_event_id is not None else None,
-                                occurred_at=timezone.now(),
+                            pii_ingress=_telegram_owner_ingress(
+                                pending_owner_text,
+                                pending_event_id,
                             ),
                         )
 
@@ -1164,11 +1165,7 @@ class TelegramPoller:
             raw_user_text=raw_user_text,
             is_image=had_photo,
             provider_event_id=provider_event_id,
-            pii_ingress=PiiIngress(
-                channel="telegram",
-                provider_event_id=str(provider_event_id) if provider_event_id is not None else None,
-                occurred_at=timezone.now(),
-            ),
+            pii_ingress=_telegram_owner_ingress(owner_text, provider_event_id),
         )
 
     # ── Contextual recall ──────────────────────────────────────────────────
@@ -1293,9 +1290,11 @@ class TelegramPoller:
 
         return f'[Replying to: "{reply_text}"]\n\n'
 
-    def _extract_owner_text(self, update: dict, framed_text: str) -> str:
-        """Return the typed/transcribed segment without reply/provider framing."""
+    def _extract_owner_text(self, update: dict, framed_text: str) -> str | None:
+        """Return only typed text, a user caption, or a successful transcript."""
         message = update.get("message") or update.get("edited_message") or {}
+        if message.get("forward_from") or message.get("forward_from_chat"):
+            return None
         direct = message.get("text") or message.get("caption")
         if direct:
             return direct
@@ -1303,7 +1302,7 @@ class TelegramPoller:
             prefix = self._extract_reply_context(message) + '🎤 Voice message: "'
             if framed_text.startswith(prefix) and framed_text.endswith('"'):
                 return framed_text[len(prefix) : -1]
-        return framed_text
+        return None
 
     def _extract_message_text(self, update: dict, tenant: Tenant | None = None) -> str | None:
         """Extract user message text from a Telegram update.
@@ -1579,20 +1578,28 @@ class TelegramPoller:
 
         owner_text = raw_user_text
 
-        message_redaction = redact_user_message_checked(message_text, tenant, ingress=pii_ingress)
-        message_text = message_redaction.text
-        # When raw_user_text was not provided by the caller it was aliased to
-        # the same string as message_text (above). In that case reuse the
-        # already-redacted message_text rather than running a second identical
-        # DeBERTa NER pass over the same content.
-        raw_redaction = (
-            message_redaction
-            if _raw_aliases_message
-            else redact_user_message_checked(raw_user_text, tenant, ingress=pii_ingress)
-        )
-        raw_user_text = raw_redaction.text
         if pii_ingress is not None:
+            # Provenance belongs only to the raw owner segment. Redact it first
+            # so its new binding exists, then record/reactivate it, and finally
+            # redact any reply/media/provider framing without ingress. The
+            # framed pass can reuse the binding but cannot mint a provisional
+            # or count generated text.
+            raw_redaction = redact_user_message_checked(raw_user_text, tenant, ingress=pii_ingress)
             record_provisional_sightings(tenant, owner_text, pii_ingress)
+            message_redaction = (
+                raw_redaction
+                if message_text == owner_text
+                else redact_user_message_checked(message_text, tenant, ingress=None)
+            )
+        else:
+            message_redaction = redact_user_message_checked(message_text, tenant, ingress=None)
+            raw_redaction = (
+                message_redaction
+                if _raw_aliases_message or raw_user_text == message_text
+                else redact_user_message_checked(raw_user_text, tenant, ingress=None)
+            )
+        message_text = message_redaction.text
+        raw_user_text = raw_redaction.text
 
         user_tz = tenant.user.timezone or "UTC"
 

@@ -214,6 +214,8 @@ class BufferWriteRedactsAndMinimizesTest(TestCase):
 
     @patch("apps.orchestrator.hibernation.wake_hibernated_tenant", return_value=True)
     def test_telegram_write_drops_raw_pii_metadata(self, _wake):
+        from apps.pii.provisional import PiiIngress
+
         user = User.objects.create_user(
             username=f"wake_tg_{secrets.token_hex(4)}",
             email=f"{secrets.token_hex(4)}@example.com",
@@ -238,12 +240,22 @@ class BufferWriteRedactsAndMinimizesTest(TestCase):
             ) as redact,
             patch("apps.pii.provisional.record_provisional_sightings") as record,
         ):
-            handle_hibernated_message(tenant, "telegram", raw_update, "call me")
+            ingress = PiiIngress(
+                channel="telegram",
+                provider_event_id="5",
+                occurred_at=timezone.now(),
+            )
+            handle_hibernated_message(
+                tenant,
+                "telegram",
+                raw_update,
+                "call me",
+                pii_ingress=ingress,
+            )
 
-        ingress = redact.call_args.kwargs["ingress"]
-        self.assertEqual(ingress.channel, "telegram")
-        self.assertEqual(ingress.provider_event_id, "5")
-        record.assert_called_once_with(tenant, "call me", ingress)
+        recorded_ingress = redact.call_args.kwargs["ingress"]
+        self.assertEqual(recorded_ingress, ingress)
+        record.assert_called_once_with(tenant, "call me", recorded_ingress)
 
         row = BufferedMessage.objects.filter(tenant=tenant).latest("created_at")
         self.assertEqual(
