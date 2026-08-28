@@ -149,6 +149,21 @@ def record_provisional_sightings(tenant, raw_owner_text: str, ingress: PiiIngres
                 locked.pii_denylist or {},
                 get_name(entries[0][1]),
             )
+            if placeholder is None and is_denied(locked.pii_denylist or {}, get_name(entries[0][1])):
+                # Preserve the recorder's explicit blocked result for denied
+                # expired sightings. Redaction still borrows no placeholder;
+                # the transition below re-evaluates denylist precedence and
+                # reports ``blocked`` without mutating the tombstone.
+                expired = [
+                    item
+                    for item in entries
+                    if isinstance(item[1], dict) and item[1].get("retired_reason") == "provisional-expired"
+                ]
+                if expired:
+                    placeholder, _raw = max(
+                        expired,
+                        key=lambda item: (item[1].get("last_seen_at") or "", item[0]),
+                    )
             if placeholder:
                 targets.append((placeholder, True))
 
