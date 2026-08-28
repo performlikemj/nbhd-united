@@ -18,7 +18,7 @@ Every test message starts with `[NBHD E2E SYNTHETIC]`. Output is metadata-only. 
 
 - Password login, JWT refresh, and one retry after a 401. Access tokens live for 15 minutes and refresh tokens for 60 days.
 - Requests to `https://api.hoodunited.org` or the fixed legacy Container Apps host. Redirects are disabled, and every 3xx is a hard error without reading `Location`.
-- The mandatory `GET /api/v1/tenants/me/` gate after login, stored-token authentication, and refresh. The returned tenant ID must match `scripts/e2e/allowed-tenants.json`, `is_synthetic` must be exactly true, and `is_eval_sink` must be exactly false. Missing fields fail closed and name the `feat/chat-redaction-receipt` server contract.
+- The mandatory `GET /api/v1/tenants/me/` gate after login, stored-token authentication, and refresh. The returned tenant ID must match the preferred gitignored `scripts/e2e/allowed-tenants.local.json`, or the tracked placeholder `scripts/e2e/allowed-tenants.json` when no local file exists; `is_synthetic` must be exactly true, and `is_eval_sink` must be exactly false. Missing fields fail closed and name the `feat/chat-redaction-receipt` server contract.
 - Fixed synthetic wake/chat turns, adaptive polling, metadata-only history and receipts, and PII list/keep/stop/count for the allowlisted tenant.
 - Creation and deletion of one disposable non-main thread for each command that sends a turn.
 
@@ -35,7 +35,7 @@ Thread deletion removes its control-plane chat rows but does not prove OpenClaw 
 
 1. Provision a dedicated tenant through the normal operator flow. Set `is_synthetic=True`, `is_eval_sink=False`, `model_tier="starter"`, `is_budget_exempt=False`, `purchased_credit=0`, and a small explicit `monthly_cost_budget`. Do not attach Stripe IDs.
 2. Confirm `/api/v1/tenants/me/` exposes `is_synthetic=true` and `is_eval_sink=false`; every command fails closed if either assertion is unavailable.
-3. Replace both placeholders in `scripts/e2e/allowed-tenants.json` with exactly `{"tenant_id":"<canonical UUID4>","email":"<dedicated account email>"}`. Keep it an owner-controlled regular file; symlinks, extra keys, non-UUID4 IDs, invalid emails, and group/world-writable files are refused.
+3. Create the gitignored `scripts/e2e/allowed-tenants.local.json` with exactly `{"tenant_id":"<canonical UUID4>","email":"<dedicated account email>"}`. The loader prefers it when present and otherwise falls back to the tracked placeholder, which fails closed. Keep the local allowlist an owner-controlled regular file; symlinks, extra keys, non-UUID4 IDs, invalid emails, and group/world-writable files are refused.
 4. From the repository root, run `.venv/bin/python scripts/e2e/nbhd_e2e.py login`. Enter the password only at the hidden prompt. The email comes only from the allowlist. The password is never stored; the JWT pair uses one atomic JSON item in Keychain service `org.nbhd.e2e`, account `credentials`. A read of the former `access`/`refresh` items migrates them once, verifies the atomic copy, then deletes both legacy items. Every `security` subprocess is capped at 30 seconds and by the command's remaining deadline.
 5. Run `.venv/bin/python scripts/e2e/nbhd_e2e.py smoke`. Add `--follow-up` only when intentionally exercising the optional post-denylist check.
 

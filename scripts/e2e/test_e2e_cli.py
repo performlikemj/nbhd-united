@@ -142,6 +142,62 @@ class ProductionBoundaryTests(unittest.TestCase):
 
 
 class AllowlistTests(unittest.TestCase):
+    def test_local_allowlist_wins_over_tracked_placeholder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tracked = root / "allowed-tenants.json"
+            local = root / "allowed-tenants.local.json"
+            tracked.write_text(
+                json.dumps({"tenant_id": "REPLACE-AFTER-PROVISION", "email": "REPLACE-AFTER-PROVISION"}),
+                encoding="utf-8",
+            )
+            local.write_text(json.dumps({"tenant_id": TENANT_ID, "email": EMAIL}), encoding="utf-8")
+            tracked.chmod(0o600)
+            local.chmod(0o600)
+            with (
+                mock.patch("client.ALLOWED_TENANTS_PATH", tracked),
+                mock.patch("client.LOCAL_ALLOWED_TENANTS_PATH", local),
+            ):
+                loaded = load_allowlist()
+        self.assertEqual(loaded.tenant_id, TENANT_ID)
+        self.assertEqual(loaded.email, EMAIL)
+
+    def test_absent_local_allowlist_falls_back_and_placeholder_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tracked = root / "allowed-tenants.json"
+            local = root / "allowed-tenants.local.json"
+            tracked.write_text(
+                json.dumps({"tenant_id": "REPLACE-AFTER-PROVISION", "email": "REPLACE-AFTER-PROVISION"}),
+                encoding="utf-8",
+            )
+            tracked.chmod(0o600)
+            with (
+                mock.patch("client.ALLOWED_TENANTS_PATH", tracked),
+                mock.patch("client.LOCAL_ALLOWED_TENANTS_PATH", local),
+                self.assertRaisesRegex(TenantGateError, "not provisioned"),
+            ):
+                load_allowlist()
+
+    def test_symlinked_local_allowlist_is_refused_without_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tracked = root / "allowed-tenants.json"
+            target = root / "target.json"
+            local = root / "allowed-tenants.local.json"
+            payload = json.dumps({"tenant_id": TENANT_ID, "email": EMAIL})
+            tracked.write_text(payload, encoding="utf-8")
+            target.write_text(payload, encoding="utf-8")
+            tracked.chmod(0o600)
+            target.chmod(0o600)
+            os.symlink(target, local)
+            with (
+                mock.patch("client.ALLOWED_TENANTS_PATH", tracked),
+                mock.patch("client.LOCAL_ALLOWED_TENANTS_PATH", local),
+                self.assertRaisesRegex(TenantGateError, "must not be a symlink"),
+            ):
+                load_allowlist()
+
     def test_exact_schema_uuid4_and_email_are_required(self):
         with allowlist_file() as path:
             loaded = load_allowlist(path)

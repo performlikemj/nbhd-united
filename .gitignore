@@ -22,6 +22,7 @@ staticfiles/
 
 # Environment
 .env
+scripts/e2e/allowed-tenants.local.json
 
 # IDE
 .vscode/
