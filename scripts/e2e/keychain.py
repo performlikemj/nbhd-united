@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from collections.abc import Callable
@@ -14,6 +15,7 @@ _LEGACY_ACCESS_ACCOUNT = "access"
 _LEGACY_REFRESH_ACCOUNT = "refresh"
 _ITEM_NOT_FOUND_RETURN_CODE = 44
 _SUBPROCESS_TIMEOUT_CAP_SECONDS = 30.0
+_JWT_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class KeychainError(RuntimeError):
@@ -83,12 +85,13 @@ def _write_secret(
     deadline: float,
     monotonic: Callable[[], float],
 ) -> None:
-    """Write through security's stdin prompt; the secret is never an argv value."""
-    if not secret or "\n" in secret or "\r" in secret:
+    """Write through security's command mode; the secret is never an argv value."""
+    if not secret or "'" in secret or any(ord(character) < 32 or ord(character) == 127 for character in secret):
         raise KeychainError("invalid Keychain credential payload")
+    command = f'add-generic-password -U -a "{account}" -s "{SERVICE}" -w \'{secret}\'\n'
     result = _run_security(
-        ["security", "add-generic-password", "-U", "-a", account, "-s", SERVICE, "-w"],
-        input_text=f"{secret}\n",
+        ["security", "-i"],
+        input_text=command,
         deadline=deadline,
         monotonic=monotonic,
     )
@@ -156,8 +159,13 @@ def write_credentials(
     deadline: float,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> None:
-    if not credentials.access or not credentials.refresh:
-        raise KeychainError("credentials must be non-empty")
+    if (
+        not isinstance(credentials.access, str)
+        or not _JWT_TOKEN_RE.fullmatch(credentials.access)
+        or not isinstance(credentials.refresh, str)
+        or not _JWT_TOKEN_RE.fullmatch(credentials.refresh)
+    ):
+        raise KeychainError("invalid Keychain credential payload")
     payload = json.dumps(
         {"access": credentials.access, "refresh": credentials.refresh},
         sort_keys=True,
