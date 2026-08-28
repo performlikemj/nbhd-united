@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import fixtures
@@ -478,6 +479,26 @@ class ManagedThreadTests(unittest.TestCase):
 
 
 class FixturePIITests(unittest.TestCase):
+    def test_partial_person_span_can_be_stopped(self):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    {
+                        "key": "testwell",
+                        "reason": "manual",
+                        "decided_at": "2026-08-28T00:00:00Z",
+                        "retired": 1,
+                    },
+                )
+            ]
+        )
+        client = NBHDClient(session=session)
+        client.access_token = "access-token"
+        result = client.stop_pii("Testwell", deadline=client.new_deadline(100))
+        self.assertEqual(result.retired_count, 1)
+        self.assertEqual(session.calls[0]["json"], {"name": "Testwell"})
+
     def test_pii_keep_has_no_argument_and_intersects_current_fixture_bindings(self):
         entries = {
             "entries": [
@@ -509,6 +530,71 @@ class ReceiptTests(unittest.TestCase):
         self.assertFalse(smoke.assert_durable_receipt(observation, lambda *parts: events.append(parts)))
         self.assertEqual(events, [(5, "durable-redaction-receipt", "SKIPPED")])
         smoke.assert_fixture_redactions(observation)
+
+
+class SmokeFixtureTests(unittest.TestCase):
+    def _observation(self, person_value, phone_value=fixtures.PHONE_NUMBER):
+        payload = message_shape()
+        payload["user_redactions"] = [
+            {"placeholder": "[PERSON_1]", "value": person_value},
+            {"placeholder": "[PHONE_NUMBER_1]", "value": phone_value},
+        ]
+        return observe_message(payload, expected_client_msg_id=MESSAGE_ID)
+
+    def test_partial_name_mapping_passes(self):
+        observation = self._observation("Testwell")
+        self.assertEqual(smoke.assert_fixture_redactions(observation), "Testwell")
+        self.assertTrue(
+            smoke._registry_contains_fixtures(
+                [
+                    SimpleNamespace(name="Testwell"),
+                    SimpleNamespace(name=fixtures.PHONE_NUMBER),
+                ]
+            )
+        )
+
+    def test_empty_person_mapping_fails(self):
+        for value in ("", "   "):
+            with self.subTest(value=repr(value)), self.assertRaises(HarnessError):
+                smoke.assert_fixture_redactions(self._observation(value))
+            self.assertFalse(
+                smoke._registry_contains_fixtures(
+                    [SimpleNamespace(name=value), SimpleNamespace(name=fixtures.PHONE_NUMBER)]
+                )
+            )
+
+    def test_wrong_phone_mapping_fails(self):
+        with self.assertRaises(HarnessError):
+            smoke.assert_fixture_redactions(self._observation("Evelyn", "+1 202-555-9999"))
+        self.assertFalse(
+            smoke._registry_contains_fixtures([SimpleNamespace(name="Evelyn"), SimpleNamespace(name="+1 202-555-9999")])
+        )
+
+    def test_smoke_stops_and_checks_the_observed_person_span(self):
+        @contextmanager
+        def managed_thread(*args, **kwargs):
+            yield THREAD_ID
+
+        follow_up = message_shape()
+        follow_up["user_redactions"] = [{"placeholder": "[PERSON_1]", "value": "TESTWELL"}]
+        client = mock.Mock(spec=NBHDClient)
+        client.managed_thread.side_effect = managed_thread
+        client.wait_for_message.side_effect = [
+            self._observation("Testwell"),
+            observe_message(follow_up, expected_client_msg_id=MESSAGE_ID),
+        ]
+        client.entity_registry.return_value = [
+            SimpleNamespace(name="Testwell"),
+            SimpleNamespace(name=fixtures.PHONE_NUMBER),
+        ]
+        client.stop_pii.return_value = SimpleNamespace(retired_count=1)
+        client.pii_denylist_contains.return_value = True
+
+        with self.assertRaisesRegex(HarnessError, "denylisted fixture name"):
+            smoke.run_smoke(client, deadline=200.0, follow_up=True, log=lambda *args: None)
+
+        client.stop_pii.assert_called_once_with("Testwell", deadline=200.0)
+        client.pii_denylist_contains.assert_called_once_with("Testwell", deadline=200.0)
 
 
 class AtomicKeychainTests(unittest.TestCase):

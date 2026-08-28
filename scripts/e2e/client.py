@@ -571,7 +571,11 @@ class NBHDClient:
     def stop_pii(self, name: str, *, deadline: float) -> StopPIIResult:
         import fixtures
 
-        if name not in {fixtures.PERSON_NAME, fixtures.PHONE_NUMBER}:
+        person_pattern = rf"(?<!\w){re.escape(name)}(?!\w)" if isinstance(name, str) and name.strip() else None
+        is_fixture_person = person_pattern is not None and re.search(
+            person_pattern, fixtures.PERSON_NAME, flags=re.IGNORECASE
+        )
+        if name != fixtures.PHONE_NUMBER and not is_fixture_person:
             raise HarnessError("pii stop accepts fixed fixture values only")
         payload = self.request(
             "POST",
