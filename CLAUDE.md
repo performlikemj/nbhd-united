@@ -15,6 +15,7 @@ This file is a router, not the manual. Deep context lives in `docs/agents/` — 
 | Committing, pushing, merging PRs, deploying, writing migrations | `docs/agents/workflow.md` |
 | Writing Django/backend code | `docs/agents/backend.md` |
 | Writing frontend code or anything visual | `docs/agents/frontend.md` + `DESIGN.md` |
+| Running real product E2E | `docs/agents/e2e.md` |
 | Running an autonomous/scheduled loop (`/goal`, `/loop`, `/schedule`), or fanning out sub-agents | `docs/agents/loops.md` |
 
 Skills available as slash commands on this machine: `/deploy` (commit→push→verify), `/production-logs`, `/rotate-keys` (secrets never appear in output), `/yardtalk-push`.

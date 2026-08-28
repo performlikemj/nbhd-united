@@ -316,7 +316,7 @@ export default function register(api) {
 
   registerTool(api, {
     name: "nbhd_reddit_my_activity",
-    description: "Check for replies to the user's recent Reddit posts and comments.",
+    description: "Get the user's Reddit profile/about data and recent activity.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -331,7 +331,7 @@ export default function register(api) {
   registerTool(api, {
     name: "nbhd_reddit_post",
     description:
-      "Submit a new Reddit post. IMPORTANT: Always show the draft to the user and get explicit approval before calling this tool.",
+      "Submit a new Reddit post with a mandatory preview→confirm handshake. The first call returns a preview + confirm_token and does not post; show the exact draft, ask the user, then call again with the token and unchanged parameters.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -353,6 +353,10 @@ export default function register(api) {
           type: "string",
           enum: ["self", "link"],
           description: "Post kind. Defaults to self.",
+        },
+        confirm_token: {
+          type: "string",
+          description: "Token returned by the first preview call. Omit initially; replay unchanged only after explicit approval.",
         },
       },
       required: ["subreddit", "title"],
@@ -381,9 +385,10 @@ export default function register(api) {
         throw new Error("text is required for self posts");
       }
 
+      const confirmToken = asTrimmedString(input.confirm_token);
       const payload = await callRedditTool(api, {
         action: "post",
-        params: { subreddit, title, text: text || undefined, kind },
+        params: { subreddit, title, text: text || undefined, kind, confirm_token: confirmToken || undefined },
       });
       return renderPayload(payload);
     },
@@ -392,7 +397,7 @@ export default function register(api) {
   registerTool(api, {
     name: "nbhd_reddit_reply",
     description:
-      "Reply to a Reddit post or comment. IMPORTANT: Always show the draft to the user and get explicit approval before calling this tool.",
+      "Reply to a Reddit post or comment with a mandatory preview→confirm handshake. The first call returns a preview + confirm_token and does not reply; show the exact draft, ask the user, then call again with the token and unchanged parameters.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -404,6 +409,10 @@ export default function register(api) {
         text: {
           type: "string",
           description: "Reply text body.",
+        },
+        confirm_token: {
+          type: "string",
+          description: "Token returned by the first preview call. Omit initially; replay unchanged only after explicit approval.",
         },
       },
       required: ["thing_id", "text"],
@@ -424,9 +433,10 @@ export default function register(api) {
         throw new Error("text is required");
       }
 
+      const confirmToken = asTrimmedString(input.confirm_token);
       const payload = await callRedditTool(api, {
         action: "reply",
-        params: { thing_id: thingId, text },
+        params: { thing_id: thingId, text, confirm_token: confirmToken || undefined },
       });
       return renderPayload(payload);
     },

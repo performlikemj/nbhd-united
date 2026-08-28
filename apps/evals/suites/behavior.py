@@ -21,20 +21,22 @@ reads greener than reality — only ``kind='hard'`` rows carry the gating signal
 
 EXECUTION BUDGET (fact #2 of docs/evals-wave-b-plan.md — the ~300s gunicorn worker
 ceiling): the whole run executes inline in one QStash-triggered request. A full pack
-worst case (many 60s turn deadlines + judge calls) would blow far past 300s → the
+worst case (many 50s turn deadlines + judge calls) would blow far past 300s → the
 worker is SIGKILL'd mid-run, the EvalRun row strands at 'running' (reaper fodder),
-and QStash re-fires the WHOLE suite. So the run anchors a total wall-clock budget at
-t0 (``SUITE_BUDGET_SECONDS``, comfortably under 300s) and stops STARTING new
+and QStash re-fires the WHOLE suite. After a separately capped pre-warm proves the
+tenant answers, the run anchors a scenario wall-clock budget at t0
+(``SUITE_BUDGET_SECONDS``, comfortably under 300s) and stops STARTING new
 scenarios once the remaining budget cannot fit the next scenario's worst case
 (per-turn deadlines + judge timeout). Unrun scenarios are recorded skipped-with-
-reason ``budget`` — never silently. In practice warm turns finish in seconds so the
-whole pack fits; the budget only bites when things are genuinely slow. NAMED
-FOLLOW-UP when the pack grows: per-scenario fan-out (one QStash task per scenario),
-which removes the shared ceiling entirely.
+reason ``budget`` — never silently. The ordered pack rotates from a cursor persisted
+on the preceding ``EvalRun``, so consecutive fires eventually drive every scenario
+rather than starving a fixed tail. NAMED FOLLOW-UP for still larger packs:
+per-scenario fan-out (one QStash task per scenario), which removes the shared
+ceiling entirely.
 
-The run's FIRST turn may find the behavior tenant hibernated (cold start regularly
-past 2 min), so it gets a wake-aware deadline (``FIRST_TURN_DEADLINE_SECONDS``,
-aligned with the wake probe's SLO); every later turn is warm and uses the default.
+Pre-warm uses the real normal-chat POST/poll path with a wake-aware deadline aligned
+with the wake probe's SLO. Its time does NOT count against
+``SUITE_BUDGET_SECONDS``; failure closes the run ``error`` before any scenario.
 
 INVARIANT #1: the reply text drives assertions + judge but is NEVER written to
 details or logged. ``details`` here carries only counts / codes / labels.
@@ -60,7 +62,7 @@ from apps.evals.behavior.schema import MARKER_TOKEN, Scenario, load_all_scenario
 from apps.evals.behavior.targets import BehaviorConfigError, resolve_behavior_tenant
 from apps.evals.behavior.transport import (
     DEFAULT_DEADLINE_SECONDS,
-    FIRST_TURN_DEADLINE_SECONDS,
+    PREWARM_DEADLINE_SECONDS,
     BehaviorTransport,
     ScenarioRun,
     TurnResult,
@@ -73,18 +75,19 @@ logger = logging.getLogger(__name__)
 
 SUITE = "behavior"
 
-# Total wall-clock budget for one suite fire, 15s under the 300s gunicorn worker
-# ceiling (config/settings/base.py) so the run always closes cleanly instead of
-# being SIGKILL'd mid-scenario. The budget gates when scenarios START; per-turn
+# Scenario wall-clock budget for one suite fire. Together with the separately
+# capped 130s pre-warm and its 15s disposable-thread POST, this totals 285s — 15s
+# under the 300s gunicorn worker ceiling (config/settings/base.py) so the run
+# always closes cleanly instead of being SIGKILL'd mid-scenario. The budget gates when scenarios START; per-turn
 # HTTP deadlines + the judge timeout bound everything inside a scenario, so once
 # the last gated scenario finishes (≤ budget by construction) only millisecond
 # bookkeeping (record/close/alert DB writes) remains — 15s of headroom is ample.
-# The arithmetic must admit the shipped pack's LARGEST first scenario: a 2-turn
-# scenario driven first is 5 (fresh-scope open) + 180 (wake-aware turn) + 60 (warm
-# turn) + 30 (judge) = 275 ≤ 285. Worst-case gating means a slow run drives fewer
-# scenarios and budget-skips the rest — honest and visible, never a stranded
-# 'running' row.
-SUITE_BUDGET_SECONDS = 285.0
+# After pre-warm, the shipped pack's largest 2-turn scenario costs at worst 5
+# (fresh-scope open) + 2*50 (warm turns) + 30 (judge) = 135s, so every cursor
+# position can make progress inside 140s. The pack is larger than one fire can
+# guarantee, so persisted rotation changes which scenarios receive the bounded
+# time on each consecutive fire.
+SUITE_BUDGET_SECONDS = 140.0
 
 # Per-run judge cap (spend guard): after this many scenarios have been judged in a
 # single run, remaining soft dimensions are recorded SKIPPED with reason
@@ -125,14 +128,14 @@ def _generate_marker() -> str:
     return f"{n1}-{n2}-{n3}"
 
 
-def _drive_scenario(scenario: Scenario, transport: BehaviorTransport, *, wake_aware_first_turn: bool) -> ScenarioRun:
+def _drive_scenario(scenario: Scenario, transport: BehaviorTransport) -> ScenarioRun:
     """Drive one scenario's multi-turn script; collect the (synthetic) replies.
 
     A transport error on a turn is captured as a failed ``TurnResult`` (not raised),
     so it surfaces as a failed hard assertion — a clean run FAIL with a code, not a
     run ERROR. ``started_at`` is stamped BEFORE the first turn so ``cron_registered``
-    windows only side effects this run caused. When ``wake_aware_first_turn`` is set
-    (the run's very first driven turn), that turn gets the wake-aware deadline.
+    windows only side effects this run caused. The tenant is already pre-warmed, so
+    every scenario turn uses the bounded warm deadline.
     """
     from apps.evals.behavior.transport import now
 
@@ -140,10 +143,9 @@ def _drive_scenario(scenario: Scenario, transport: BehaviorTransport, *, wake_aw
     run = ScenarioRun(scenario_id=scenario.id, marker=marker, started_at=now())
     for i, line in enumerate(scenario.script):
         text = line.replace(MARKER_TOKEN, marker) if marker else line
-        deadline = FIRST_TURN_DEADLINE_SECONDS if (wake_aware_first_turn and i == 0) else DEFAULT_DEADLINE_SECONDS
         turn_started_at = now()
         try:
-            kwargs = {"text": text, "deadline_seconds": deadline}
+            kwargs = {"text": text, "deadline_seconds": DEFAULT_DEADLINE_SECONDS}
             if i in scenario.document_turns:
                 kwargs["document"] = True
             turn = transport.send_turn(**kwargs)
@@ -156,13 +158,12 @@ def _drive_scenario(scenario: Scenario, transport: BehaviorTransport, *, wake_aw
     return run
 
 
-def _scenario_worst_case_seconds(scenario: Scenario, *, wake_aware_first_turn: bool, will_judge: bool) -> float:
+def _scenario_worst_case_seconds(scenario: Scenario, *, will_judge: bool) -> float:
     """Worst-case wall clock for one scenario: the fresh-scope open, the sum of its
     per-turn poll deadlines, plus (when it would be judged) the judge call's
     timeout. Used to gate STARTING a scenario against the remaining run budget."""
     total = SCOPE_OPEN_BUDGET_SECONDS  # a fresh conversation scope is opened first
-    for i in range(len(scenario.script)):
-        total += FIRST_TURN_DEADLINE_SECONDS if (wake_aware_first_turn and i == 0) else DEFAULT_DEADLINE_SECONDS
+    total += len(scenario.script) * DEFAULT_DEADLINE_SECONDS
     if will_judge:
         total += float(JUDGE_TIMEOUT_SECONDS)
     return total
@@ -264,6 +265,18 @@ def _record_scenario_skipped(run: EvalRun, scenario: Scenario, reason: str) -> N
     )
 
 
+def _rotation_cursor_before(run: EvalRun, scenario_count: int) -> int:
+    """Read the last fire's next-start cursor, normalized for pack edits."""
+    previous = (
+        EvalRun.objects.filter(suite=SUITE, scenario_cursor__isnull=False)
+        .exclude(pk=run.pk)
+        .order_by("-started_at")
+        .values_list("scenario_cursor", flat=True)
+        .first()
+    )
+    return int(previous or 0) % scenario_count
+
+
 def run_behavior_suite(
     *,
     scenarios: list[Scenario] | None = None,
@@ -280,7 +293,7 @@ def run_behavior_suite(
     the DLQ (INVARIANT #3 — a suite that cannot run FAILS loudly, never silently
     passes). ``transport``/``judge``/``scenarios``/``budget_seconds`` are injectable
     for tests; in production they default to the real container transport, the
-    pinned judge, the YAML fixtures, and the 240s budget.
+    pinned judge, the YAML fixtures, and the 140s scenario budget.
 
     ``judge`` is a tri-state: unset → build the default judge; ``None`` → force
     judge-off (soft dims skipped-with-reason); a Judge → use it.
@@ -296,18 +309,25 @@ def run_behavior_suite(
         active_transport = transport if transport is not None else build_behavior_transport(tenant)
         active_judge: Judge | None = build_default_judge() if judge is _JUDGE_UNSET else judge
 
+        warm = active_transport.prewarm()
+        if not warm.ok:
+            reason = warm.error or "no_reply"
+            raise BehaviorConfigError(
+                f"behavior pre-warm failed before scenarios (deadline {PREWARM_DEADLINE_SECONDS:.0f}s, reason {reason})"
+            )
+
+        cursor_before = _rotation_cursor_before(run, len(scenario_list))
+        rotated_scenarios = scenario_list[cursor_before:] + scenario_list[:cursor_before]
         t0 = time.monotonic()
         judged_count = 0
         drove_any = False
-        first_turn_pending = True  # the run's first driven turn gets the wake-aware deadline
+        driven_ids: list[str] = []
 
-        for index, scenario in enumerate(scenario_list):
+        for index, scenario in enumerate(rotated_scenarios):
             will_judge = (
                 bool(scenario.soft_dimensions) and active_judge is not None and judged_count < max_judged_scenarios
             )
-            worst_case = _scenario_worst_case_seconds(
-                scenario, wake_aware_first_turn=first_turn_pending, will_judge=will_judge
-            )
+            worst_case = _scenario_worst_case_seconds(scenario, will_judge=will_judge)
             remaining = budget_seconds - (time.monotonic() - t0)
             if worst_case > remaining:
                 # Out of budget: record THIS and every remaining scenario as
@@ -315,11 +335,11 @@ def run_behavior_suite(
                 # forward, so nothing later can fit either under worst-case gating).
                 logger.warning(
                     "behavior: budget exhausted — skipping %d scenario(s) (remaining %.0fs < worst case %.0fs)",
-                    len(scenario_list) - index,
+                    len(rotated_scenarios) - index,
                     remaining,
                     worst_case,
                 )
-                for skipped in scenario_list[index:]:
+                for skipped in rotated_scenarios[index:]:
                     _record_scenario_skipped(run, skipped, "budget")
                 break
 
@@ -333,9 +353,9 @@ def run_behavior_suite(
             else:
                 active_transport.open_conversation(channel=scenario.channel)
 
-            scenario_run = _drive_scenario(scenario, active_transport, wake_aware_first_turn=first_turn_pending)
-            first_turn_pending = False
+            scenario_run = _drive_scenario(scenario, active_transport)
             drove_any = True
+            driven_ids.append(scenario.id)
             n_turns = len(scenario_run.turns)
 
             # Hard assertions — GATING. Their outcomes are also collected and handed
@@ -411,5 +431,15 @@ def run_behavior_suite(
                 "behavior budget too small to drive even one scenario — "
                 f"budget {budget_seconds:.0f}s cannot fit the first scenario's worst case"
             )
+
+        cursor_after = (cursor_before + len(driven_ids)) % len(scenario_list)
+        run.scenario_cursor = cursor_after
+        run.save(update_fields=["scenario_cursor"])
+        logger.info(
+            "behavior: rotation cursor before=%d after=%d ran=%s",
+            cursor_before,
+            cursor_after,
+            ",".join(driven_ids),
+        )
 
     return run

@@ -546,6 +546,10 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None, user_text: Redac
         # row predates the feature. Older iOS builds ignore the unknown keys.
         "user_redactions": msg.user_redactions,
         "reply_redactions": msg.reply_redactions,
+        # Content-free receipt for the inbound redaction attempt. Historical
+        # and on-device rows carry null / ""; no LLM-bound text is exposed.
+        "redaction_confirmed": msg.redaction_confirmed,
+        "redaction_reason": msg.redaction_reason,
         # Up to 3 tappable choice labels parsed from a trailing
         # [[quick-replies: A | B | C]] marker on the reply (iOS-only), REHYDRATED
         # to real values above. null when the turn carried no marker, or the
@@ -732,12 +736,21 @@ def enqueue_tenant_turn(
     # tenant.pii_entity_map (in-memory too), so resolving the redacted text's
     # placeholders against it now finds even freshly-minted names. The row was
     # created above with verbatim user_text; attach the metadata to it. Skip the
-    # write when nothing was obfuscated so the column stays null (pre-feature /
-    # no-PII rows are indistinguishable and both mean "show nothing").
+    # user_redactions write when nothing was obfuscated so that column stays
+    # null (pre-feature / no-PII rows are indistinguishable and both mean "show
+    # nothing"). The content-free outcome receipt is always persisted for a
+    # turn that reached this redaction seam.
     user_redactions = placeholder_redactions(redacted_text, getattr(tenant, "pii_entity_map", None))
+    redaction_update = {
+        "redaction_confirmed": redaction.confirmed,
+        "redaction_reason": redaction.reason,
+    }
     if user_redactions:
-        AppChatMessage.objects.filter(pk=turn.pk).update(user_redactions=user_redactions)
+        redaction_update["user_redactions"] = user_redactions
         turn.user_redactions = user_redactions
+    AppChatMessage.objects.filter(pk=turn.pk).update(**redaction_update)
+    turn.redaction_confirmed = redaction.confirmed
+    turn.redaction_reason = redaction.reason
     # A bare attachment with no caption still needs SOMETHING for the agent to
     # act on.
     if redacted_text:

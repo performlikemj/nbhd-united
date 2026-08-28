@@ -70,6 +70,49 @@ test("log_body_weight description carries scalar capture and conversion rules", 
   assert.match(tool.parameters.properties.date.description, /relative phrase like 'yesterday'\/'last Tuesday'/);
 });
 
+test("Fuel delete tools expose the preview confirmation contract", () => {
+  const tools = collectTools();
+  for (const name of [
+    "nbhd_fuel_delete_workout",
+    "nbhd_fuel_delete_body_weight",
+    "nbhd_fuel_delete_plan",
+  ]) {
+    assert.match(tools[name].description, /first call returns a preview \+ confirm_token/i);
+    assert.equal(tools[name].parameters.properties.confirm_token.type, "string");
+    assert.equal(tools[name].parameters.required.includes("confirm_token"), false);
+  }
+});
+
+test("Fuel delete tools forward confirm_token in DELETE bodies", async (t) => {
+  setRuntimeEnv(t);
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    calls.push({ url: String(url), options });
+    return response(200, "{}");
+  });
+  const tools = collectTools({ apiBaseUrl: "https://nbhd.example" });
+
+  await tools.nbhd_fuel_delete_workout.execute("workout-delete", {
+    workout_id: "workout-1",
+    confirm_token: "workout-token",
+  });
+  await tools.nbhd_fuel_delete_body_weight.execute("weight-delete", {
+    date: "2026-08-28",
+    confirm_token: "weight-token",
+  });
+  await tools.nbhd_fuel_delete_plan.execute("plan-delete", {
+    plan_id: "plan-1",
+    confirm_token: "plan-token",
+  });
+
+  assert.deepEqual(calls.map(({ options }) => JSON.parse(options.body)), [
+    { confirm_token: "workout-token" },
+    { confirm_token: "weight-token" },
+    { confirm_token: "plan-token" },
+  ]);
+  assert.match(calls[1].url, /body-weight\/\?date=2026-08-28$/);
+});
+
 test("update_profile description carries progressive onboarding completion and decline rules", () => {
   const description = collectTools().nbhd_fuel_update_profile.description;
   assert.match(description, /Save answers as they are learned during onboarding/);

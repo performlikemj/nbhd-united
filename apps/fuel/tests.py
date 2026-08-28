@@ -3084,8 +3084,17 @@ class RuntimeWorkoutPlanTests(TestCase):
             activity="Push",
         )
 
+        preview = self.client.delete(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
+            {},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(preview.status_code, 200)
         resp = self.client.delete(
             f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
+            {"confirm_token": preview.data["confirm_token"]},
+            format="json",
             **self.headers,
         )
         self.assertEqual(resp.status_code, 204)

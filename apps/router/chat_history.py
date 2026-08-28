@@ -21,6 +21,8 @@ Shape per message row (the contract iOS dedups/merges against):
       "has_document": bool,                # always present; true only on a user app row whose turn carried a PDF
       "user_redactions": [{"placeholder", "value"}],   # optional; user rows only
       "reply_redactions": [{"placeholder", "value"}],  # optional; assistant rows only
+      "redaction_confirmed": bool | null,  # app user rows only; null on historical rows
+      "redaction_reason": str,             # app user rows only; "" on historical rows
       "quick_replies": ["Label A", "Label B"],          # optional; assistant rows only, iOS-only
       "journal_link": {"kind", "slug", "title"},         # optional; assistant rows only (app + cron), iOS-only
     }
@@ -92,6 +94,7 @@ MAX_PAGE_SIZE = 100
 
 # "From the beginning" floor — older than any real row.
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_UNSET = object()
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +171,8 @@ def _row(
     has_document=False,
     user_redactions=None,
     reply_redactions=None,
+    redaction_confirmed=_UNSET,
+    redaction_reason=_UNSET,
     quick_replies=None,
     journal_link=None,
 ):
@@ -200,6 +205,13 @@ def _row(
         msg["user_redactions"] = user_redactions
     if reply_redactions:
         msg["reply_redactions"] = reply_redactions
+    # The durable inbound receipt belongs to the app-originated USER row only.
+    # Unlike the optional redaction mappings, preserve null / "" for historical
+    # rows so clients can distinguish "no receipt" from a confirmed outcome.
+    if redaction_confirmed is not _UNSET:
+        msg["redaction_confirmed"] = redaction_confirmed
+    if redaction_reason is not _UNSET:
+        msg["redaction_reason"] = redaction_reason
     # Quick-reply button labels (iOS-only; assistant rows only). Omitted
     # entirely when empty, same convention as the redaction keys above —
     # older iOS builds ignore unknown keys anyway.
@@ -248,6 +260,8 @@ def _app_rows(m, main_thread_id, entity_map=None, *, user_text=None):
                 has_image=has_image,
                 has_document=has_document,
                 user_redactions=m.user_redactions,
+                redaction_confirmed=m.redaction_confirmed,
+                redaction_reason=m.redaction_reason,
             )
         )
     # Also emit a bare marker-only assistant row in the (expected rare) case the

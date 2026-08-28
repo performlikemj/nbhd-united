@@ -14,6 +14,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.llm_contracts import WEEKDAY_INDEX, WEEKDAY_NAMES, resolve_relative_date, today_in_tenant_tz
+from apps.integrations.confirmation_tokens import (
+    CONFIRM_TOKEN_MAX_AGE_SECONDS,
+    confirm_token_failure,
+    confirmation_digest,
+    issue_confirm_token,
+)
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
 from apps.pii.egress import KnownValueResponseGuardMixin
 from apps.router.document_write_guard import assert_write_allowed_for_document_turn, record_runtime_write_activity
@@ -36,6 +42,59 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+_FUEL_DELETE_CONFIRM_GUIDANCE = (
+    "Show this exact deletion preview to the user and wait for an explicit yes; then call again with "
+    "confirm_token unchanged."
+)
+_WORKOUT_DELETE_CONFIRM_TOKEN_SALT = "apps.fuel.workout.delete-confirm.v1"
+_BODY_WEIGHT_DELETE_CONFIRM_TOKEN_SALT = "apps.fuel.body-weight.delete-confirm.v1"
+_PLAN_DELETE_CONFIRM_TOKEN_SALT = "apps.fuel.plan.delete-confirm.v1"
+
+
+def _fuel_delete_confirmation_context(*, tenant: Tenant, action: str, parameters: dict) -> dict:
+    return {
+        "tenant_id": str(tenant.id),
+        "action": action,
+        "parameters_hash": confirmation_digest(parameters),
+    }
+
+
+def _fuel_delete_confirmation_response(
+    *,
+    context: dict,
+    preview: dict,
+    salt: str,
+    reason: str,
+) -> Response:
+    payload = {
+        "status": "confirmation_required",
+        "preview": preview,
+        "confirm_token": issue_confirm_token(context, salt=salt),
+        "confirm_token_expires_in_seconds": CONFIRM_TOKEN_MAX_AGE_SECONDS,
+        "guidance": _FUEL_DELETE_CONFIRM_GUIDANCE,
+    }
+    response_status = status.HTTP_200_OK
+    if reason != "missing":
+        payload.update({"error": "confirmation_required", "reason": reason})
+        response_status = status.HTTP_400_BAD_REQUEST
+    return Response(payload, status=response_status)
+
+
+def _workout_delete_preview(workout: Workout) -> dict:
+    detail = workout.detail_json if isinstance(workout.detail_json, dict) else {}
+    exercises = detail.get("exercises")
+    if not isinstance(exercises, list):
+        exercises = detail.get("skills")
+    if not isinstance(exercises, list):
+        exercises = []
+    return {
+        "id": str(workout.id),
+        "date": str(workout.date),
+        "activity": workout.activity,
+        "status": workout.status,
+        "exercises": exercises,
+    }
 
 
 class _FuelResponseGuard(KnownValueResponseGuardMixin):
@@ -851,11 +910,37 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
         tenant, workout, err = self._get_workout(request, tenant_id, workout_id)
         if err:
             return err
-        record_runtime_write_activity(tenant)
         lock_resp = _edit_locked_response(workout)
         if lock_resp is not None:
             logger.info("runtime.delete.edit_locked workout=%s", workout_id)
             return lock_resp
+        preview = _workout_delete_preview(workout)
+        context = _fuel_delete_confirmation_context(
+            tenant=tenant,
+            action="fuel_workout_delete",
+            parameters={
+                "workout_id": str(workout.id),
+                "version": workout.updated_at.isoformat(),
+                "preview": preview,
+            },
+        )
+        confirm_token = str(request.data.get("confirm_token") or "").strip()
+        confirmation_failure = "missing"
+        if confirm_token:
+            confirmation_failure = confirm_token_failure(
+                confirm_token,
+                context,
+                salt=_WORKOUT_DELETE_CONFIRM_TOKEN_SALT,
+            )
+        if confirmation_failure is not None:
+            return _fuel_delete_confirmation_response(
+                context=context,
+                preview=preview,
+                salt=_WORKOUT_DELETE_CONFIRM_TOKEN_SALT,
+                reason=confirmation_failure,
+            )
+
+        record_runtime_write_activity(tenant)
         workout_info = {"id": str(workout.id), "activity": workout.activity, "date": str(workout.date)}
         workout.delete()
         return Response({"deleted": True, **workout_info})
@@ -1537,7 +1622,6 @@ class RuntimeBodyWeightView(APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
-        record_runtime_write_activity(tenant)
 
         weight_date = request.query_params.get("date") or request.data.get("date")
         if not weight_date:
@@ -1554,6 +1638,34 @@ class RuntimeBodyWeightView(APIView):
                 {"error": "no_entry_for_date", "date": str(weight_date)},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        preview = {
+            "id": str(entry.id),
+            "date": str(entry.date),
+            "weight_kg": str(entry.weight_kg),
+        }
+        context = _fuel_delete_confirmation_context(
+            tenant=tenant,
+            action="fuel_body_weight_delete",
+            parameters=preview,
+        )
+        confirm_token = str(request.data.get("confirm_token") or "").strip()
+        confirmation_failure = "missing"
+        if confirm_token:
+            confirmation_failure = confirm_token_failure(
+                confirm_token,
+                context,
+                salt=_BODY_WEIGHT_DELETE_CONFIRM_TOKEN_SALT,
+            )
+        if confirmation_failure is not None:
+            return _fuel_delete_confirmation_response(
+                context=context,
+                preview=preview,
+                salt=_BODY_WEIGHT_DELETE_CONFIRM_TOKEN_SALT,
+                reason=confirmation_failure,
+            )
+
+        record_runtime_write_activity(tenant)
         entry.delete()
         return Response({"deleted": True, "date": str(weight_date)}, status=status.HTTP_200_OK)
 
@@ -3314,11 +3426,46 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
-        record_runtime_write_activity(tenant)
 
         plan = self._get_plan(tenant, plan_id)
         if not plan:
             return Response({"error": "plan_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        planned_workouts = Workout.objects.filter(plan=plan, status=WorkoutStatus.PLANNED)
+        preserved_workouts = Workout.objects.filter(plan=plan).exclude(status=WorkoutStatus.PLANNED)
+        preview = {
+            "id": str(plan.id),
+            "name": plan.name,
+            "future_workout_count": planned_workouts.count(),
+            "completed_workout_unlink_count": preserved_workouts.filter(status=WorkoutStatus.DONE).count(),
+            "preserved_workout_unlink_count": preserved_workouts.count(),
+        }
+        context = _fuel_delete_confirmation_context(
+            tenant=tenant,
+            action="fuel_plan_delete",
+            parameters={
+                "plan_id": str(plan.id),
+                "version": plan.updated_at.isoformat(),
+                "preview": preview,
+            },
+        )
+        confirm_token = str(request.data.get("confirm_token") or "").strip()
+        confirmation_failure = "missing"
+        if confirm_token:
+            confirmation_failure = confirm_token_failure(
+                confirm_token,
+                context,
+                salt=_PLAN_DELETE_CONFIRM_TOKEN_SALT,
+            )
+        if confirmation_failure is not None:
+            return _fuel_delete_confirmation_response(
+                context=context,
+                preview=preview,
+                salt=_PLAN_DELETE_CONFIRM_TOKEN_SALT,
+                reason=confirmation_failure,
+            )
+
+        record_runtime_write_activity(tenant)
 
         # Remove fuel cron before deleting plan (best-effort)
         _manage_fuel_cron(tenant, plan, action="remove")
