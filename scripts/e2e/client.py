@@ -25,6 +25,7 @@ PRIMARY_BASE_URL = "https://api.hoodunited.org"
 LEGACY_BASE_URL = "https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
 ALLOWED_PRODUCTION_BASE_URLS = frozenset({PRIMARY_BASE_URL, LEGACY_BASE_URL})
 ALLOWED_TENANTS_PATH = Path(__file__).with_name("allowed-tenants.json")
+LOCAL_ALLOWED_TENANTS_PATH = Path(__file__).with_name("allowed-tenants.local.json")
 
 ACCESS_LIFETIME_MINUTES = 15
 REFRESH_LIFETIME_DAYS = 60
@@ -228,8 +229,10 @@ def _canonical_uuid4(value: Any, *, field: str) -> str:
     return value
 
 
-def load_allowlist(path: Path = ALLOWED_TENANTS_PATH) -> Allowlist:
+def load_allowlist(path: Path | None = None) -> Allowlist:
     """Read an owned, non-writable regular file without following symlinks."""
+    if path is None:
+        path = LOCAL_ALLOWED_TENANTS_PATH if os.path.lexists(LOCAL_ALLOWED_TENANTS_PATH) else ALLOWED_TENANTS_PATH
     if path.is_symlink():
         raise TenantGateError("allowed tenant configuration must not be a symlink")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -289,7 +292,7 @@ class NBHDClient:
         *,
         base_url: str = PRIMARY_BASE_URL,
         session: requests.Session | None = None,
-        allowed_tenants_path: Path = ALLOWED_TENANTS_PATH,
+        allowed_tenants_path: Path | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
