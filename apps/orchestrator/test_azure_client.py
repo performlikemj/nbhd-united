@@ -459,6 +459,70 @@ class UpdateContainerImageTest(SimpleTestCase):
         )
         poller.result.assert_called_once()
 
+    @patch("time.time_ns", side_effect=[1, 2])
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_same_tag_updates_mint_distinct_valid_revision_suffixes(
+        self,
+        mock_get_container_client,
+        _mock_is_mock,
+        _mock_time_ns,
+    ):
+        mock_client = MagicMock()
+        mock_get_container_client.return_value = mock_client
+
+        container = MagicMock(name="openclaw")
+        container.name = "openclaw"
+        app = MagicMock()
+        app.template.containers = [container]
+        mock_client.container_apps.get.return_value = app
+
+        revision_suffixes = []
+
+        def capture_suffix(_resource_group, _container_name, updated_app):
+            revision_suffixes.append(updated_app.template.revision_suffix)
+            return MagicMock()
+
+        mock_client.container_apps.begin_create_or_update.side_effect = capture_suffix
+        image = "nbhdunited.azurecr.io/nbhd-openclaw:abc123"
+
+        update_container_image("oc-tenant", image)
+        update_container_image("oc-tenant", image)
+
+        self.assertEqual(len(set(revision_suffixes)), 2)
+        tag_parts = {suffix.rsplit("-", 1)[0] for suffix in revision_suffixes}
+        self.assertEqual(len(tag_parts), 1)
+        for suffix in revision_suffixes:
+            self.assertRegex(suffix, r"^[a-z0-9]+-[a-z0-9]{4}$")
+
+    @patch("time.time_ns", return_value=1)
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_revision_suffix_is_valid_for_long_tag(
+        self,
+        mock_get_container_client,
+        _mock_is_mock,
+        _mock_time_ns,
+    ):
+        mock_client = MagicMock()
+        mock_get_container_client.return_value = mock_client
+
+        container = MagicMock(name="openclaw")
+        container.name = "openclaw"
+        app = MagicMock()
+        app.template.containers = [container]
+        mock_client.container_apps.get.return_value = app
+
+        long_tag = "Release_2026.08.28-" + "A" * 120
+        update_container_image(
+            "oc-tenant",
+            f"nbhdunited.azurecr.io/nbhd-openclaw:{long_tag}",
+        )
+
+        suffix = app.template.revision_suffix
+        self.assertLessEqual(len(suffix), 64)
+        self.assertRegex(suffix, r"^[a-z0-9]+-[a-z0-9]{4}$")
+
 
 @override_settings(
     AZURE_LOCATION="westus2",

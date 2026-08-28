@@ -1844,6 +1844,23 @@ def ensure_plugin_runtime_deps_mount(container_name: str) -> bool:
     return True
 
 
+def _image_revision_tag_part(image: str) -> str:
+    """Return the stable, compact revision-suffix part for an image tag."""
+    import hashlib
+
+    tag = image.rsplit(":", 1)[-1] if ":" in image else "latest"
+    return f"u{hashlib.sha256(tag.encode()).hexdigest()[:6]}"
+
+
+def _new_image_revision_suffix(image: str) -> str:
+    """Return a compact image revision suffix with a per-attempt nonce."""
+    import hashlib
+    import time
+
+    nonce = hashlib.sha256(str(time.time_ns()).encode()).hexdigest()[:4]
+    return f"{_image_revision_tag_part(image)}-{nonce}"
+
+
 def update_container_image(container_name: str, image: str) -> None:
     """Update the container image of an existing Container App.
 
@@ -1851,8 +1868,6 @@ def update_container_image(container_name: str, image: str) -> None:
     Also ensures the EmptyDir mounts and gateway readiness probe are present
     so fleet image bumps roll out the template fixes in the same revision.
     """
-    import hashlib
-
     if _is_mock():
         logger.info("[MOCK] Updated image to %s on %s", image, container_name)
         return
@@ -1872,19 +1887,19 @@ def update_container_image(container_name: str, image: str) -> None:
     _ensure_index_cache_in_template(app)
     _ensure_gateway_readiness_probe_in_template(app)
 
-    # Generate a unique revision suffix from the image tag to avoid
-    # "revision with suffix already exists" errors.
-    # Azure limits suffix to 64 chars and requires lowercase alphanumeric + hyphens.
-    tag = image.rsplit(":", 1)[-1] if ":" in image else "latest"
-    suffix = hashlib.sha256(tag.encode()).hexdigest()[:6]
-    app.template.revision_suffix = f"u{suffix}"
+    # Keep the stable tag-derived part for image comparisons, but mint a
+    # per-attempt nonce so applying the same tag still creates a new revision.
+    # The 12-character result stays well below Azure's 64-character limit and
+    # contains only lowercase alphanumerics and a hyphen.
+    suffix = _new_image_revision_suffix(image)
+    app.template.revision_suffix = suffix
 
     client.container_apps.begin_create_or_update(
         settings.AZURE_RESOURCE_GROUP,
         container_name,
         app,
     ).result()
-    logger.info("Updated image to %s on %s (revision suffix: u%s)", image, container_name, suffix)
+    logger.info("Updated image to %s on %s (revision suffix: %s)", image, container_name, suffix)
 
 
 def scale_container_app(container_name: str, *, min_replicas: int, max_replicas: int) -> None:
