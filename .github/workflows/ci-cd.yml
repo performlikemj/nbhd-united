@@ -426,7 +426,7 @@ jobs:
       SENTRY_ORG: by-way-of-mj
       SENTRY_PROJECT: python-django
       PII_DETECTOR_TRANSPORT: shared
-      PII_PROVISIONAL_TENANT_IDS: "148ccf1c-ef13-47f8-ada1-a98fa90e14a0,1c77c8c1-f721-4f5b-9b98-403ac25b070c"
+      PII_PROVISIONAL_TENANT_IDS: ${{ vars.PII_PROVISIONAL_TENANT_IDS }}
     steps:
       - uses: actions/checkout@v4
         with:

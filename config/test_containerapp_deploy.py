@@ -197,10 +197,7 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
         self.assertIn('--yaml "$DEPLOY_SPEC"', workflow)
         self.assertIn("PII_DETECTOR_ENGINE: deberta", workflow)
         self.assertIn("PII_DETECTOR_TRANSPORT: shared", workflow)
-        self.assertIn(
-            'PII_PROVISIONAL_TENANT_IDS: "148ccf1c-ef13-47f8-ada1-a98fa90e14a0,1c77c8c1-f721-4f5b-9b98-403ac25b070c"',
-            workflow,
-        )
+        self.assertIn("PII_PROVISIONAL_TENANT_IDS: ${{ vars.PII_PROVISIONAL_TENANT_IDS }}", workflow)
         self.assertIn("PII_MODEL_TAG=deberta-only-a038061af92047b0", workflow)
         self.assertIn("--build-arg INCLUDE_LIQUID=false", workflow)
         self.assertIn("shelved Liquid bundle present in serving image", workflow)
