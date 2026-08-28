@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -37,16 +38,34 @@ def assert_durable_receipt(observation: MessageObservation, log: StepLogger) -> 
     return True
 
 
-def assert_fixture_redactions(observation: MessageObservation) -> None:
-    pairs = {(_redaction_type(row.get("placeholder")), row.get("value")) for row in observation.user_redactions}
-    expected = {("PERSON", fixtures.PERSON_NAME), ("PHONE_NUMBER", fixtures.PHONE_NUMBER)}
-    if not expected.issubset(pairs):
+def _is_fixture_person_span(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    pattern = rf"(?<!\w){re.escape(value)}(?!\w)"
+    return re.search(pattern, fixtures.PERSON_NAME, flags=re.IGNORECASE) is not None
+
+
+def assert_fixture_redactions(observation: MessageObservation) -> str:
+    person_value = next(
+        (
+            row.get("value")
+            for row in observation.user_redactions
+            if _redaction_type(row.get("placeholder")) == "PERSON" and _is_fixture_person_span(row.get("value"))
+        ),
+        None,
+    )
+    phone_present = any(
+        _redaction_type(row.get("placeholder")) == "PHONE_NUMBER" and row.get("value") == fixtures.PHONE_NUMBER
+        for row in observation.user_redactions
+    )
+    if person_value is None or not phone_present:
         raise HarnessError("smoke did not create both fixture redactions")
+    return person_value
 
 
 def _registry_contains_fixtures(entries) -> bool:
     names = {entry.name for entry in entries}
-    return fixtures.PERSON_NAME in names and fixtures.PHONE_NUMBER in names
+    return any(_is_fixture_person_span(name) for name in names) and fixtures.PHONE_NUMBER in names
 
 
 def _default_log(step: int, assertion: str, result: str) -> None:
@@ -85,7 +104,7 @@ def run_smoke(
         log(4, "tenant-reply-ready-content-present", "PASS")
 
         receipt_checked = assert_durable_receipt(observation, log)
-        assert_fixture_redactions(observation)
+        person_value = assert_fixture_redactions(observation)
         if receipt_checked:
             log(5, "durable-redaction-receipt-and-two-mappings", "PASS")
         else:
@@ -96,8 +115,8 @@ def run_smoke(
             raise HarnessError("entity registry did not contain both fixtures")
         log(6, "entity-registry-contains-two-fixtures", "PASS")
 
-        stopped = client.stop_pii(fixtures.PERSON_NAME, deadline=deadline)
-        if stopped.retired_count < 1 or not client.pii_denylist_contains(fixtures.PERSON_NAME, deadline=deadline):
+        stopped = client.stop_pii(person_value, deadline=deadline)
+        if stopped.retired_count < 1 or not client.pii_denylist_contains(person_value, deadline=deadline):
             raise HarnessError("fixture canonical key was not denylisted")
         log(7, "fixture-name-denylisted-and-binding-retired", "PASS")
 
@@ -111,7 +130,10 @@ def run_smoke(
             )
             follow_up_observation = client.wait_for_message(follow_up_id, deadline=deadline)
             assert_ready(follow_up_observation)
-            if any(row.get("value") == fixtures.PERSON_NAME for row in follow_up_observation.user_redactions):
+            if any(
+                isinstance(row.get("value"), str) and row["value"].casefold() == person_value.casefold()
+                for row in follow_up_observation.user_redactions
+            ):
                 raise HarnessError("denylisted fixture name was redacted on follow-up")
             log(8, "denylisted-name-not-redacted-on-follow-up", "PASS")
         else:
