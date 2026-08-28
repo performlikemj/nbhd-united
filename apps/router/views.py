@@ -133,18 +133,37 @@ def _capture_telegram_webhook_transcript(
         )
 
 
-def _redact_telegram_webhook_ingress(tenant: Tenant, update_id: object, raw_user_text: str):
-    """Redact and reconcile one raw webhook event before downstream work."""
+def _telegram_webhook_owner_text(update: dict) -> str | None:
+    """Return only typed text or an owner caption from a webhook update."""
+    message = update.get("message") or update.get("edited_message") or {}
+    if message.get("forward_from") or message.get("forward_from_chat"):
+        return None
+    return message.get("text") or message.get("caption") or None
+
+
+def _redact_telegram_webhook_ingress(
+    tenant: Tenant,
+    update_id: object,
+    message_text: str,
+    *,
+    owner_text: str | None,
+):
+    """Redact one webhook payload and reconcile only eligible owner ingress."""
     from apps.pii.provisional import PiiIngress, record_provisional_sightings
     from apps.pii.redactor import redact_user_message_checked
 
-    ingress = PiiIngress(
-        channel="telegram-webhook",
-        provider_event_id=str(update_id) if update_id is not None else None,
-        occurred_at=timezone.now(),
+    ingress = (
+        PiiIngress(
+            channel="telegram-webhook",
+            provider_event_id=str(update_id) if update_id is not None else None,
+            occurred_at=timezone.now(),
+        )
+        if owner_text is not None
+        else None
     )
-    outcome = redact_user_message_checked(raw_user_text, tenant, ingress=ingress)
-    record_provisional_sightings(tenant, raw_user_text, ingress)
+    outcome = redact_user_message_checked(message_text, tenant, ingress=ingress)
+    if ingress is not None:
+        record_provisional_sightings(tenant, owner_text, ingress)
     return outcome, ingress
 
 
@@ -448,11 +467,12 @@ def telegram_webhook(request):
         _hibernate_for_quota(tenant)
         return JsonResponse(_build_budget_exhausted_message(chat_id, tenant, budget_reason))
 
-    # Extract the raw owner-authored segment before the hibernation return. A
-    # Telegram caption is just as much owner ingress as typed text; media and
-    # provider metadata remain outside this value and receive no provenance.
+    # Separate the payload text from its optional owner-authored segment before
+    # the hibernation return. Forwarded text/captions are still redacted and
+    # delivered, but never receive owner ingress provenance.
     msg = update.get("message") or update.get("edited_message") or {}
-    raw_user_text = msg.get("text") or msg.get("caption") or ""
+    message_text = msg.get("text") or msg.get("caption") or ""
+    owner_text = _telegram_webhook_owner_text(update)
     from apps.pii.provisional import PiiIngress
 
     hibernation_ingress = (
@@ -461,7 +481,7 @@ def telegram_webhook(request):
             provider_event_id=str(update_id) if update_id is not None else None,
             occurred_at=timezone.now(),
         )
-        if raw_user_text
+        if owner_text is not None
         else None
     )
 
@@ -477,7 +497,7 @@ def telegram_webhook(request):
         tenant,
         "telegram",
         update,
-        raw_user_text,
+        message_text,
         pii_ingress=hibernation_ingress,
     )
     if wake_result == ACK_FRESH:
@@ -524,7 +544,12 @@ def telegram_webhook(request):
 
         # Capture the user's original text BEFORE the in-place decoration below
         # so the conversation digest stores real content, not agent markers.
-        user_outcome, ingress = _redact_telegram_webhook_ingress(tenant, update_id, raw_user_text)
+        user_outcome, ingress = _redact_telegram_webhook_ingress(
+            tenant,
+            update_id,
+            message_text,
+            owner_text=owner_text,
+        )
         capture_source_payload["redaction"] = {
             "confirmed": user_outcome.confirmed,
             "reason": user_outcome.reason,
@@ -567,7 +592,7 @@ def telegram_webhook(request):
             tenant,
             update_id=update_id,
             user_outcome=user_outcome,
-            occurred_at=ingress.occurred_at,
+            occurred_at=ingress.occurred_at if ingress is not None else timezone.now(),
             result=result,
         )
         # Capture the turn for the USER.md "Conversation so far" digest so
@@ -581,7 +606,7 @@ def telegram_webhook(request):
                 tenant=tenant,
                 channel="telegram",
                 channel_user_id=str(chat_id),
-                user_text=raw_user_text,
+                user_text=message_text,
                 reply_text=clean_reply_for_capture(tenant, _extract_ai_response(result)),
                 source_payload=capture_source_payload,
             )

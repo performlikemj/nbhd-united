@@ -1830,6 +1830,11 @@ def _redact_user_message(
                 replacements.append((start, end, expired_placeholder))
                 continue
 
+            # Reuse can be denied by a higher-precedence sibling (for example,
+            # an owner-retired binding without a denylist entry). In that case
+            # a fresh mint intentionally preserves pre-lane production
+            # semantics. Denylisted values never reach this branch because
+            # _filter_results drops their detections before locked arbitration.
             count = locked_counters.get(etype, 0) + 1
             locked_counters[etype] = count
             placeholder = f"[{etype}_{count}]"

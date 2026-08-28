@@ -122,6 +122,50 @@ class ProvisionalMintTests(TestCase):
         self.tenant.refresh_from_db()
         self.assertNotIn("provisional", self.tenant.pii_entity_map["[PERSON_1]"])
 
+    def test_owner_retired_sibling_denies_reuse_but_allows_fresh_mint(self):
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": {
+                "name": "Fakenamealpha",
+                "provisional": True,
+                "retired": True,
+                "retired_reason": "provisional-expired",
+            },
+            "[PERSON_2]": {
+                "name": "Fakenamealpha",
+                "retired": True,
+                "retired_reason": "owner",
+            },
+        }
+        self.tenant.pii_type_counters = {"PERSON": 2}
+        self.tenant.save(update_fields=["pii_entity_map", "pii_type_counters"])
+        detected = [DetectedEntity("PERSON", 0, 13, 0.99)]
+
+        with (
+            override_settings(PII_PROVISIONAL_TENANT_IDS=frozenset({str(self.tenant.pk)})),
+            patch("apps.pii.redactor._detect_pii", return_value=detected),
+        ):
+            redacted = redact_user_message("Fakenamealpha", self.tenant, ingress=self.ingress)
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(redacted, "[PERSON_3]")
+        self.assertEqual(set(self.tenant.pii_entity_map), {"[PERSON_1]", "[PERSON_2]", "[PERSON_3]"})
+        self.assertTrue(self.tenant.pii_entity_map["[PERSON_3]"]["provisional"])
+
+    def test_denylisted_detection_never_reaches_minting(self):
+        self.tenant.pii_denylist = {"fakenamealpha": {"reason": "fixture"}}
+        self.tenant.save(update_fields=["pii_denylist"])
+        detected = [DetectedEntity("PERSON", 0, 13, 0.99)]
+
+        with (
+            override_settings(PII_PROVISIONAL_TENANT_IDS=frozenset({str(self.tenant.pk)})),
+            patch("apps.pii.redactor._detect_pii", return_value=detected),
+        ):
+            redacted = redact_user_message("Fakenamealpha", self.tenant, ingress=self.ingress)
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(redacted, "Fakenamealpha")
+        self.assertEqual(self.tenant.pii_entity_map, {})
+
     @override_settings(PII_PROVISIONAL_TENANT_IDS=frozenset())
     def test_expired_binding_reactivates_only_in_raw_sighting_recorder(self):
         self.tenant.pii_entity_map = {
