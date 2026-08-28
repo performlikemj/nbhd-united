@@ -1594,6 +1594,20 @@ def _redact_user_message(
     # retire backfill would be cosmetic: Step 1 never consults ``_filter_results``,
     # so a retired "calendar" binding would keep masking the word forever.
     inverted_ci = _inverted_names_ci(existing_map, include_retired=False)
+    expired_ingress_ci: dict[str, tuple[str, str]] = {}
+    if ingress is not None:
+        from apps.pii.provisional import expired_placeholder_for_name
+
+        for raw in existing_map.values():
+            if not isinstance(raw, dict) or raw.get("retired_reason") != "provisional-expired":
+                continue
+            original = _entry_name(raw)
+            ci_key = _canonical_key(original)
+            if not ci_key or ci_key in expired_ingress_ci:
+                continue
+            placeholder = expired_placeholder_for_name(existing_map, denylist, original)
+            if placeholder:
+                expired_ingress_ci[ci_key] = (original.strip(), placeholder)
     out = text
     # Longest names first so "Jay Haughton" matches before "Jay".
     for original, placeholder in sorted(
@@ -1630,6 +1644,15 @@ def _redact_user_message(
         # contains a capital letter or ``_`` can never rewrite a placeholder's
         # interior (the Bug A nested-explosion class).
         out = _sub_outside_placeholders(out, pattern, placeholder)
+
+    # An eligible provisional-expired tombstone may mask THIS ingress with its
+    # historical placeholder, but redaction does not reactivate it. The raw
+    # post-redaction recorder performs the locked lifecycle transition/count.
+    # This pass also protects the returning event when neural detection misses.
+    for original, placeholder in sorted(expired_ingress_ci.values(), key=lambda x: -len(x[0])):
+        if not original or _is_degenerate_span(original):
+            continue
+        out = _sub_outside_placeholders(out, known_name_pattern(original), placeholder)
 
     # Step 2: Run detection on the (partially redacted) text for NEW entities.
     # Per-type counters for newly-minted placeholders are derived later from a
@@ -1735,10 +1758,11 @@ def _redact_user_message(
             type(tenant)
             .objects.select_for_update()
             .filter(pk=tenant.pk)
-            .values("pii_entity_map", "pii_type_counters")
+            .values("pii_entity_map", "pii_denylist", "pii_type_counters")
             .first()
         ) or {}
         locked_map = locked_row.get("pii_entity_map") or {}
+        locked_denylist = locked_row.get("pii_denylist") or {}
         stored_counters = locked_row.get("pii_type_counters") or {}
 
         # Re-derive per-type counters from the LOCKED snapshot, not the stale one
@@ -1751,9 +1775,9 @@ def _redact_user_message(
 
         # Case-insensitive view of the locked map so a name already present
         # collapses onto its existing placeholder instead of minting a dup.
-        # Retired bindings are excluded: a tombstone is not a reuse target, so a
-        # name that genuinely comes back mints a FRESH placeholder rather than
-        # resurrecting the retired one (directive A9).
+        # Ordinary retired bindings are excluded. An eligible provisional-expired
+        # tombstone is handled separately below so ingress can borrow its old
+        # placeholder without mutating lifecycle state or minting a duplicate.
         locked_inverted_ci = _inverted_names_ci(locked_map, include_retired=False)
         merged = dict(locked_map)
         for start, end, etype, original, score in to_mint:
@@ -1788,6 +1812,22 @@ def _redact_user_message(
                     len(original),
                     "same_message" if placeholder in new_map_entries else "concurrent",
                 )
+                continue
+
+            # The tenant instance may have been stale when Step 1 ran. Recheck
+            # the complete locked map before minting so concurrent returns of an
+            # expired value both borrow the historical placeholder rather than
+            # creating duplicate bindings. Lifecycle mutation remains the raw
+            # sighting recorder's responsibility.
+            from apps.pii.provisional import expired_placeholder_for_name
+
+            expired_placeholder = expired_placeholder_for_name(
+                locked_map,
+                locked_denylist,
+                original,
+            )
+            if expired_placeholder:
+                replacements.append((start, end, expired_placeholder))
                 continue
 
             count = locked_counters.get(etype, 0) + 1

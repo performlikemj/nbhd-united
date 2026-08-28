@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from threading import Barrier
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.db import close_old_connections
+from django.test import TestCase, TransactionTestCase, override_settings
 
 from apps.pii.config import resolve_positive_int
 from apps.pii.provisional import PiiIngress, record_provisional_sightings, transition_binding
@@ -135,7 +138,7 @@ class ProvisionalMintTests(TestCase):
         with patch("apps.pii.redactor._detect_pii", return_value=[]):
             redacted = redact_user_message("Fakenamealpha", self.tenant, ingress=self.ingress)
         self.tenant.refresh_from_db()
-        self.assertEqual(redacted, "Fakenamealpha")
+        self.assertEqual(redacted, "[PERSON_1]")
         self.assertTrue(self.tenant.pii_entity_map["[PERSON_1]"]["retired"])
         record_provisional_sightings(self.tenant, "Fakenamealpha", self.ingress)
         self.tenant.refresh_from_db()
@@ -159,6 +162,54 @@ class ProvisionalMintTests(TestCase):
         self.assertEqual(record_provisional_sightings(self.tenant, "Ordinary owner text", self.ingress), [])
         self.tenant.refresh_from_db()
         self.assertTrue(self.tenant.pii_entity_map["[PERSON_1]"]["retired"])
+
+
+class ProvisionalExpiredMintRaceTests(TransactionTestCase):
+    reset_sequences = True
+
+    def test_concurrent_stale_redactors_reuse_expired_placeholder_without_duplicate(self):
+        tenant = _tenant(
+            entry={
+                "name": "Fakenamealpha",
+                "provisional": True,
+                "last_seen_at": "2026-08-20T00:00:00+00:00",
+                "retired": True,
+                "retired_at": "2026-08-24T00:00:00+00:00",
+                "retired_reason": "provisional-expired",
+            }
+        )
+        stale_tenants = [Tenant.objects.select_related("user").get(pk=tenant.pk) for _ in range(2)]
+        for stale in stale_tenants:
+            stale.pii_entity_map = {}
+
+        barrier = Barrier(2)
+
+        def detect(*_args, **_kwargs):
+            barrier.wait(timeout=5)
+            return [DetectedEntity("PERSON", 0, 13, 0.99)]
+
+        def redact(stale: Tenant, event_id: str) -> str:
+            close_old_connections()
+            try:
+                ingress = PiiIngress(
+                    channel="fixture",
+                    provider_event_id=event_id,
+                    occurred_at=datetime(2026, 8, 28, 1, 2, 3, tzinfo=UTC),
+                )
+                return redact_user_message("Fakenamealpha", stale, ingress=ingress)
+            finally:
+                close_old_connections()
+
+        with (
+            patch("apps.pii.redactor._detect_pii", side_effect=detect),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            outputs = list(executor.map(redact, stale_tenants, ("event-a", "event-b")))
+
+        self.assertEqual(outputs, ["[PERSON_1]", "[PERSON_1]"])
+        tenant.refresh_from_db()
+        self.assertEqual(set(tenant.pii_entity_map), {"[PERSON_1]"})
+        self.assertTrue(tenant.pii_entity_map["[PERSON_1]"]["retired"])
 
 
 class SightingRecorderTests(TestCase):

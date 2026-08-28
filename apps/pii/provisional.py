@@ -64,6 +64,54 @@ def _event_digest(tenant, ingress: PiiIngress) -> str | None:
     return sha256(material).hexdigest()[:32]
 
 
+def expired_placeholder_for_name(
+    entity_map: dict[str, Any],
+    denylist: dict[str, Any] | None,
+    name: str,
+) -> str | None:
+    """Select the one expired placeholder an ingress redactor may borrow.
+
+    Borrowing is masking-only: the caller must not mutate lifecycle state. The
+    post-redaction sighting recorder owns reactivation/counting under the tenant
+    lock. Selection mirrors that recorder's precedence against the COMPLETE map,
+    so an expired tombstone never wins over a denylist/owner decision, global
+    junk rule, promoted/kept binding, or any active sibling.
+    """
+    key = canonical_key(name)
+    if not key or is_denied(denylist, name):
+        return None
+
+    siblings = [(placeholder, raw) for placeholder, raw in entity_map.items() if canonical_key(get_name(raw)) == key]
+    if not siblings:
+        return None
+
+    for _placeholder, raw in siblings:
+        if not is_retired(raw):
+            return None
+        if isinstance(raw, dict) and (
+            raw.get("retired_reason") == "owner"
+            or raw.get("promoted_at")
+            or raw.get("promoted_by")
+            or raw.get("reviewed_at")
+        ):
+            return None
+
+    expired = [
+        (placeholder, raw)
+        for placeholder, raw in siblings
+        if isinstance(raw, dict)
+        and raw.get("retired_reason") == "provisional-expired"
+        and not _is_globally_blocked(placeholder, get_name(raw))
+    ]
+    if not expired:
+        return None
+    placeholder, _raw = max(
+        expired,
+        key=lambda item: (item[1].get("last_seen_at") or "", item[0]),
+    )
+    return placeholder
+
+
 def record_provisional_sightings(tenant, raw_owner_text: str, ingress: PiiIngress) -> list[TransitionResult]:
     """Record one raw provider event using complete-map selection under lock."""
     digest = _event_digest(tenant, ingress)
@@ -96,17 +144,12 @@ def record_provisional_sightings(tenant, raw_owner_text: str, ingress: PiiIngres
                     if isinstance(raw, dict) and raw.get("provisional")
                 )
                 continue
-            expired = [
-                item
-                for item in entries
-                if isinstance(item[1], dict) and item[1].get("retired_reason") == "provisional-expired"
-            ]
-            if expired:
-                # Newest last sighting wins; placeholder makes equal timestamps deterministic.
-                placeholder, _raw = max(
-                    expired,
-                    key=lambda item: (item[1].get("last_seen_at") or "", item[0]),
-                )
+            placeholder = expired_placeholder_for_name(
+                entity_map,
+                locked.pii_denylist or {},
+                get_name(entries[0][1]),
+            )
+            if placeholder:
                 targets.append((placeholder, True))
 
         for placeholder, was_expired in targets:
