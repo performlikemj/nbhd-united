@@ -9,8 +9,10 @@ inactive at hibernation time).
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import call, patch
 
+from django.db import OperationalError
+from django.db.models import QuerySet
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -70,6 +72,136 @@ class WakeHibernatedTenantImageRefreshTest(TestCase):
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.container_image_tag, "newsha123")
         self.assertIsNone(self.tenant.hibernated_at)
+
+    @override_settings(OPENCLAW_IMAGE_TAG="latest")
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.wake_container_app")
+    @patch("apps.orchestrator.azure_client.ensure_plugin_runtime_deps_mount", return_value=False)
+    def test_cron_wake_claims_atomically_before_azure(self, _mock_mount, mock_wake, _mock_publish):
+        events = []
+        original_update = QuerySet.update
+
+        def recording_update(queryset, **updates):
+            events.append(("update", updates, str(queryset.query)))
+            return original_update(queryset, **updates)
+
+        mock_wake.side_effect = lambda _container_id: events.append(("azure",))
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=recording_update):
+            result = wake_hibernated_tenant(self.tenant, cron_wake=True)
+
+        self.assertTrue(result)
+        claim = events[0]
+        self.assertEqual(claim[0], "update")
+        self.assertIsNone(claim[1]["hibernated_at"])
+        self.assertIn("cron_wake_at", claim[1])
+        self.assertIn("hibernated_at", claim[2])
+        self.assertIn("IS NOT NULL", claim[2])
+        self.assertEqual(events[1], ("azure",))
+
+        self.tenant.refresh_from_db()
+        self.assertIsNone(self.tenant.hibernated_at)
+        self.assertIsNotNone(self.tenant.cron_wake_at)
+
+    @override_settings(OPENCLAW_IMAGE_TAG="latest")
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.wake_container_app")
+    @patch("apps.orchestrator.azure_client.ensure_plugin_runtime_deps_mount", return_value=False)
+    def test_second_concurrent_wake_does_not_start_azure_twice(self, _mock_mount, mock_wake, _mock_publish):
+        stale_tenant = Tenant.objects.get(id=self.tenant.id)
+
+        self.assertTrue(wake_hibernated_tenant(self.tenant, cron_wake=True))
+        self.assertTrue(wake_hibernated_tenant(stale_tenant, cron_wake=True))
+
+        mock_wake.assert_called_once_with("oc-wake-test")
+
+    @override_settings(OPENCLAW_IMAGE_TAG="latest")
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.wake_container_app")
+    @patch("apps.orchestrator.azure_client.ensure_plugin_runtime_deps_mount", return_value=False)
+    def test_failed_azure_wake_rolls_back_claim_for_retry(self, _mock_mount, mock_wake, _mock_publish):
+        original_hibernated_at = self.tenant.hibernated_at
+        original_cron_wake_at = timezone.now()
+        self.tenant.cron_wake_at = original_cron_wake_at
+        self.tenant.save(update_fields=["cron_wake_at"])
+        mock_wake.side_effect = [RuntimeError("simulated Azure failure"), None]
+
+        self.assertFalse(wake_hibernated_tenant(self.tenant, cron_wake=True))
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.hibernated_at, original_hibernated_at)
+        self.assertEqual(self.tenant.cron_wake_at, original_cron_wake_at)
+
+        self.assertTrue(wake_hibernated_tenant(self.tenant, cron_wake=True))
+        self.assertEqual(mock_wake.call_count, 2)
+
+    @override_settings(OPENCLAW_IMAGE_TAG="latest")
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.wake_container_app")
+    @patch("apps.orchestrator.azure_client.ensure_plugin_runtime_deps_mount", return_value=False)
+    def test_already_awake_cron_wake_stamps_without_starting_azure(self, mock_mount, mock_wake, _mock_publish):
+        self.tenant.hibernated_at = None
+        self.tenant.cron_wake_at = None
+        self.tenant.save(update_fields=["hibernated_at", "cron_wake_at"])
+
+        self.assertTrue(wake_hibernated_tenant(self.tenant, cron_wake=True))
+
+        mock_mount.assert_not_called()
+        mock_wake.assert_not_called()
+        self.tenant.refresh_from_db()
+        self.assertIsNotNone(self.tenant.cron_wake_at)
+
+    @override_settings(OPENCLAW_IMAGE_TAG="latest")
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.wake_container_app")
+    @patch("apps.orchestrator.azure_client.ensure_plugin_runtime_deps_mount", return_value=False)
+    def test_non_cron_wake_leaves_cron_wake_stamp_untouched(self, _mock_mount, _mock_wake, _mock_publish):
+        existing_stamp = timezone.now()
+        Tenant.objects.filter(id=self.tenant.id).update(cron_wake_at=existing_stamp)
+
+        self.assertTrue(wake_hibernated_tenant(self.tenant))
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.cron_wake_at, existing_stamp)
+
+    @override_settings(
+        OPENCLAW_IMAGE_TAG="newsha123",
+        AZURE_ACR_SERVER="test.azurecr.io",
+    )
+    @patch("apps.tenants.middleware.set_rls_context")
+    @patch("django.db.connection.close")
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.update_container_image")
+    def test_post_azure_status_write_retries_stale_connection(
+        self,
+        _mock_update_image,
+        _mock_publish,
+        mock_close,
+        mock_set_rls,
+    ):
+        self.tenant.container_image_tag = "oldsha456"
+        self.tenant.save(update_fields=["container_image_tag"])
+        original_update = QuerySet.update
+        image_write_attempts = 0
+
+        def stale_once(queryset, **updates):
+            nonlocal image_write_attempts
+            if updates.get("container_image_tag") == "newsha123":
+                image_write_attempts += 1
+                if image_write_attempts == 1:
+                    raise OperationalError("simulated idle connection")
+            return original_update(queryset, **updates)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=stale_once):
+            result = wake_hibernated_tenant(self.tenant)
+
+        self.assertTrue(result)
+        self.assertEqual(image_write_attempts, 2)
+        mock_close.assert_called_once_with()
+        self.assertEqual(mock_set_rls.call_args_list, [call(service_role=True)])
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.container_image_tag, "newsha123")
 
     @override_settings(
         OPENCLAW_IMAGE_TAG="samesha",
