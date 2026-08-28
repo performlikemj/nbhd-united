@@ -78,6 +78,7 @@ class EntityRegistryBulkDeleteViewTests(TestCase):
         tenant.refresh_from_db()
         self.assertEqual(set(tenant.pii_entity_map.keys()), {"[PERSON_1]", "[PERSON_2]", "[LOCATION_3]"})
         self.assertTrue(tenant.pii_entity_map["[PERSON_1]"]["retired"])
+        self.assertEqual(tenant.pii_entity_map["[PERSON_1]"]["retired_reason"], "owner")
         self.assertNotIn("retired", tenant.pii_entity_map["[LOCATION_3]"])
         self.assertEqual(set(tenant.pii_denylist), {"alice", "bob"})
 

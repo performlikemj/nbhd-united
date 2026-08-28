@@ -242,3 +242,104 @@ class HandleMessagePrependsReplyContextTests(TestCase):
         self.assertIn("i guess writing in japanese", forwarded_text)
         # raw_user_text must not include the prefix (used for the dropped-message apology)
         self.assertEqual(kwargs.get("raw_user_text"), "i guess writing in japanese. and she wants to do roblox")
+        self.assertIsNotNone(kwargs.get("pii_ingress"))
+
+    def test_quote_forward_records_raw_segment_once(self):
+        from django.utils import timezone
+
+        from apps.pii.provisional import PiiIngress
+        from apps.pii.redactor import RedactionOutcome
+        from apps.router.line_webhook import LineWebhookView
+
+        tenant = _make_tenant()
+        view = LineWebhookView()
+        ingress = PiiIngress(channel="line", provider_event_id="line-event-1", occurred_at=timezone.now())
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("masked", True, "redacted"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+            patch("apps.router.pending_queue.enqueue_message_for_tenant"),
+        ):
+            view._forward_to_container(
+                "U_fixture",
+                tenant,
+                '[Replying to: "Fixture quote"]\n\nFakenamealpha arrived',
+                raw_user_text="Fakenamealpha arrived",
+                webhook_event_id="line-event-1",
+                pii_ingress=ingress,
+            )
+
+        self.assertEqual(redact.call_count, 2)
+        ingress = redact.call_args_list[0].kwargs["ingress"]
+        self.assertIsNone(redact.call_args_list[1].kwargs["ingress"])
+        record.assert_called_once_with(tenant, "Fakenamealpha arrived", ingress)
+
+    def test_line_sticker_has_no_live_or_buffer_ingress(self):
+        from apps.router.line_webhook import LineWebhookView
+        from apps.router.wake_on_message import SILENT
+
+        tenant = _make_tenant()
+        tenant.user.line_user_id = "U_sticker_fixture"
+        tenant.user.save(update_fields=["line_user_id"])
+        tenant.onboarding_complete = True
+        tenant.onboarding_step = 99
+        tenant.save(update_fields=["onboarding_complete", "onboarding_step"])
+        event = {
+            "type": "message",
+            "webhookEventId": "sticker-event-fixture",
+            "source": {"userId": "U_sticker_fixture"},
+            "message": {
+                "type": "sticker",
+                "id": "sticker-message-fixture",
+                "keywords": ["Fakenamealpha"],
+            },
+        }
+        view = LineWebhookView()
+        with (
+            patch("apps.router.line_webhook.check_budget", return_value=None),
+            patch("apps.router.wake_on_message.handle_hibernated_message", return_value=None),
+            patch("apps.router.onboarding.needs_reintroduction", return_value=False),
+            patch("apps.router.line_webhook._show_loading"),
+            patch.object(view, "_forward_to_container") as forward,
+        ):
+            view._handle_message(event)
+
+        forward.assert_called_once()
+        self.assertIsNone(forward.call_args.kwargs["pii_ingress"])
+
+        with (
+            patch("apps.router.line_webhook.check_budget", return_value=None),
+            patch("apps.router.wake_on_message.handle_hibernated_message", return_value=SILENT) as hibernate,
+            patch.object(view, "_forward_to_container") as forward,
+        ):
+            view._handle_message(event)
+
+        forward.assert_not_called()
+        self.assertIsNone(hibernate.call_args.kwargs["pii_ingress"])
+
+    def test_agent_postback_payload_is_not_pii_ingress(self):
+        from apps.pii.redactor import RedactionOutcome
+        from apps.router.line_webhook import LineWebhookView
+
+        tenant = _make_tenant()
+        view = LineWebhookView()
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("masked", True, "redacted"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+            patch("apps.router.pending_queue.enqueue_message_for_tenant"),
+        ):
+            view._forward_to_container(
+                "U_fixture",
+                tenant,
+                '[User tapped button: "Fakenamealpha"]',
+                raw_user_text="Fakenamealpha",
+                webhook_event_id="line-event-1",
+            )
+
+        self.assertTrue(all(call.kwargs["ingress"] is None for call in redact.call_args_list))
+        record.assert_not_called()

@@ -37,6 +37,8 @@ def handle_hibernated_message(
     channel: str,
     payload: dict,
     user_text: str,
+    *,
+    pii_ingress=None,
 ) -> str | None:
     """Handle a message for a potentially hibernated tenant.
 
@@ -47,6 +49,10 @@ def handle_hibernated_message(
                          send a "reconnecting, sorry for the delay" ack
         SILENT         — additional message during an in-flight wake; no ack
         None           — tenant is NOT hibernated; proceed with the live path
+
+    ``pii_ingress`` must be supplied explicitly only when ``user_text`` is the
+    owner's typed text, caption, or successful voice transcript. Generated media
+    wrappers and provider metadata are buffered with no ingress provenance.
     """
     if not tenant.hibernated_at:
         return None
@@ -67,7 +73,7 @@ def handle_hibernated_message(
     # (apologies + log lines slice locally where they need a short excerpt).
     from apps.router.buffer_envelope import build_buffer_envelope, redact_for_buffer_checked
 
-    redaction = redact_for_buffer_checked(tenant, user_text or "")
+    redaction = redact_for_buffer_checked(tenant, user_text or "", ingress=pii_ingress)
     buffer_payload = build_buffer_envelope(channel, payload)
     buffer_payload["redaction"] = {
         "confirmed": redaction.confirmed,

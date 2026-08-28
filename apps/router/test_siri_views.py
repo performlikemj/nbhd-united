@@ -360,7 +360,11 @@ class SiriRespondTest(TestCase):
             self.assertNotIn("Theo Smith", message["content"])
         self.assertIn(ENTITY_LEGEND_HEADER, messages[-1]["content"])
         self.assertIn("[PERSON_1]: project lead", messages[-1]["content"])
-        mock_redact.assert_called_once_with("Will Theo Smith join?", self.tenant)
+        mock_redact.assert_called_once()
+        redact_args, redact_kwargs = mock_redact.call_args
+        self.assertEqual(redact_args, ("Will Theo Smith join?", self.tenant))
+        self.assertEqual(redact_kwargs["ingress"].channel, "siri")
+        self.assertIsNone(redact_kwargs["ingress"].provider_event_id)
 
     @patch("apps.orchestrator.workspace_envelope.render_context_digest", return_value="STATE")
     @patch(
@@ -409,6 +413,31 @@ class SiriRespondTest(TestCase):
         self.assertTrue(any("/v1/chat/completions" in (c.args[0] if c.args else "") for c in mock_post.call_args_list))
         # Delivered → queue row hard-deleted (delete-on-drain, privacy PR-3).
         self.assertFalse(PendingMessage.objects.filter(tenant=self.tenant).exists())
+
+    @patch("apps.router.pending_queue.httpx.post")
+    @patch("apps.router.siri_views._placeholder_snapshot", return_value="STATE")
+    @patch("apps.common.openrouter.chat_completion", return_value=_completion("[[ESCALATE]]"))
+    def test_escalated_siri_mints_without_counting(self, _cc, _snap, mock_post):
+        from apps.pii.redactor import DetectedEntity
+
+        mock_post.return_value = _ok_drain_response()
+        detected = [DetectedEntity("PERSON", 0, 13, 0.99)]
+        with (
+            override_settings(PII_PROVISIONAL_TENANT_IDS=frozenset({str(self.tenant.pk)})),
+            patch("apps.pii.redactor._detect_pii", return_value=detected),
+        ):
+            resp = self.client.post(
+                "/api/v1/siri/respond/",
+                {"intent": "Fakenamealpha", "client_msg_id": "siri-escalated-1"},
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.tenant.refresh_from_db()
+        entry = self.tenant.pii_entity_map["[PERSON_1]"]
+        self.assertTrue(entry["provisional"])
+        self.assertEqual(entry["seen_events"], [])
+        self.assertEqual(entry["seen_dates"], [])
 
     @patch("apps.router.pending_queue.httpx.post")
     @patch("apps.router.siri_views._placeholder_snapshot", return_value="STATE")

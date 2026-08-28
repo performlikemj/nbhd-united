@@ -47,6 +47,7 @@ from typing import Any
 # it — it removes the entry from that queue, so it must survive coerce/
 # to_storage_value round-trips or an edit would silently resurface the entry.
 _KNOWN_FIELDS = ("name", "relationship", "notes", "updated_at", "arbiter_judged_at", "reviewed_at")
+_UNSET = object()
 
 _PLACEHOLDER_NUM_RE = re.compile(r"\[[A-Z_]+_(\d+)\]")
 
@@ -102,15 +103,21 @@ def get_metadata(entry: Any) -> dict[str, Any]:
 def to_storage_value(
     name: str,
     *,
-    relationship: str = "",
-    notes: str = "",
-    updated_at: str | None = None,
-    arbiter_judged_at: str | None = None,
-    reviewed_at: str | None = None,
+    existing: Any = None,
+    relationship: Any = _UNSET,
+    notes: Any = _UNSET,
+    updated_at: Any = _UNSET,
+    arbiter_judged_at: Any = _UNSET,
+    reviewed_at: Any = _UNSET,
+    **updates: Any,
 ) -> dict[str, Any]:
-    """Build a canonical dict entry for writing back to
-    ``Tenant.pii_entity_map``. Empty optional fields are omitted so
-    the JSON stays compact.
+    """Build or patch a storage entry without dropping opaque fields.
+
+    ``existing`` may be a legacy string or an object. Object entries are copied
+    verbatim before explicit updates are applied, so lifecycle fields and fields
+    introduced by newer writers survive every read-modify-write path. ``coerce``
+    intentionally remains the narrow read-normalizer; storage mutations must use
+    this helper instead of persisting its output.
 
     ``arbiter_judged_at`` is the internal stamp written by the PII arbiter
     cron to record that an entry has already been evaluated, preventing
@@ -122,17 +129,23 @@ def to_storage_value(
     threaded through any edit so keeping an entry is not undone by a later
     name/relationship/notes PATCH.
     """
-    out: dict[str, Any] = {"name": name}
-    if relationship:
-        out["relationship"] = relationship
-    if notes:
-        out["notes"] = notes
-    if updated_at:
-        out["updated_at"] = updated_at
-    if arbiter_judged_at:
-        out["arbiter_judged_at"] = arbiter_judged_at
-    if reviewed_at:
-        out["reviewed_at"] = reviewed_at
+    out: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+    out["name"] = name
+    explicit = {
+        "relationship": relationship,
+        "notes": notes,
+        "updated_at": updated_at,
+        "arbiter_judged_at": arbiter_judged_at,
+        "reviewed_at": reviewed_at,
+        **updates,
+    }
+    for key, value in explicit.items():
+        if value is _UNSET:
+            continue
+        if value is None or value == "":
+            out.pop(key, None)
+        else:
+            out[key] = value
     return out
 
 
@@ -187,12 +200,39 @@ def retire_bindings_for_key(entity_map: dict, canonical: str, *, now_iso: str) -
             continue
         if isinstance(entry, dict) and entry.get("retired"):
             continue
-        retired = coerce(entry)
-        retired["retired"] = True
-        retired["retired_at"] = now_iso
+        retired = to_storage_value(
+            get_name(entry),
+            existing=entry,
+            retired=True,
+            retired_at=now_iso,
+        )
         updated_map[placeholder] = retired
         newly_retired.append(placeholder)
     return updated_map, newly_retired
+
+
+def retire_binding_by_placeholder(tenant, placeholder: str, reason: str) -> bool:
+    """Atomically retire exactly one binding while preserving its full object."""
+    from django.db import transaction
+    from django.utils import timezone
+
+    with transaction.atomic():
+        locked = type(tenant).objects.select_for_update().filter(pk=tenant.pk).first()
+        entity_map = dict((locked.pii_entity_map if locked else None) or {})
+        raw = entity_map.get(placeholder)
+        if raw is None:
+            return False
+        now_iso = timezone.now().isoformat()
+        entity_map[placeholder] = to_storage_value(
+            get_name(raw),
+            existing=raw,
+            retired=True,
+            retired_at=now_iso,
+            retired_reason=reason,
+        )
+        type(tenant).objects.filter(pk=tenant.pk).update(pii_entity_map=entity_map)
+    tenant.pii_entity_map = entity_map
+    return True
 
 
 def _placeholder_num(placeholder: str) -> int:

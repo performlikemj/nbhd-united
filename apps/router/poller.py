@@ -42,6 +42,19 @@ MAX_BACKOFF = 60  # max seconds between retries on error
 STILL_THINKING_DELAY = 45.0  # seconds before sending "still thinking" notice
 
 
+def _telegram_owner_ingress(owner_text: str | None, provider_event_id: int | str | None):
+    """Build provenance only for an explicitly extracted owner-authored segment."""
+    if owner_text is None:
+        return None
+    from apps.pii.provisional import PiiIngress
+
+    return PiiIngress(
+        channel="telegram",
+        provider_event_id=str(provider_event_id) if provider_event_id is not None else None,
+        occurred_at=timezone.now(),
+    )
+
+
 class TelegramPoller:
     """Long-polls Telegram getUpdates and routes messages to tenant containers."""
 
@@ -53,7 +66,7 @@ class TelegramPoller:
         self._running = False
         self._backoff = 1
         self._http: httpx.Client | None = None
-        self._pending_messages: dict[int, tuple[str, int | str | None]] = {}
+        self._pending_messages: dict[int, tuple[str, str | None, int | str | None]] = {}
         self._update_in_progress: set[int] = set()  # chat_ids currently being updated
 
     # ------------------------------------------------------------------
@@ -603,6 +616,7 @@ class TelegramPoller:
         message_text: str,
         delay: int = 15,
         provider_event_id: int | str | None = None,
+        owner_text: str | None = None,
     ) -> None:
         """Wait for container restart, then forward the pending message.
 
@@ -614,7 +628,9 @@ class TelegramPoller:
             chat_id,
             tenant,
             message_text,
+            raw_user_text=owner_text,
             provider_event_id=provider_event_id,
+            pii_ingress=_telegram_owner_ingress(owner_text, provider_event_id),
         )
 
     def _download_photo(self, message: dict) -> str | None:
@@ -901,7 +917,7 @@ class TelegramPoller:
 
                     # Do the actual update + forward in background (Azure takes 45-90s)
                     pending = self._pending_messages.pop(chat_id, None)
-                    pending_text, pending_event_id = pending or (None, None)
+                    pending_text, pending_owner_text, pending_event_id = pending or (None, None, None)
 
                     def _do_update():
                         try:
@@ -927,8 +943,12 @@ class TelegramPoller:
                                         chat_id,
                                         tenant,
                                         context_msg,
-                                        raw_user_text=pending_text,
+                                        raw_user_text=pending_owner_text,
                                         provider_event_id=pending_event_id,
+                                        pii_ingress=_telegram_owner_ingress(
+                                            pending_owner_text,
+                                            pending_event_id,
+                                        ),
                                     )
                                 else:
                                     # Container didn't come up in time — tell user, let them resend
@@ -945,14 +965,19 @@ class TelegramPoller:
                         self._send_message(chat_id, reply_text)
                     # Forward pending message to current container
                     pending = self._pending_messages.pop(chat_id, None)
-                    pending_text, pending_event_id = pending or (None, None)
+                    pending_text, pending_owner_text, pending_event_id = pending or (None, None, None)
                     if pending_text:
                         self._send_typing(chat_id)
                         self._forward_to_container(
                             chat_id,
                             tenant,
                             pending_text,
+                            raw_user_text=pending_owner_text,
                             provider_event_id=pending_event_id,
+                            pii_ingress=_telegram_owner_ingress(
+                                pending_owner_text,
+                                pending_event_id,
+                            ),
                         )
 
                 return
@@ -1051,6 +1076,7 @@ class TelegramPoller:
         message_text = self._extract_message_text(update, tenant)
         if not message_text:
             return
+        owner_text = self._extract_owner_text(update, message_text)
 
         # Onboarding / re-introduction gate
         from apps.router.onboarding import get_onboarding_response, needs_reintroduction
@@ -1078,7 +1104,7 @@ class TelegramPoller:
         if update_action:
             if update_action["action"] == "ask_user":
                 # Store the pending message so we can forward it after update
-                self._pending_messages[chat_id] = (message_text, provider_event_id)
+                self._pending_messages[chat_id] = (message_text, owner_text, provider_event_id)
                 self._send_message(
                     chat_id,
                     update_action["text"],
@@ -1090,7 +1116,7 @@ class TelegramPoller:
                 self._send_typing(chat_id)
                 threading.Thread(
                     target=self._delayed_forward,
-                    args=(chat_id, tenant, message_text, 15, provider_event_id),
+                    args=(chat_id, tenant, message_text, 15, provider_event_id, owner_text),
                     daemon=True,
                 ).start()
                 return
@@ -1099,7 +1125,7 @@ class TelegramPoller:
         # photo prefix / session context / workspace+datetime markers.
         # Used for the dropped-message apology excerpt — see
         # ``_forward_to_container``.
-        raw_user_text = message_text
+        raw_user_text = owner_text
 
         # Upload photo to tenant workspace if present
         image_path = None
@@ -1139,6 +1165,7 @@ class TelegramPoller:
             raw_user_text=raw_user_text,
             is_image=had_photo,
             provider_event_id=provider_event_id,
+            pii_ingress=_telegram_owner_ingress(owner_text, provider_event_id),
         )
 
     # ── Contextual recall ──────────────────────────────────────────────────
@@ -1262,6 +1289,20 @@ class TelegramPoller:
             reply_text = reply_text[:200] + "…"
 
         return f'[Replying to: "{reply_text}"]\n\n'
+
+    def _extract_owner_text(self, update: dict, framed_text: str) -> str | None:
+        """Return only typed text, a user caption, or a successful transcript."""
+        message = update.get("message") or update.get("edited_message") or {}
+        if message.get("forward_from") or message.get("forward_from_chat"):
+            return None
+        direct = message.get("text") or message.get("caption")
+        if direct:
+            return direct
+        if message.get("voice") or message.get("audio"):
+            prefix = self._extract_reply_context(message) + '🎤 Voice message: "'
+            if framed_text.startswith(prefix) and framed_text.endswith('"'):
+                return framed_text[len(prefix) : -1]
+        return None
 
     def _extract_message_text(self, update: dict, tenant: Tenant | None = None) -> str | None:
         """Extract user message text from a Telegram update.
@@ -1483,6 +1524,7 @@ class TelegramPoller:
         raw_user_text: str | None = None,
         is_image: bool = False,
         provider_event_id: int | str | None = None,
+        pii_ingress=None,
     ) -> None:
         """Pre-process the message and enqueue it on the per-tenant
         serialization queue.
@@ -1531,17 +1573,32 @@ class TelegramPoller:
         # ``pii_entity_map``; outbound rehydration is already wired in the
         # relay path so the user still sees the real values. Its text remains
         # fail-open while the outcome records whether redaction completed.
+        from apps.pii.provisional import record_provisional_sightings
         from apps.pii.redactor import redact_user_message_checked
 
-        message_redaction = redact_user_message_checked(message_text, tenant)
+        owner_text = raw_user_text
+
+        if pii_ingress is not None:
+            # Provenance belongs only to the raw owner segment. Redact it first
+            # so its new binding exists, then record/reactivate it, and finally
+            # redact any reply/media/provider framing without ingress. The
+            # framed pass can reuse the binding but cannot mint a provisional
+            # or count generated text.
+            raw_redaction = redact_user_message_checked(raw_user_text, tenant, ingress=pii_ingress)
+            record_provisional_sightings(tenant, owner_text, pii_ingress)
+            message_redaction = (
+                raw_redaction
+                if message_text == owner_text
+                else redact_user_message_checked(message_text, tenant, ingress=None)
+            )
+        else:
+            message_redaction = redact_user_message_checked(message_text, tenant, ingress=None)
+            raw_redaction = (
+                message_redaction
+                if _raw_aliases_message or raw_user_text == message_text
+                else redact_user_message_checked(raw_user_text, tenant, ingress=None)
+            )
         message_text = message_redaction.text
-        # When raw_user_text was not provided by the caller it was aliased to
-        # the same string as message_text (above). In that case reuse the
-        # already-redacted message_text rather than running a second identical
-        # DeBERTa NER pass over the same content.
-        raw_redaction = (
-            message_redaction if _raw_aliases_message else redact_user_message_checked(raw_user_text, tenant)
-        )
         raw_user_text = raw_redaction.text
 
         user_tz = tenant.user.timezone or "UTC"

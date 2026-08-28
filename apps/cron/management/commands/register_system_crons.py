@@ -162,6 +162,8 @@ SYSTEM_CRONS = [
     # RETIRED_CRON_PATHS below). Offset from cleanup-expired-telegram-tokens
     # (03:00) and poll-line-quota (03:15). See apps/pii/junk_sweep.py.
     ("pii-junk-sweep", "45 3 * * *", "/api/cron/trigger/pii_junk_sweep/"),
+    # Hourly provisional-binding expiry; creation and sweep have independent gates.
+    ("expire-provisional-bindings", "17 * * * *", "/api/cron/trigger/expire_provisional_bindings/"),
     # Hourly at :13 — bounded repair of Layer-1 fields whose authoring receipts
     # are unconfirmed/residual. The offset leaves top-of-hour tenant crons clear;
     # the task is retry/DLQ-backed through QStash.

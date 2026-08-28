@@ -136,6 +136,9 @@ def _classify(entity_map: dict[str, Any], max_entries: int) -> tuple[dict[str, i
     junk: dict[str, dict[str, str]] = {}
     for placeholder, entry in list(entity_map.items())[:max_entries]:
         summary["examined"] += 1
+        if isinstance(entry, dict) and entry.get("provisional"):
+            summary["skipped"] += 1
+            continue
         if isinstance(entry, dict) and entry.get("retired"):
             # Owner-deleted real entities stay bound for rehydration. Junk
             # healing would write their real values back into Layer-1 stores.

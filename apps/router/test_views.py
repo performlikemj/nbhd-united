@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from apps.router.models import BufferedMessage
 from apps.router.services import clear_cache, clear_rate_limits
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -20,6 +21,199 @@ class TelegramWebhookViewTest(TestCase):
     def tearDown(self):
         clear_cache()
         clear_rate_limits()
+
+    def test_capture_uses_update_id_for_provisional_sighting(self):
+        from apps.pii.redactor import RedactionOutcome
+        from apps.router.views import _redact_telegram_webhook_ingress
+
+        tenant = create_tenant(display_name="Fixture User", telegram_chat_id=999000113)
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("masked", False, "fixture"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+        ):
+            _outcome, ingress = _redact_telegram_webhook_ingress(
+                tenant,
+                4321,
+                "Fakenamealpha arrived",
+                owner_text="Fakenamealpha arrived",
+            )
+
+        self.assertEqual(redact.call_args.kwargs["ingress"], ingress)
+        self.assertEqual(ingress.channel, "telegram-webhook")
+        self.assertEqual(ingress.provider_event_id, "4321")
+        record.assert_called_once_with(tenant, "Fakenamealpha arrived", ingress)
+
+    @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
+    def test_failed_turn_still_records_webhook_ingress(self, mock_forward):
+        from apps.pii.redactor import RedactionOutcome
+
+        tenant = create_tenant(display_name="Failed Turn", telegram_chat_id=999000114)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-failed.internal.azurecontainerapps.io"
+        tenant.save(update_fields=["status", "container_fqdn", "updated_at"])
+        mock_forward.return_value = None
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("[PERSON_1] arrived", True, "redacted"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+        ):
+            response = self._post_update(
+                {"update_id": 4322, "message": {"text": "Fakenamealpha arrived", "chat": {"id": 999000114}}}
+            )
+
+        self.assertEqual(response.status_code, 200)
+        ingress = redact.call_args.kwargs["ingress"]
+        record.assert_called_once_with(tenant, "Fakenamealpha arrived", ingress)
+        forwarded_update = mock_forward.await_args.args[1]
+        self.assertIn("[PERSON_1] arrived", forwarded_update["message"]["text"])
+        self.assertNotIn("Fakenamealpha", forwarded_update["message"]["text"])
+
+    @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
+    def test_capture_disabled_still_records_webhook_ingress(self, mock_forward):
+        from apps.pii.redactor import RedactionOutcome
+
+        tenant = create_tenant(display_name="Capture Disabled", telegram_chat_id=999000115)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-disabled.internal.azurecontainerapps.io"
+        tenant.recall_capture_enabled = False
+        tenant.save(update_fields=["status", "container_fqdn", "recall_capture_enabled", "updated_at"])
+        mock_forward.return_value = {"ok": True}
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("masked", True, "redacted"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+        ):
+            response = self._post_update(
+                {"update_id": 4323, "message": {"text": "Fakenamealpha", "chat": {"id": 999000115}}}
+            )
+
+        self.assertEqual(response.status_code, 200)
+        ingress = redact.call_args.kwargs["ingress"]
+        record.assert_called_once_with(tenant, "Fakenamealpha", ingress)
+
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant", return_value=True)
+    def test_hibernated_caption_is_buffered_and_records_recurrence(self, _wake):
+        from apps.pii.redactor import RedactionOutcome
+
+        tenant = create_tenant(display_name="Fixture Caption", telegram_chat_id=999000116)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-caption.internal.azurecontainerapps.io"
+        tenant.hibernated_at = timezone.now()
+        tenant.pii_entity_map = {
+            "[PERSON_1]": {
+                "name": "Fakenamealpha",
+                "provisional": True,
+                "first_seen_at": "2026-08-27T00:00:00+00:00",
+                "last_seen_at": "2026-08-27T00:00:00+00:00",
+                "seen_events": [],
+                "seen_dates": [],
+            }
+        }
+        tenant.save(
+            update_fields=[
+                "status",
+                "container_fqdn",
+                "hibernated_at",
+                "pii_entity_map",
+                "updated_at",
+            ]
+        )
+        with patch(
+            "apps.pii.redactor.redact_user_message_checked",
+            return_value=RedactionOutcome("[PERSON_1] returned", True, "redacted"),
+        ):
+            response = self._post_update(
+                {
+                    "update_id": 4324,
+                    "message": {
+                        "photo": [{"file_id": "photo-fixture"}],
+                        "caption": "Fakenamealpha returned",
+                        "chat": {"id": 999000116},
+                    },
+                }
+            )
+
+        self.assertEqual(response.status_code, 200)
+        tenant.refresh_from_db()
+        entry = tenant.pii_entity_map["[PERSON_1]"]
+        self.assertEqual(len(entry["seen_events"]), 1)
+        self.assertEqual(len(entry["seen_dates"]), 1)
+        buffered = BufferedMessage.objects.get(tenant=tenant)
+        self.assertEqual(buffered.user_text, "[PERSON_1] returned")
+
+    @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
+    def test_forwarded_text_is_redacted_without_owner_ingress(self, mock_forward):
+        from apps.pii.redactor import RedactionOutcome
+
+        tenant = create_tenant(display_name="Fixture Forward", telegram_chat_id=999000117)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-forward.internal.azurecontainerapps.io"
+        tenant.save(update_fields=["status", "container_fqdn", "updated_at"])
+        mock_forward.return_value = None
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("[PERSON_1] forwarded", True, "redacted"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+        ):
+            response = self._post_update(
+                {
+                    "update_id": 4325,
+                    "message": {
+                        "text": "Fakenamealpha forwarded",
+                        "forward_from": {"id": 42, "first_name": "Fixture Sender"},
+                        "chat": {"id": 999000117},
+                    },
+                }
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(redact.call_args.kwargs.get("ingress"))
+        record.assert_not_called()
+        forwarded_update = mock_forward.await_args.args[1]
+        self.assertIn("[PERSON_1] forwarded", forwarded_update["message"]["text"])
+
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant", return_value=True)
+    def test_hibernated_forwarded_caption_is_buffered_without_owner_ingress(self, _wake):
+        from apps.pii.redactor import RedactionOutcome
+
+        tenant = create_tenant(display_name="Fixture Forward Caption", telegram_chat_id=999000118)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-forward-caption.internal.azurecontainerapps.io"
+        tenant.hibernated_at = timezone.now()
+        tenant.save(update_fields=["status", "container_fqdn", "hibernated_at", "updated_at"])
+        with (
+            patch(
+                "apps.pii.redactor.redact_user_message_checked",
+                return_value=RedactionOutcome("[PERSON_1] caption", True, "redacted"),
+            ) as redact,
+            patch("apps.pii.provisional.record_provisional_sightings") as record,
+        ):
+            response = self._post_update(
+                {
+                    "update_id": 4326,
+                    "message": {
+                        "photo": [{"file_id": "forwarded-photo-fixture"}],
+                        "caption": "Fakenamealpha caption",
+                        "forward_from_chat": {"id": -42, "title": "Fixture Channel"},
+                        "chat": {"id": 999000118},
+                    },
+                }
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(redact.call_args.kwargs.get("ingress"))
+        record.assert_not_called()
+        buffered = BufferedMessage.objects.get(tenant=tenant)
+        self.assertEqual(buffered.user_text, "[PERSON_1] caption")
 
     def _post_update(self, payload: dict, secret: str = "test-secret"):
         extra_headers = {}

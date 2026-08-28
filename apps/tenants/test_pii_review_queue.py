@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import secrets
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.pii.entity_registry import coerce
@@ -87,6 +87,26 @@ class PIIReviewQueueGetTests(TestCase):
         resp = self.client.get(_QUEUE_URL)
         order = [e["placeholder"] for e in resp.json()["entries"]]
         self.assertEqual(order, ["[PERSON_10]", "[PERSON_2]", "[PERSON_1]"])
+
+    @override_settings(PII_PROVISIONAL_TTL_HOURS=72)
+    def test_provisional_response_includes_lifecycle_summary(self):
+        user, _ = _make_user_with_tenant(
+            entity_map={
+                "[PERSON_1]": {
+                    "name": "Fakenamealpha",
+                    "provisional": True,
+                    "last_seen_at": "2026-08-28T00:00:00+00:00",
+                    "seen_events": ["0" * 32, "1" * 32],
+                    "seen_dates": ["2026-08-27", "2026-08-28"],
+                }
+            }
+        )
+        self.client.force_authenticate(user=user)
+        entry = self.client.get(_QUEUE_URL).json()["entries"][0]
+        self.assertEqual(entry["persistence"], "provisional")
+        self.assertEqual(entry["expires_at"], "2026-08-31T00:00:00+00:00")
+        self.assertEqual(entry["seen_event_count"], 2)
+        self.assertEqual(entry["seen_date_count"], 2)
 
     def test_legacy_bare_string_entries_are_queued(self):
         # Pre-registry map values are bare strings, not dicts — they have no
@@ -171,6 +191,28 @@ class PIIReviewQueueKeepTests(TestCase):
         self.assertEqual(entry["notes"], "loves hiking")
         self.assertEqual(entry["arbiter_judged_at"], "2026-01-01T00:00:00+00:00")
         self.assertTrue(entry.get("reviewed_at"))
+
+    def test_keep_promotes_provisional_binding(self):
+        user, tenant = _make_user_with_tenant(
+            entity_map={
+                "[PERSON_1]": {
+                    "name": "Fakenamealpha",
+                    "provisional": True,
+                    "first_seen_at": "2026-08-27T00:00:00+00:00",
+                    "last_seen_at": "2026-08-28T00:00:00+00:00",
+                    "seen_events": ["0" * 32],
+                    "seen_dates": ["2026-08-28"],
+                }
+            }
+        )
+        self.client.force_authenticate(user=user)
+        response = self.client.post(_KEEP_URL, {"placeholders": ["[PERSON_1]"]}, format="json")
+        self.assertEqual(response.status_code, 200)
+        tenant.refresh_from_db()
+        entry = tenant.pii_entity_map["[PERSON_1]"]
+        self.assertFalse(entry["provisional"])
+        self.assertEqual(entry["promoted_by"], "owner")
+        self.assertTrue(entry["reviewed_at"])
 
     def test_keep_reports_not_found(self):
         user, _ = _make_user_with_tenant(entity_map={"[PERSON_1]": {"name": "Alice"}})

@@ -406,6 +406,7 @@ TASK_MAP = {
     # ``pii_arbiter`` (which shipped span text to a cloud LLM). Residual
     # ambiguous cases go to the on-device review flow. See apps/pii/junk_sweep.py.
     "pii_junk_sweep": "apps.pii.junk_sweep.pii_junk_sweep_task",
+    "expire_provisional_bindings": "apps.pii.provisional_expiry.expire_provisional_bindings_task",
     # Hourly bounded repair of Task/Goal fields whose per-field receipt is
     # unconfirmed or residual. QStash retries feed its DLQ; the task is
     # idempotent because successful fields leave the repair states.

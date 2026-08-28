@@ -171,7 +171,7 @@ def _legacy_raw_is_voice(payload) -> bool:
     return False
 
 
-def redact_for_buffer(tenant, text: str) -> str:
+def redact_for_buffer(tenant, text: str, ingress=None) -> str:
     """Redact user text at BUFFER-WRITE time so the raw name/email/phone the
     subscriber typed never rests in ``BufferedMessage``.
 
@@ -193,7 +193,15 @@ def redact_for_buffer(tenant, text: str) -> str:
     try:
         from apps.pii.redactor import redact_known_entities, redact_user_message
 
-        redacted = redact_user_message(text, tenant)
+        redacted = (
+            redact_user_message(text, tenant, ingress=ingress)
+            if ingress is not None
+            else redact_user_message(text, tenant)
+        )
+        if ingress is not None:
+            from apps.pii.provisional import record_provisional_sightings
+
+            record_provisional_sightings(tenant, text, ingress)
         return redact_known_entities(tenant, redacted)
     except Exception:
         logger.exception("buffer redaction failed — falling back to reuse-only masking")
@@ -206,7 +214,7 @@ def redact_for_buffer(tenant, text: str) -> str:
             return ""
 
 
-def redact_for_buffer_checked(tenant, text: str):
+def redact_for_buffer_checked(tenant, text: str, ingress=None):
     """Fail-closed buffer redaction with an honest completion receipt."""
     from apps.pii.redactor import RedactionOutcome
 
@@ -215,7 +223,15 @@ def redact_for_buffer_checked(tenant, text: str):
     try:
         from apps.pii.redactor import redact_known_entities, redact_user_message_checked
 
-        outcome = redact_user_message_checked(text, tenant)
+        outcome = (
+            redact_user_message_checked(text, tenant, ingress=ingress)
+            if ingress is not None
+            else redact_user_message_checked(text, tenant)
+        )
+        if ingress is not None:
+            from apps.pii.provisional import record_provisional_sightings
+
+            record_provisional_sightings(tenant, text, ingress)
         redacted = redact_known_entities(tenant, outcome.text)
         return RedactionOutcome(
             text=redacted,
