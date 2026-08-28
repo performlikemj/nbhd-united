@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from django.conf import settings
-from django.db import models
+from django.db import InterfaceError, OperationalError, models
 from django.utils import timezone
 
 from apps.common.eval_sink import suppresses_real_transport
@@ -457,10 +457,30 @@ def _cron_active_or_imminent(
     return None
 
 
-def wake_hibernated_tenant(tenant: Tenant) -> bool:
+def _update_tenant_after_azure(tenant_id, *, filters=None, **updates) -> int:
+    """Persist wake status after a long Azure call, retrying one stale connection."""
+    filters = filters or {}
+    try:
+        return Tenant.objects.filter(pk=tenant_id, **filters).update(**updates)
+    except (OperationalError, InterfaceError):
+        from django.db import connection
+
+        from apps.tenants.middleware import set_rls_context
+
+        logger.warning(
+            "idle_wake: DB connection died during Azure wake — reconnecting + retrying status update for %s",
+            str(tenant_id)[:8],
+        )
+        connection.close()
+        set_rls_context(service_role=True)
+        return Tenant.objects.filter(pk=tenant_id, **filters).update(**updates)
+
+
+def wake_hibernated_tenant(tenant: Tenant, *, cron_wake: bool = False) -> bool:
     """Wake a hibernated tenant's container and schedule follow-up tasks.
 
-    Returns True on success.
+    Returns True on success. A cron wake stamps ``cron_wake_at`` in the
+    conditional update that claims the hibernated row, before Azure starts.
 
     Image refresh on wake: if the latest image tag (``OPENCLAW_IMAGE_TAG``)
     differs from the tenant's stored ``container_image_tag``, push the new
@@ -470,6 +490,23 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
     tenants come back stale because fleet rollouts skip them.
     """
     tid = str(tenant.id)[:8]
+    original_hibernated_at = tenant.hibernated_at
+    original_cron_wake_at = tenant.cron_wake_at
+
+    wake_updates = {"hibernated_at": None}
+    if cron_wake:
+        wake_updates["cron_wake_at"] = timezone.now()
+    try:
+        claimed = Tenant.objects.filter(pk=tenant.pk, hibernated_at__isnull=False).update(**wake_updates)
+    except Exception:
+        logger.exception("idle_wake: failed to claim hibernated tenant %s", tid)
+        return False
+
+    if cron_wake and not claimed:
+        Tenant.objects.filter(pk=tenant.pk).update(cron_wake_at=timezone.now())
+
+    if not claimed:
+        logger.info("idle_wake: tenant %s already claimed; waiting on the existing wake", tid)
 
     # Tracks whether the image refresh below moved openclaw_version (the field
     # that drives config SCHEMA generation). When it does, step 3 must force a
@@ -478,65 +515,85 @@ def wake_hibernated_tenant(tenant: Tenant) -> bool:
     # stale-schema config and crash-loops on "agents.defaults: Invalid input".
     version_synced = False
 
-    # 1. Wake the container — image-refresh path takes priority over plain wake
-    try:
-        from django.conf import settings as django_settings
+    # 1. The claimant wakes the container. A concurrent caller skips Azure and
+    # joins the same follow-up path below.
+    if claimed:
+        try:
+            status_updates = {"last_wake_at": timezone.now()}
 
-        from apps.orchestrator.azure_client import (
-            ensure_plugin_runtime_deps_mount,
-            update_container_image,
-            wake_container_app,
-        )
-        from apps.orchestrator.tool_policy import openclaw_version_for_image_tag
+            # Image-refresh path takes priority over plain wake.
+            from django.conf import settings as django_settings
 
-        desired_tag = getattr(django_settings, "OPENCLAW_IMAGE_TAG", "latest") or "latest"
-        current_tag = tenant.container_image_tag or ""
-        needs_image_refresh = desired_tag != "latest" and current_tag != desired_tag
-
-        if needs_image_refresh:
-            # update_container_image bakes the EmptyDir mount into the same
-            # revision as the image bump, so a single restart lands both.
-            registry = getattr(django_settings, "AZURE_ACR_SERVER", "nbhdunited.azurecr.io")
-            desired_image = f"{registry}/nbhd-openclaw:{desired_tag}"
-            update_container_image(tenant.container_id, desired_image)
-
-            # Keep openclaw_version (config SCHEMA) in lockstep with the image
-            # we just deployed. Fleet version bumps skip hibernated tenants, so
-            # a tenant can wake onto a much newer image while its
-            # openclaw_version is stale; the next config it gets is then the
-            # wrong schema for the running image → crash loop. Mirror
-            # bump_openclaw_version_for_tenant (incident 2026-06-17: 44aaee8d
-            # woke onto 2026.5.28 with openclaw_version stuck at 2026.4.25).
-            new_version = openclaw_version_for_image_tag(desired_tag)
-            image_updates = {"container_image_tag": desired_tag}
-            if new_version and (tenant.openclaw_version or "") != new_version:
-                image_updates["openclaw_version"] = new_version
-                tenant.openclaw_version = new_version  # in-memory sync for step 3
-                version_synced = True
-            Tenant.objects.filter(id=tenant.id).update(**image_updates)
-            tenant.container_image_tag = desired_tag
-            logger.info(
-                "idle_wake: refreshed image for %s (%s -> %s, version -> %s)",
-                tid,
-                current_tag[:10] if current_tag else "?",
-                desired_tag[:10],
-                new_version,
+            from apps.orchestrator.azure_client import (
+                ensure_plugin_runtime_deps_mount,
+                update_container_image,
+                wake_container_app,
             )
-        elif ensure_plugin_runtime_deps_mount(tenant.container_id):
-            # In single-revision mode, adding the mount creates a new revision
-            # which auto-activates — that wakes the container too. No separate
-            # wake call needed.
-            logger.info("idle_wake: added plugin-runtime-deps mount and woke %s", tid)
-        else:
-            wake_container_app(tenant.container_id)
-    except Exception:
-        logger.exception("idle_wake: failed to wake container for %s", tid)
-        return False
+            from apps.orchestrator.tool_policy import openclaw_version_for_image_tag
 
-    # 2. Clear hibernation flag; stamp the wake so the message drain can
-    # tell "still booting after a wake" (retry soon, keep delivery
-    # attempts) apart from a genuinely down container.
-    Tenant.objects.filter(id=tenant.id).update(hibernated_at=None, last_wake_at=timezone.now())
+            desired_tag = getattr(django_settings, "OPENCLAW_IMAGE_TAG", "latest") or "latest"
+            current_tag = tenant.container_image_tag or ""
+            needs_image_refresh = desired_tag != "latest" and current_tag != desired_tag
+
+            if needs_image_refresh:
+                # update_container_image bakes the EmptyDir mount into the same
+                # revision as the image bump, so a single restart lands both.
+                registry = getattr(django_settings, "AZURE_ACR_SERVER", "nbhdunited.azurecr.io")
+                desired_image = f"{registry}/nbhd-openclaw:{desired_tag}"
+                update_container_image(tenant.container_id, desired_image)
+
+                # Keep openclaw_version (config SCHEMA) in lockstep with the image
+                # we just deployed. Fleet version bumps skip hibernated tenants, so
+                # a tenant can wake onto a much newer image while its
+                # openclaw_version is stale; the next config it gets is then the
+                # wrong schema for the running image → crash loop. Mirror
+                # bump_openclaw_version_for_tenant (incident 2026-06-17: 44aaee8d
+                # woke onto 2026.5.28 with openclaw_version stuck at 2026.4.25).
+                new_version = openclaw_version_for_image_tag(desired_tag)
+                status_updates["container_image_tag"] = desired_tag
+                if new_version and (tenant.openclaw_version or "") != new_version:
+                    status_updates["openclaw_version"] = new_version
+                    tenant.openclaw_version = new_version  # in-memory sync for step 3
+                    version_synced = True
+                tenant.container_image_tag = desired_tag
+                logger.info(
+                    "idle_wake: refreshed image for %s (%s -> %s, version -> %s)",
+                    tid,
+                    current_tag[:10] if current_tag else "?",
+                    desired_tag[:10],
+                    new_version,
+                )
+            elif ensure_plugin_runtime_deps_mount(tenant.container_id):
+                # In single-revision mode, adding the mount creates a new revision
+                # which auto-activates — that wakes the container too. No separate
+                # wake call needed.
+                logger.info("idle_wake: added plugin-runtime-deps mount and woke %s", tid)
+            else:
+                wake_container_app(tenant.container_id)
+
+            # Azure LROs can leave the pooled DB connection idle long enough for
+            # the server to reap it. Reconnect, restore RLS, and retry once on the
+            # specific connection failures before continuing to config writes.
+            _update_tenant_after_azure(tenant.pk, **status_updates)
+        except Exception:
+            logger.exception("idle_wake: failed to wake container for %s", tid)
+            rollback_updates = {"hibernated_at": original_hibernated_at}
+            if cron_wake:
+                rollback_updates["cron_wake_at"] = original_cron_wake_at
+            try:
+                rolled_back = _update_tenant_after_azure(
+                    tenant.pk,
+                    filters={"hibernated_at__isnull": True},
+                    **rollback_updates,
+                )
+                logger.info("idle_wake: rolled back failed wake claim for %s (rows=%d)", tid, rolled_back)
+            except Exception:
+                logger.exception("idle_wake: failed to roll back wake claim for %s", tid)
+            return False
+
+    # 2. The hibernation flag (and cron stamp, when applicable) was committed
+    # together by the conditional claim before Azure. That closes the window in
+    # which the idle sweep could see an awake tenant with no cron activity.
 
     # 3. Apply pending config (writes to file share before container finishes
     # booting). Normally gated on pending>config, but two states need a forced
@@ -745,11 +802,8 @@ def wake_for_cron_task(tenant_id: str) -> dict:
         return {"status": "not_active"}
 
     # Wake the container (clears hibernated_at, resumes crons, delivers buffers)
-    if not wake_hibernated_tenant(tenant):
+    if not wake_hibernated_tenant(tenant, cron_wake=True):
         return {"status": "wake_failed"}
-
-    # Mark this as a cron-triggered wake
-    Tenant.objects.filter(id=tenant.id).update(cron_wake_at=timezone.now())
 
     # Schedule the configured idle check; re-hibernate if no user messages arrive.
     try:

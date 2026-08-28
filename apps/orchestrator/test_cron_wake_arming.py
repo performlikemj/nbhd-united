@@ -151,7 +151,7 @@ class WakeForCronAlreadyAwakeTests(TestCase):
             result = wake_for_cron_task(str(self.tenant.id))
 
         self.assertEqual(result["status"], "woken_for_cron")
-        mock_wake.assert_called_once()
+        mock_wake.assert_called_once_with(self.tenant, cron_wake=True)
         # Re-arming is the awake-path fix; the hibernated path didn't have
         # the bug because idle-hibernation arms the next wake.
         mock_capture.assert_not_called()

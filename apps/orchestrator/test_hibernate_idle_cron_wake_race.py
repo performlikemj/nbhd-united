@@ -29,6 +29,8 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from apps.orchestrator import hibernation
+from apps.orchestrator.hibernation import wake_hibernated_tenant
 from apps.orchestrator.tasks import hibernate_idle_tenants_task
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -158,6 +160,27 @@ class HibernateIdleCronWakeRaceTests(TestCase):
         mock_hibernate.assert_not_called()
         self.assertEqual(result["hibernated"], 0)
         self.assertEqual(result["skipped_cron_wake"], 1)
+
+    @override_settings(OPENCLAW_IMAGE_TAG="latest")
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.ensure_plugin_runtime_deps_mount", return_value=False)
+    def test_idle_sweep_during_azure_wake_does_not_rehibernate(self, _mock_mount, _mock_publish):
+        tenant = self._make_idle_tenant(suffix=5)
+        tenant.hibernated_at = timezone.now()
+        tenant.save(update_fields=["hibernated_at"])
+
+        def run_sweep_during_wake(_container_id):
+            result = hibernate_idle_tenants_task()
+            self.assertEqual(result["hibernated"], 0)
+
+        with (
+            patch("apps.orchestrator.azure_client.wake_container_app", side_effect=run_sweep_during_wake),
+            patch.object(hibernation, "hibernate_idle_tenant", return_value=True) as mock_hibernate,
+        ):
+            result = wake_hibernated_tenant(tenant, cron_wake=True)
+
+        self.assertTrue(result)
+        mock_hibernate.assert_not_called()
 
 
 class HibernateIdleImminentCronTests(TestCase):
