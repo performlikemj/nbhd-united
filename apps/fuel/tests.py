@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest import TestCase as UnitTestCase
 from unittest.mock import patch
@@ -14,6 +14,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.common.llm_contracts import today_in_tenant_tz
+from apps.common.tenant_tz import tenant_tz
 from apps.pii.testsupport import neural_ran
 from apps.tenants.services import create_tenant
 from apps.tenants.test_utils import seed_internal_key
@@ -2507,6 +2508,20 @@ class WeeklyVolumeTests(TestCase):
         resp = self.client.get("/api/v1/fuel/weekly-summary/")
         self.assertEqual(resp.data["totals"]["sessions"], 0)
 
+    def test_weekly_summary_uses_tenant_local_day(self):
+        self.user.timezone = "Asia/Tokyo"
+        self.user.save(update_fields=["timezone"])
+        frozen = datetime(2026, 8, 31, 22, 30, tzinfo=UTC)
+        tenant_day = frozen.astimezone(tenant_tz(self.tenant)).date()
+
+        with patch("apps.common.llm_contracts.dj_tz.now", return_value=frozen) as mock_now:
+            resp = self.client.get("/api/v1/fuel/weekly-summary/")
+
+        self.assertEqual(resp.status_code, 200)
+        mock_now.assert_called_once_with()
+        expected_week_start = tenant_day - timedelta(days=tenant_day.weekday())
+        self.assertEqual(resp.data["week_start"], expected_week_start.isoformat())
+
 
 class PRDetectionTests(TestCase):
     def setUp(self):
@@ -3633,6 +3648,52 @@ class ConsumerWorkoutPlanTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.data), 1)
         self.assertEqual(resp.data[0]["name"], "Plan A")
+
+    def test_list_plans_query_count_is_constant(self):
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Plan 1",
+            start_date=date(2026, 8, 31),
+            weeks=1,
+            days_per_week=1,
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=date(2026, 8, 31),
+            status="done",
+            category="strength",
+            activity="Session 1",
+        )
+
+        with self.assertNumQueries(4):
+            one_plan = self.client.get("/api/v1/fuel/plans/")
+
+        for index in range(2, 6):
+            extra_plan = WorkoutPlan.objects.create(
+                tenant=self.tenant,
+                name=f"Plan {index}",
+                start_date=date(2026, 8, 31),
+                weeks=1,
+                days_per_week=1,
+            )
+            Workout.objects.create(
+                tenant=self.tenant,
+                plan=extra_plan,
+                date=date(2026, 8, 31),
+                status="planned",
+                category="strength",
+                activity=f"Session {index}",
+            )
+
+        with self.assertNumQueries(4):
+            five_plans = self.client.get("/api/v1/fuel/plans/")
+
+        self.assertEqual(one_plan.status_code, 200)
+        self.assertEqual(one_plan.data[0]["workout_count"], 1)
+        self.assertEqual(one_plan.data[0]["completed_count"], 1)
+        self.assertEqual(five_plans.status_code, 200)
+        self.assertEqual(len(five_plans.data), 5)
 
     def test_create_plan(self):
         resp = self.client.post(

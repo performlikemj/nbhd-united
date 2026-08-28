@@ -1153,7 +1153,7 @@ class WeeklyVolumeSummaryView(APIView):
             except ValueError:
                 return Response({"error": "invalid week_start"}, status=status.HTTP_400_BAD_REQUEST)
         else:
-            today = date_cls.today()
+            today = today_in_tenant_tz(tenant)
             week_start = today - timedelta(days=today.weekday())  # Monday
 
         week_end = week_start + timedelta(days=6)
@@ -1488,6 +1488,11 @@ class WorkoutPlanListView(APIView):
         if status_filter:
             qs = qs.filter(status=status_filter)
 
+        qs = qs.annotate(
+            workout_count=Count("workouts"),
+            completed_count=Count("workouts", filter=Q(workouts__status=WorkoutStatus.DONE)),
+        )
+
         # Compute the tenant-local today once and thread it into every
         # serializer so the derived program-progress fields don't fire a
         # per-plan tenant lookup (N+1) resolving "today".
@@ -1498,8 +1503,6 @@ class WorkoutPlanListView(APIView):
                 plan,
                 context={"today": today, "tenant": tenant, "rehydrate": True},
             ).data
-            data["workout_count"] = Workout.objects.filter(plan=plan).count()
-            data["completed_count"] = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
             result.append(data)
 
         return Response(result)
