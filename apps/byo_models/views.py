@@ -6,9 +6,9 @@ Endpoints (all under `/api/v1/tenants/byo-credentials/`):
 - `POST /` — paste a credential (provider + mode + token)
 - `DELETE /<uuid>/` — disconnect a credential
 
-All endpoints are gated by `tenant.byo_models_enabled`. When the flag
-is False, endpoints return 404 (intentional — feature is not advertised
-for tenants without the flag).
+GET and POST are gated by `tenant.byo_models_enabled`. DELETE remains
+available when the flag is False so a hidden feature can never strand a
+stored credential.
 
 Security notes:
 - The token is never logged. View code never includes `request.body`,
@@ -162,7 +162,7 @@ class BYOCredentialDetailView(APIView):
 
     def delete(self, request, cred_id):
         tenant = getattr(request.user, "tenant", None)
-        if tenant is None or not tenant.byo_models_enabled:
+        if tenant is None:
             return Response(status=status.HTTP_404_NOT_FOUND)
 
         try:

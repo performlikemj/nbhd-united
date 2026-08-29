@@ -9,7 +9,7 @@ import { DisconnectModal } from "@/components/byo/disconnect-modal";
 import { IntelligenceMeter } from "@/components/intelligence-meter";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
-import { ACTIVE_MODELS, DEFAULT_MODEL, MODELS, type ModelUI } from "@/lib/models";
+import { ACTIVE_MODELS, DEFAULT_MODEL, modelsForByoFlag, type ModelUI } from "@/lib/models";
 import {
   useByoCredentialsQuery,
   usePreferredModelMutation,
@@ -52,7 +52,7 @@ function isModelAvailable(
 export default function AIProviderPage() {
   const { data: tenant, isLoading: tenantLoading } = useTenantQuery();
   const byoEnabled = Boolean(tenant?.byo_models_enabled);
-  const { data: byoCreds } = useByoCredentialsQuery();
+  const { data: byoCreds } = useByoCredentialsQuery(byoEnabled);
   const preferredModelMutation = usePreferredModelMutation();
   const taskModelMutation = useTaskModelPreferencesMutation();
 
@@ -76,9 +76,10 @@ export default function AIProviderPage() {
   const appliedModel = tenant?.applied_model || activeModel;
 
   // Limited-time promo cards only render while the server reports the offer live.
+  const availableModels = useMemo(() => modelsForByoFlag(byoEnabled), [byoEnabled]);
   const visibleModels = useMemo(
-    () => MODELS.filter((m) => !m.limitedTimeOffer || offerActive),
-    [offerActive],
+    () => availableModels.filter((m) => !m.limitedTimeOffer || offerActive),
+    [availableModels, offerActive],
   );
 
   const fallbackModelName = useMemo(() => {
@@ -247,7 +248,7 @@ export default function AIProviderPage() {
             const currentPref =
               (tenant?.task_model_preferences as Record<string, string> | undefined)?.[task.slug] || "";
             const defaultName =
-              ACTIVE_MODELS.find((m) => m.model_id === activeModel)?.name ?? "default";
+              availableModels.find((m) => m.model_id === activeModel)?.name ?? fallbackModelName;
             return (
               <div
                 key={task.slug}
@@ -263,7 +264,7 @@ export default function AIProviderPage() {
                   className="rounded-panel border border-border bg-surface px-3 py-1.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent min-h-[36px]"
                 >
                   <option value="">Use default ({defaultName})</option>
-                  {ACTIVE_MODELS.filter(
+                  {availableModels.filter(
                     (m) => isModelAvailable(m, anthropicCred) && (!m.limitedTimeOffer || offerActive),
                   ).map((m) => (
                     <option key={m.model_id} value={m.model_id}>
@@ -280,16 +281,20 @@ export default function AIProviderPage() {
         </div>
       </SectionCard>
 
-      <ConnectAnthropicModal
-        open={openModal === "connect-anthropic"}
-        onClose={() => setOpenModal(null)}
-      />
-      <DisconnectModal
-        open={openModal === "disconnect-anthropic"}
-        cred={anthropicCred}
-        fallbackModelName={fallbackModelName}
-        onClose={() => setOpenModal(null)}
-      />
+      {byoEnabled ? (
+        <>
+          <ConnectAnthropicModal
+            open={openModal === "connect-anthropic"}
+            onClose={() => setOpenModal(null)}
+          />
+          <DisconnectModal
+            open={openModal === "disconnect-anthropic"}
+            cred={anthropicCred}
+            fallbackModelName={fallbackModelName}
+            onClose={() => setOpenModal(null)}
+          />
+        </>
+      ) : null}
     </div>
   );
 }

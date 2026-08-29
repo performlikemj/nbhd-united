@@ -20,7 +20,7 @@ Entry point for security review. It states the threat model, then consolidates e
 Untrusted user ──chan──▶ Django control plane ──internal-key──▶ oc-* container (LLM-driven)
    (Telegram/LINE/            │                                      │
     iOS/web)                  ├─ JWT/PAT (console API)               ├─ mounted file share (AGENTS/USER.md, creds)
-                              ├─ webhook signatures (Stripe/TG/LINE) ├─ LLM egress (OpenRouter ZDR / BYO)
+                              ├─ webhook signatures (Stripe/TG/LINE) ├─ LLM egress (OpenRouter ZDR; BYO parked)
                               └─ Postgres as app_user               └─ tools (gated + policy deny-list)
 ```
 
@@ -28,7 +28,7 @@ Four boundaries carry the platform:
 1. **Console API** — JWT / PAT auth, then app-layer tenant filtering. *(RLS is mostly OFF — see below.)*
 2. **Internal runtime** (`container → Django`) — a per-tenant **bearer secret** (`X-NBHD-Internal-Key`). Handlers run `service_role=True`, so RLS is *no backstop here*.
 3. **Webhooks** — cryptographic signature / secret verification (Stripe HMAC, Telegram secret-token, LINE HMAC). **Solid.**
-4. **LLM egress** — inbound PII is redacted to placeholders before reaching the model; platform traffic uses a Zero-Data-Retention OpenRouter key.
+4. **LLM egress** — model inference leaves through OpenRouter ZDR routes, enforced per request in code plus the account setting; raw-audio STT is the disclosed redaction exception.
 
 ## The load-bearing fact every auditor needs
 
@@ -52,7 +52,7 @@ Severity = impact × likelihood. Status: `open` / `partially-mitigated` / `by-de
 | SEC-1 ★ | Google **refresh token + platform OAuth client_secret written plaintext** to the per-tenant share (`integrations/services.py:637-703`); readable by the LLM-driven container itself (prompt-injection exfil) — grants `gmail.modify`/calendar/drive. Bypasses the sanitize chokepoint. | open | [secrets](secrets-identity-supply-chain.md), [injection](input-handling-and-injection.md) |
 | SEC-2 ★ | **Telegram bot token streams into Log Analytics in plaintext** — no `RedactTelegramToken` filter on `main`, httpx logs the token-bearing URL at INFO. Fix is staged unmerged on `fix/site-publishing-reliability`; channel is being decommissioned. Rotate the token; history is exposed. | open | [secrets](secrets-identity-supply-chain.md) |
 | SEC-3 ★ | **PAT scopes are cosmetic** — enforced on only 3 of ~90 `IsAuthenticated` endpoints (`PersonalAccessTokenAuthentication` is a default auth class). A "sessions:write" token works at billing, delete-account, and BYO-credential endpoints — a de-facto full-account credential. | open | [authn-authz](authn-authz-and-api-surface.md) |
-| SEC-4 ★ | **Onboarding writes real name/city/interests to `USER.md` unredacted** (`router/onboarding.py:599-624`), bypassing the #1083 redaction fix; the merge preserves the raw block permanently on the LLM-readable share. Every tenant. | open | [pii-egress](pii-and-llm-egress.md) |
+| SEC-4 ★ | Onboarding's first `USER.md` write now uses checked mint-redaction and skips unconfirmed writes (`72dad31c`, `0b6bc9f9`). | closed | [pii-egress](pii-and-llm-egress.md) |
 | SEC-5 ★ | **No DB isolation net on 162/165 tables** (`disable_rls` at boot). A missing `tenant=` filter leaks cross-tenant with no backstop and no CI guard. | open (by-design posture, under-defended) | [isolation](multi-tenant-isolation.md), [data-model](../reference/data-model.md) |
 | SEC-6 ★ | **No SSRF egress controls** in generated container config (`config_generator.py` has no `ssrf`/`allowPrivateNetwork`); the 2026-02 interceptor/NSG plan was never built. Protection rests on an unverified OpenClaw upstream default. | open | [injection](input-handling-and-injection.md) |
 | SEC-7 | **Action-gating is not a capability check** — approval is a text string in the model's context, not a code-level binding to the gated tool call. Low blast radius *only* because destructive GWS skills aren't wired yet. | partially-mitigated | [injection](input-handling-and-injection.md) |
@@ -68,7 +68,7 @@ Severity = impact × likelihood. Status: `open` / `partially-mitigated` / `by-de
 | SEC-12 | **No CI vulnerability-scan gate** (no `pip-audit`/`npm audit`); `transformers` is Dependabot-muted at every level. | open | [secrets](secrets-identity-supply-chain.md) |
 | SEC-13 ★ | `report_content` (`friends/circles.py:267`) has **no visibility check** — an existence oracle over neighbors' `SharedLesson` ids; breaks the module's re-verify-party pattern. | open | [isolation](multi-tenant-isolation.md) |
 | SEC-14 | **Fail-open redaction** (`redact_text` swallows all exceptions → forwards the *original* text) with **no alerting** on load-error / exception rate. | open | [pii-egress](pii-and-llm-egress.md) |
-| SEC-15 | Siri Tier-2 responder + meditation compose **rehydrate real PII to a cloud model** over the ZDR key (contractual, not technical, guarantee) — undisclosed in the privacy docs. | by-design (disclose) | [pii-egress](pii-and-llm-egress.md) |
+| SEC-15 | Siri Tier-2 and meditation compose now redact model-bound context and add placeholder legends; only the Siri owner-facing reply is rehydrated (`6b141d5d`, `4a134707`, `984b5dc4`). | closed | [pii-egress](pii-and-llm-egress.md) |
 | SEC-16 | The SEC-3 PAT-scope gap **exposes PII endpoints** (`pii-review-queue/` returns real span values to any authenticated PAT). | open | [pii-egress](pii-and-llm-egress.md) |
 | SEC-17 | `azure_client._build_container_secret` **falls back to a plaintext secret** when the Key Vault reference can't be built. | open | [secrets](secrets-identity-supply-chain.md), [infra](../reference/infrastructure-and-deployment.md) |
 | SEC-18 | `PlatformIssueLog.detail/.summary` accepts agent free text; "no PII" is convention-only, not run through `redact_text`. | open | [pii-egress](pii-and-llm-egress.md) |
@@ -90,14 +90,13 @@ So the register reads in proportion: much of the security architecture is genuin
 - **Cross-tenant messaging closed** — `nbhd_send_to_user` has no recipient parameter; routing is server-side.
 - **Upload ingress** — image/PDF paths sniff magic bytes (not client MIME) with pre- and post-decode size caps.
 - **The Friends cross-tenant chokepoint** — one audited accessor, CI-enforced, IDOR-defeated-by-construction (opaque ids + re-verify-party), correct on every path except SEC-13.
-- **PII redaction is uniform** across BYO and platform tenants (an earlier tiered-policy doc was stale).
+- **Model egress is sealed to OpenRouter ZDR** per request for chat/embeddings and by all-endpoints-ZDR model choice for STT; BYO is parked and non-ZDR.
 
 ## Action items (do these first)
 
 1. **Reconcile the stale "Django is BYPASSRLS" comments** (`0059`, `0106`, `apps/friends/access.py`) — the runtime role is verified `app_user` (non-BYPASSRLS), so the friends backstop binds and the comments mislead. Add the pending `friend_sky_memberships` (`sky`) FORCE-RLS backstop to `RLS_KEEP_ENABLED` + a policy (settles SEC-5/SEC-9).
 2. **Stop persisting the Google refresh token on the share** (SEC-1) — move to short-lived on-demand tokens.
 3. **Default-deny unscoped PAT** on sensitive views, or remove the scopes UI (SEC-3, SEC-16).
-4. **Redact the onboarding `USER.md` write** (SEC-4).
-5. **Rotate the Telegram bot token and land the log filter** — or complete the channel decommission (SEC-2).
+4. **Rotate the Telegram bot token and land the log filter** — or complete the channel decommission (SEC-2).
 
 See [`../IMPROVEMENTS.md`](../IMPROVEMENTS.md) for the full remediation + modernization roadmap.

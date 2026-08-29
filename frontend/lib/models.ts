@@ -7,8 +7,8 @@ export interface ModelUI {
   output_rate: number;
   comingSoon?: boolean;
   // When set, the model is only selectable if the tenant has connected
-  // the corresponding BYO subscription. The picker still shows the card
-  // (as a "Connect to enable" affordance) when the requirement isn't met.
+  // the corresponding BYO subscription. While BYO is enabled, the picker
+  // shows the card as a "Connect to enable" affordance when no credential exists.
   requires?: "byo-anthropic" | "byo-openai";
   // $0 on our side (no token cost to the tenant's budget).
   free?: boolean;
@@ -62,6 +62,11 @@ export const MODELS: ModelUI[] = [
 ];
 
 export const ACTIVE_MODELS = MODELS.filter((m) => !m.comingSoon);
+
+/** Models visible to a tenant under the server-owned BYO feature flag. */
+export function modelsForByoFlag(byoEnabled: boolean): ModelUI[] {
+  return ACTIVE_MODELS.filter((model) => byoEnabled || !model.requires?.startsWith("byo-"));
+}
 
 export const DEFAULT_MODEL = "openrouter/deepseek/deepseek-v4-pro";
 

@@ -396,7 +396,7 @@ class BYOEndpointTest(TestCase):
         self.assertEqual(response.status_code, 204)
         self.assertFalse(BYOCredential.objects.filter(id=cred.id).exists())
 
-    def test_delete_returns_404_when_flag_off(self):
+    def test_delete_removes_credential_when_flag_off(self):
         self._disable_flag()
         cred = BYOCredential.objects.create(
             tenant=self.tenant,
@@ -405,7 +405,8 @@ class BYOEndpointTest(TestCase):
             key_vault_secret_name="x",
         )
         response = self.client.delete(f"/api/v1/tenants/byo-credentials/{cred.id}/")
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(BYOCredential.objects.filter(id=cred.id).exists())
 
     def test_endpoints_require_authentication(self):
         anon = APIClient()
@@ -454,6 +455,23 @@ class BYOConfigGeneratorTest(TestCase):
         )
         cfg = self._generate()
         self.assertNotIn(ANTHROPIC_SONNET_MODEL, cfg["agents"]["defaults"]["models"])
+
+    def test_stale_anthropic_preferences_resolve_to_platform_models_when_flag_off(self):
+        from apps.billing.constants import DEEPSEEK_FLASH_MODEL, DEEPSEEK_MODEL
+        from apps.orchestrator.config_generator import build_cron_seed_jobs
+
+        self.tenant.byo_models_enabled = False
+        self.tenant.preferred_model = ANTHROPIC_SONNET_MODEL
+        self.tenant.task_model_preferences = {"morning_briefing": ANTHROPIC_SONNET_MODEL}
+        self.tenant.save(update_fields=["byo_models_enabled", "preferred_model", "task_model_preferences"])
+
+        cfg = self._generate()
+        jobs = build_cron_seed_jobs(self.tenant)
+        morning = next(job for job in jobs if job["name"] == "Morning Briefing")
+
+        self.assertEqual(cfg["agents"]["defaults"]["model"]["primary"], DEEPSEEK_MODEL)
+        self.assertEqual(morning["model"], DEEPSEEK_FLASH_MODEL)
+        self.assertNotEqual(morning["model"], ANTHROPIC_SONNET_MODEL)
 
     def test_no_byo_models_when_no_cred(self):
         self.tenant.byo_models_enabled = True
@@ -644,27 +662,21 @@ class BYOMarkCredentialErrorTest(TestCase):
 
 
 class EnableByoCommandTest(TestCase):
-    """`enable_byo` is deprecated as of PR #434 (fleet rollout).
-
-    The enable path is a no-op (BYO is fleet-wide); the disable path is the
-    only one that still mutates state and is reserved for per-tenant
-    emergency opt-out. These tests guard the deprecation contract.
-    """
+    """`enable_byo` cannot reactivate the parked non-ZDR surface."""
 
     def setUp(self):
         self.tenant = create_tenant(display_name="CmdTest", telegram_chat_id=10005)
 
     def test_enable_path_is_a_noop_with_deprecation_warning(self):
-        # New tenants come up with the flag True via model default;
-        # explicitly assert the pre-condition so the test stays honest.
+        # New tenants remain disabled under the parked default.
         self.tenant.refresh_from_db()
-        self.assertTrue(self.tenant.byo_models_enabled)
+        self.assertFalse(self.tenant.byo_models_enabled)
 
         out = StringIO()
         call_command("enable_byo", "--tenant", str(self.tenant.id), stdout=out)
 
         self.tenant.refresh_from_db()
-        self.assertTrue(self.tenant.byo_models_enabled, "Enable path must not flip the flag")
+        self.assertFalse(self.tenant.byo_models_enabled, "Enable path must not flip the flag")
         self.assertIn("DEPRECATED", out.getvalue())
 
     def test_enable_path_is_noop_even_when_flag_was_false(self):
@@ -685,6 +697,8 @@ class EnableByoCommandTest(TestCase):
     def test_disable_flips_flag(self):
         # Disable is the one path that still mutates state — used for
         # emergency per-tenant opt-out (e.g. user reports a runtime issue).
+        self.tenant.byo_models_enabled = True
+        self.tenant.save(update_fields=["byo_models_enabled"])
         out = StringIO()
         call_command("enable_byo", "--tenant", str(self.tenant.id), "--disable", stdout=out)
         self.tenant.refresh_from_db()
@@ -701,3 +715,79 @@ class EnableByoCommandTest(TestCase):
         out = StringIO()
         call_command("enable_byo", "--tenant", str(self.tenant.id), "--disable", stdout=out)
         self.assertIn("no-op", out.getvalue())
+
+
+class DisconnectAllByoCommandTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="DisconnectAll", telegram_chat_id=10007)
+
+    @patch("apps.byo_models.management.commands.byo_disconnect_all.publish_task")
+    @patch("apps.byo_models.management.commands.byo_disconnect_all.delete_credential")
+    def test_no_credentials_is_a_safe_noop(self, delete_mock, publish_mock):
+        out = StringIO()
+
+        call_command("byo_disconnect_all", stdout=out)
+
+        self.assertEqual(out.getvalue().strip(), "disconnected=0 failed=0")
+        delete_mock.assert_not_called()
+        publish_mock.assert_not_called()
+
+    @patch("apps.byo_models.management.commands.byo_disconnect_all.publish_task")
+    @patch("apps.byo_models.management.commands.byo_disconnect_all.delete_credential")
+    def test_disconnects_mocked_credential_and_enqueues_reconcile(self, delete_mock, publish_mock):
+        credential = BYOCredential.objects.create(
+            tenant=self.tenant,
+            provider=BYOCredential.Provider.ANTHROPIC,
+            mode=BYOCredential.Mode.CLI_SUBSCRIPTION,
+            key_vault_secret_name="not-a-secret-value",
+        )
+        before = self.tenant.pending_config_version
+        out = StringIO()
+
+        call_command("byo_disconnect_all", stdout=out)
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(out.getvalue().strip(), "disconnected=1 failed=0")
+        delete_mock.assert_called_once_with(credential)
+        self.assertEqual(self.tenant.pending_config_version, before + 1)
+        publish_mock.assert_called_once_with("apply_single_tenant_config", str(self.tenant.id))
+
+
+class ParkByoMigrationTest(TestCase):
+    class _AppsStub:
+        @staticmethod
+        def get_model(app_label, model_name):
+            return Tenant
+
+    def setUp(self):
+        self.active = create_tenant(display_name="MigrationActive", telegram_chat_id=10008)
+        self.deleted = create_tenant(display_name="MigrationDeleted", telegram_chat_id=10009)
+        Tenant.objects.filter(id=self.active.id).update(byo_models_enabled=True)
+        Tenant.objects.filter(id=self.deleted.id).update(
+            byo_models_enabled=True,
+            status=Tenant.Status.DELETED,
+        )
+
+    @staticmethod
+    def _migration_module():
+        import importlib
+
+        return importlib.import_module("apps.tenants.migrations.0159_park_byo_models")
+
+    def test_forward_disables_only_non_deleted_tenants(self):
+        self._migration_module().disable_byo_for_fleet(self._AppsStub(), schema_editor=None)
+
+        self.active.refresh_from_db()
+        self.deleted.refresh_from_db()
+        self.assertFalse(self.active.byo_models_enabled)
+        self.assertTrue(self.deleted.byo_models_enabled)
+
+    def test_reverse_restores_only_non_deleted_tenants(self):
+        migration = self._migration_module()
+        migration.disable_byo_for_fleet(self._AppsStub(), schema_editor=None)
+        migration.restore_byo_for_fleet(self._AppsStub(), schema_editor=None)
+
+        self.active.refresh_from_db()
+        self.deleted.refresh_from_db()
+        self.assertTrue(self.active.byo_models_enabled)
+        self.assertTrue(self.deleted.byo_models_enabled)

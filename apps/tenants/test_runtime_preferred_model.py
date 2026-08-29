@@ -111,8 +111,10 @@ class RuntimePreferredModelViewTest(TestCase):
     # ── POST forbidden ─────────────────────────────────────────────────
 
     def test_post_byo_model_without_credential_rejected(self, mock_enq):
-        # Starter tier with byo_models_enabled=True but no BYOCredential
-        # → Sonnet/Opus must not be in allowed_models and POST must 400.
+        # Explicitly enable the parked flag to isolate the no-credential gate:
+        # Sonnet/Opus must not be in allowed_models and POST must 400.
+        self.tenant.byo_models_enabled = True
+        self.tenant.save(update_fields=["byo_models_enabled"])
         self.assertTrue(self.tenant.byo_models_enabled)
 
         response = self.client.post(

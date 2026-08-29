@@ -1900,12 +1900,12 @@ export function useDisconnectSautaiMutation() {
 
 // BYO subscription credentials
 
-export function useByoCredentialsQuery() {
+export function useByoCredentialsQuery(byoEnabled: boolean) {
   return useQuery({
     queryKey: ["byo-credentials"],
     queryFn: fetchByoCredentials,
     staleTime: 30_000,
-    enabled: isLoggedIn(),
+    enabled: isLoggedIn() && byoEnabled,
     // 404 when the feature flag is off — return [] rather than retrying.
     retry: (failureCount, error) => {
       const status = (error as Error & { status?: number }).status;
