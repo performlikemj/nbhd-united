@@ -6,9 +6,10 @@ const { TextDecoder } = require("util");
 
 const { parse: parseJavaScript } = require("@babel/parser");
 const postcss = require("postcss");
-const externalContentModule = import("../../external-content-wrap.js");
+const defaultExternalContentModule = import("../../external-content-wrap.js").catch(() => null);
 
 const NOT_CONFIGURED = "Site editing isn't configured for this account.";
+const CONTENT_ISOLATION_MISSING = "Site editing is temporarily unavailable (content isolation module missing).";
 const TEXT_EXTENSIONS = new Set([".js", ".jsx", ".css", ".html", ".md", ".txt"]);
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
 const HARD_DENY_PATHS = [
@@ -73,21 +74,6 @@ function toolText(value) {
 function errorText(prefix, error) {
   const message = error && error.message ? error.message : String(error);
   return toolText(`${prefix}: ${message.replace(/\s+/g, " ").trim().slice(0, 800)}`);
-}
-
-async function externalToolText(value) {
-  const { wrapExternalContent } = await externalContentModule;
-  return toolText(wrapExternalContent(redactToken(value), { source: "api" }));
-}
-
-async function guardedErrorText(prefix, error) {
-  const message = error && error.message ? error.message : String(error);
-  const clean = message.replace(/\s+/g, " ").trim().slice(0, 800);
-  if (error && error.githubOrigin) {
-    const wrapped = await externalToolText(clean);
-    return toolText(`${prefix}: ${wrapped.content[0].text}`);
-  }
-  return errorText(prefix, error);
 }
 
 function positiveInt(value, fallback, ceiling) {
@@ -166,8 +152,15 @@ function literalPrefix(pattern) {
   return prefix.replace(/\/+$/, "");
 }
 
-function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now = () => new Date() }) {
+function createSiteEditor({
+  config,
+  env = {},
+  fetchImpl = globalThis.fetch,
+  now = () => new Date(),
+  externalContentModule = defaultExternalContentModule,
+}) {
   const cfg = config && typeof config === "object" && !Array.isArray(config) ? config : {};
+  const branch = typeof cfg.branch === "string" ? cfg.branch.trim() : "";
   const allowPaths = Array.isArray(cfg.allowPaths) ? cfg.allowPaths.filter((item) => typeof item === "string") : [];
   const configured = Boolean(
     typeof cfg.owner === "string" && /^[A-Za-z0-9_.-]+$/.test(cfg.owner) &&
@@ -187,7 +180,28 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
     deployMinutes: positiveInt(cfg.deployMinutes, 5, 120),
   };
   const pending = new Map();
+  const safeExternalContentModule = Promise.resolve(externalContentModule).catch(() => null);
   let treeCache = null;
+
+  async function externalToolText(value) {
+    const module = await safeExternalContentModule;
+    if (!module || typeof module.wrapExternalContent !== "function") {
+      const error = new Error(CONTENT_ISOLATION_MISSING);
+      error.contentIsolationMissing = true;
+      throw error;
+    }
+    return toolText(module.wrapExternalContent(redactToken(value), { source: "api" }));
+  }
+
+  async function guardedErrorText(prefix, error) {
+    const message = error && error.message ? error.message : String(error);
+    const clean = message.replace(/\s+/g, " ").trim().slice(0, 800);
+    if (error && error.githubOrigin) {
+      const wrapped = await externalToolText(clean);
+      return toolText(`${prefix}: ${wrapped.content[0].text}`);
+    }
+    return errorText(prefix, error);
+  }
 
   function hasToken() {
     return typeof env.NBHD_SITE_GITHUB_TOKEN === "string" && env.NBHD_SITE_GITHUB_TOKEN.trim();
@@ -305,30 +319,45 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
   }
 
   function validateIndexHtml(oldContent, newContent) {
+    const activeOldContent = oldContent.replace(/<!--[\s\S]*?-->/g, "");
+    const activeNewContent = newContent.replace(/<!--[\s\S]*?-->/g, "");
     const count = (text, regex) => Array.from(text.matchAll(regex)).length;
-    if (count(newContent, /[\s\/"'<]on[a-z]+\s*=/gi) > count(oldContent, /[\s\/"'<]on[a-z]+\s*=/gi)) {
+    if (count(activeNewContent, /[\s\/"'<]on[a-z]+\s*=/gi) > count(activeOldContent, /[\s\/"'<]on[a-z]+\s*=/gi)) {
       throw new Error("index.html cannot add inline event handlers.");
     }
     const containmentPatterns = [
       /<script\b[^>]*>[\s\S]*?<\/script\s*>/gi,
       /<script\b[^>]*\/\s*>/gi,
+      /<script\b[^>]*>/gi,
       /<base\b[^>]*>/gi,
       /<iframe\b[^>]*>/gi,
       /<object\b[^>]*>/gi,
       /<embed\b[^>]*>/gi,
       /<meta\b[^>]*http-equiv[^>]*>/gi,
       /\bsrcdoc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
-      /\b[\w:-]+\s*=\s*(?:"\s*(?:javascript:|data:)[^"]*"|'\s*(?:javascript:|data:)[^']*'|(?:javascript:|data:)[^\s>]+)/gi,
     ];
     for (const pattern of containmentPatterns) {
-      for (const match of newContent.matchAll(pattern)) {
-        if (!oldContent.includes(match[0])) {
+      for (const match of activeNewContent.matchAll(pattern)) {
+        if (!activeOldContent.includes(match[0])) {
           throw new Error("index.html cannot add active or embedded content.");
         }
       }
     }
-    const oldOrigins = remoteOrigins(oldContent);
-    for (const origin of remoteOrigins(newContent)) {
+    const normalizeSchemes = (text) => text
+      .replace(/&#(?:x([0-9a-f]+)|(\d+));?/gi, (entity, hex, decimal) => {
+        const value = Number.parseInt(hex || decimal, hex ? 16 : 10);
+        return value <= 0x10ffff && !(value >= 0xd800 && value <= 0xdfff) ? String.fromCodePoint(value) : entity;
+      })
+      .replace(/[\t\n\r]/g, "");
+    const normalizedOldContent = normalizeSchemes(activeOldContent);
+    const unsafeAttributePattern = /\b[\w:-]+\s*=\s*(?:"\s*(?:javascript:|data:)[^"]*"|'\s*(?:javascript:|data:)[^']*'|(?:javascript:|data:)[^\s>]+)/gi;
+    for (const match of normalizeSchemes(activeNewContent).matchAll(unsafeAttributePattern)) {
+      if (!normalizedOldContent.includes(match[0])) {
+        throw new Error("index.html cannot add active or embedded content.");
+      }
+    }
+    const oldOrigins = remoteOrigins(activeOldContent);
+    for (const origin of remoteOrigins(activeNewContent)) {
       if (!oldOrigins.has(origin)) throw new Error("index.html cannot add a new remote origin.");
     }
   }
@@ -383,11 +412,11 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
   }
 
   async function repositoryTree() {
-    if (treeCache) return treeCache;
-    const branchRef = `heads/${cfg.branch}`;
+    const branchRef = `heads/${branch}`;
     const ref = await github(`/git/ref/${encodeRepoPath(branchRef)}`);
     const refSha = ref && ref.object && ref.object.sha;
     if (!refSha) throw new Error("GitHub returned a ref without a commit SHA.");
+    if (treeCache && refSha === treeCache.refSha) return treeCache;
     const commit = await github(`/git/commits/${encodeURIComponent(refSha)}`);
     const treeSha = commit && commit.tree && commit.tree.sha;
     if (!treeSha) throw new Error("GitHub returned a commit without a tree SHA.");
@@ -415,6 +444,7 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
   async function currentText(repoPath, { allowNotFound = false } = {}) {
     const entry = await regularBlobEntry(repoPath, { allowNotFound });
     if (entry === null) return "";
+    if (entry.size > limits.maxTextBytes) throw new Error("The text file exceeds the configured size limit.");
     const data = await github(`/git/blobs/${encodeURIComponent(entry.sha)}`);
     if (!data || data.encoding !== "base64" || typeof data.content !== "string") {
       throw new Error("GitHub returned an unreadable repository blob.");
@@ -469,7 +499,7 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
   }
 
   async function publishAttempt(commitMessage) {
-    const branchRef = `heads/${cfg.branch.trim()}`;
+    const branchRef = `heads/${branch}`;
     const ref = await github(`/git/ref/${encodeRepoPath(branchRef)}`);
     const headSha = ref && ref.object && ref.object.sha;
     if (!headSha) throw new Error("GitHub returned a ref without a commit SHA.");
@@ -506,7 +536,10 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
         body: { sha: commit.sha, force: false },
       });
     } catch (error) {
-      if (error.status === 409 || error.status === 422) error.refMoved = true;
+      if (error.status === 409 || error.status === 422) {
+        error.refMoved = true;
+        treeCache = null;
+      }
       throw error;
     }
     treeCache = null;
@@ -518,7 +551,13 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
     try {
       return await work();
     } catch (error) {
-      return guardedErrorText(prefix, error);
+      if (error && error.contentIsolationMissing) return toolText(CONTENT_ISOLATION_MISSING);
+      try {
+        return await guardedErrorText(prefix, error);
+      } catch (wrappingError) {
+        if (wrappingError && wrappingError.contentIsolationMissing) return toolText(CONTENT_ISOLATION_MISSING);
+        return errorText(prefix, wrappingError);
+      }
     }
   }
 
@@ -570,7 +609,8 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
       return guarded(async () => {
         const checked = assertEditableFile(repoPath);
         if (typeof localPath !== "string" || !localPath) throw new Error("A local upload path is required.");
-        const workspace = fs.realpathSync(env.OPENCLAW_WORKSPACE || process.env.OPENCLAW_WORKSPACE || process.cwd());
+        const workspaceRoot = env.OPENCLAW_WORKSPACE_PATH || env.OPENCLAW_WORKSPACE || path.join(env.OPENCLAW_HOME || "/home/node/.openclaw", "workspace");
+        const workspace = fs.realpathSync(workspaceRoot);
         const source = fs.realpathSync(localPath);
         const relative = path.relative(workspace, source);
         if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -640,7 +680,7 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
         pending.clear();
         const shortSha = sha.slice(0, 7);
         const url = `https://github.com/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/commit/${encodeURIComponent(sha)}`;
-        return externalToolText(
+        return toolText(
           `Published commit ${shortSha}: ${url}. Deployment usually takes about ${limits.deployMinutes} minutes.`,
         );
       }, "Couldn't publish the website changes");
@@ -650,7 +690,7 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
       return guarded(async () => {
         let data;
         try {
-          data = await github(`/actions/runs?branch=${encodeURIComponent(cfg.branch)}&per_page=1`);
+          data = await github(`/actions/runs?branch=${encodeURIComponent(branch)}&per_page=1`);
         } catch (error) {
           if (error.status === 403) {
             return toolText("I can't see deploy status; check in a few minutes. The site is not confirmed live.");

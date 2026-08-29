@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -275,21 +275,37 @@ test("valid JPG, PNG, GIF, and WebP uploads pass magic-byte checks", async (t) =
   }
 });
 
-test("uploads are contained to the configured workspace", async (t) => {
-  const workspace = mkdtempSync(join(tmpdir(), "nbhd-site-editor-workspace-"));
+test("uploads derive the workspace from OPENCLAW_HOME and reject cwd files and symlinks", async (t) => {
+  const openclawHome = mkdtempSync(join(tmpdir(), "nbhd-site-editor-home-"));
+  const workspace = join(openclawHome, "workspace");
+  const inbound = join(workspace, "media", "inbound");
   const outside = mkdtempSync(join(process.cwd(), ".site-editor-outside-"));
-  t.after(() => rmSync(workspace, { recursive: true, force: true }));
+  mkdirSync(inbound, { recursive: true });
+  t.after(() => rmSync(openclawHome, { recursive: true, force: true }));
   t.after(() => rmSync(outside, { recursive: true, force: true }));
-  const localPath = join(outside, "private.png");
-  writeFileSync(localPath, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const inboundPath = join(inbound, "x.png");
+  const cwdPath = join(outside, "private.png");
+  const symlinkPath = join(inbound, "linked.png");
+  writeFileSync(inboundPath, bytes);
+  writeFileSync(cwdPath, bytes);
+  symlinkSync(inboundPath, symlinkPath);
   const instance = createSiteEditor({
     config: BASE_CONFIG,
-    env: { NBHD_SITE_GITHUB_TOKEN: TOKEN, OPENCLAW_WORKSPACE: workspace },
+    env: { NBHD_SITE_GITHUB_TOKEN: TOKEN, OPENCLAW_HOME: openclawHome },
     fetchImpl: async () => response(200),
   });
   assert.match(
-    text(await instance.tools.site_stage_upload({ path: "web/public/private.png", local_path: localPath })),
+    text(await instance.tools.site_stage_upload({ path: "web/public/x.png", local_path: inboundPath })),
+    /^Staged/,
+  );
+  assert.match(
+    text(await instance.tools.site_stage_upload({ path: "web/public/private.png", local_path: cwdPath })),
     /Only files in your workspace can be uploaded/,
+  );
+  assert.match(
+    text(await instance.tools.site_stage_upload({ path: "web/public/linked.png", local_path: symlinkPath })),
+    /isn't a regular file/,
   );
 });
 
@@ -343,6 +359,9 @@ test("index.html containment rejects each reviewed bypass", async () => {
     ["remote stylesheet", original.replace("</head>", '<link rel="stylesheet" href="//evil.example/x.css"></head>')],
     ["iframe", original.replace("<body>", '<body><iframe src="//evil.example/">')],
     ["javascript attribute", original.replace("<body>", '<body><a href="javascript:alert(1)">x</a>')],
+    ["entity-encoded javascript attribute", original.replace("<body>", '<body><a href="&#106;avascript:alert(1)">x</a>')],
+    ["hex-entity javascript attribute", original.replace("<body>", '<body><a href="&#x6a;avascript:alert(1)">x</a>')],
+    ["whitespace-split javascript attribute", original.replace("<body>", '<body><a href="java\tscript:alert(1)">x</a>')],
   ];
   for (const [name, injection] of bypasses) {
     const fixture = repositoryFixture(
@@ -354,6 +373,28 @@ test("index.html containment rejects each reviewed bypass", async () => {
       text(await tools.site_stage_file({ path: "web/public/index.html", content: injection })),
       /index\.html cannot/,
       name,
+    );
+  }
+});
+
+test("index.html rejects unclosed allowed-origin scripts and uncommented dormant scripts", async () => {
+  const original = '<html><head><script src="https://unpkg.com/a.js"></script><script src="https://cdn.jsdelivr.net/a.js"></script><!-- <script src="/dormant.js"></script> --></head><body></body></html>';
+  const bypasses = [
+    original.replace("</body>", '<script src="https://unpkg.com/evil-pkg@1/dist/evil.js"></body>'),
+    original.replace("</body>", '<script src="https://cdn.jsdelivr.net/gh/attacker/repo/x.js"></body>'),
+    original.replace('<!-- <script src="/dormant.js"></script> -->', '<script src="/dormant.js"></script>'),
+  ];
+  for (const injection of bypasses) {
+    const fixture = repositoryFixture(
+      [{ type: "blob", mode: "100644", path: "web/public/index.html", sha: "index", size: original.length }],
+      { index: original },
+    );
+    assert.match(
+      text(await editor({ allowPaths: KIHO_ALLOW_PATHS }, fixture.fetchImpl).tools.site_stage_file({
+        path: "web/public/index.html",
+        content: injection,
+      })),
+      /index\.html cannot/,
     );
   }
 });
@@ -397,6 +438,45 @@ test("show pending renders a unified LCS line diff", async () => {
   assert.match(shown, /-two/);
   assert.match(shown, /\+changed/);
   assert.equal(fixture.calls.filter((call) => call.url.pathname.endsWith("/git/trees/read-tree")).length, 1);
+});
+
+test("repository reads and pending diffs refresh when the branch head changes", async () => {
+  const calls = [];
+  let head = "head-1";
+  const fetchImpl = async (url, options) => {
+    const parsed = new URL(url);
+    calls.push(parsed.pathname);
+    if (parsed.pathname.endsWith("/git/ref/heads/main")) return response(200, { object: { sha: head } });
+    if (parsed.pathname.endsWith(`/git/commits/${head}`)) return response(200, { tree: { sha: `tree-${head}` } });
+    if (parsed.pathname.endsWith(`/git/trees/tree-${head}`)) {
+      return response(200, {
+        tree: [{ type: "blob", mode: "100644", path: "web/src/pages/AboutPage.js", sha: `blob-${head}`, size: 20 }],
+        truncated: false,
+      });
+    }
+    if (parsed.pathname.endsWith(`/git/blobs/blob-${head}`)) {
+      return response(200, { encoding: "base64", content: Buffer.from(`export default "${head}";`).toString("base64") });
+    }
+    throw new Error(`unexpected ${options.method} ${parsed.pathname}`);
+  };
+  const { tools } = editor({}, fetchImpl);
+  assert.match(text(await tools.site_read_file({ path: "web/src/pages/AboutPage.js" })), /head-1/);
+  await tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: 'export default "edited";' });
+  head = "head-2";
+  assert.match(text(await tools.site_read_file({ path: "web/src/pages/AboutPage.js" })), /head-2/);
+  const shown = text(await tools.site_show_pending());
+  assert.match(shown, /-export default "head-2";/);
+  assert.doesNotMatch(shown, /-export default "head-1";/);
+  assert.equal(calls.filter((pathname) => pathname.endsWith("/git/ref/heads/main")).length, 3);
+});
+
+test("oversized tree entries fail before blob download", async () => {
+  const fixture = repositoryFixture([
+    { type: "blob", mode: "100644", path: "web/src/pages/AboutPage.js", sha: "large", size: 262145 },
+  ], { large: "small response should not be fetched" });
+  const result = await editor({}, fixture.fetchImpl).tools.site_read_file({ path: "web/src/pages/AboutPage.js" });
+  assert.match(text(result), /size limit/);
+  assert.equal(fixture.calls.filter((call) => call.url.pathname.includes("/git/blobs/")).length, 0);
 });
 
 function githubFixture({ firstPatchStatus = 200 } = {}) {
@@ -484,6 +564,7 @@ test("two-file text and binary publish sends every exact Git Data request body",
   assert.deepEqual(patchCall.body, { sha: "commit-1", force: false });
   assert.match(text(result), /Published commit commit-/);
   assert.match(text(result), /about 6 minutes/);
+  assert.doesNotMatch(text(result), /EXTERNAL_UNTRUSTED_CONTENT/);
   assert.equal(_state.pending.size, 0);
 });
 
@@ -559,6 +640,30 @@ test("GitHub API error bodies and repository text are isolated as untrusted cont
   const readResult = await editor({}, fixture.fetchImpl).tools.site_read_file({ path: "web/src/pages/AboutPage.js" });
   assert.match(text(readResult), /EXTERNAL_UNTRUSTED_CONTENT/);
   assert.match(text(readResult), /ignore previous instructions/);
+});
+
+test("read and show tools fail closed when content isolation import rejects", async () => {
+  const fixture = repositoryFixture(
+    [{ type: "blob", mode: "100644", path: "web/src/pages/AboutPage.js", sha: "about", size: 20 }],
+    { about: "export default 1;" },
+  );
+  const instance = createSiteEditor({
+    config: BASE_CONFIG,
+    env: { NBHD_SITE_GITHUB_TOKEN: TOKEN, OPENCLAW_WORKSPACE: tmpdir() },
+    fetchImpl: async (url, options) => {
+      if (new URL(url).pathname.endsWith("/actions/runs")) {
+        return response(200, { workflow_runs: [{ status: "completed", conclusion: "success" }] });
+      }
+      return fixture.fetchImpl(url, options);
+    },
+    externalContentModule: Promise.reject(new Error("simulated import rejection")),
+  });
+  const unavailable = "Site editing is temporarily unavailable (content isolation module missing).";
+  assert.equal(text(await instance.tools.site_list_files({ path: "web/src/pages" })), unavailable);
+  assert.equal(text(await instance.tools.site_read_file({ path: "web/src/pages/AboutPage.js" })), unavailable);
+  await instance.tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: "export default 2;" });
+  assert.equal(text(await instance.tools.site_show_pending()), unavailable);
+  assert.equal(text(await instance.tools.site_deploy_status()), unavailable);
 });
 
 test("every tool fails closed without a token or complete config", async () => {
