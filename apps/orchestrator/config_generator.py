@@ -1565,7 +1565,10 @@ def effective_primary_model(tenant: Tenant) -> str:
     return resolve_tenant_models(tenant)[0]["primary"]
 
 
-WHISPER_DEFAULT_MODEL = {"provider": "openai", "model": "gpt-4o-mini-transcribe"}
+# OpenRouter ignores chat-style provider routing for STT, so privacy is pinned by
+# model choice: this slug has only DeepInfra and Groq endpoints, both on
+# OpenRouter's ZDR endpoint list. Keep aligned with Django's OPENROUTER_STT_MODEL.
+OPENROUTER_STT_MODEL = {"provider": "openrouter", "model": "openai/whisper-large-v3-turbo"}
 
 # Heartbeat model — the heartbeat is the one routine cron that's pure judgment
 # ("is anything genuinely new?" — it cross-references the daily note + heartbeat
@@ -2211,7 +2214,7 @@ def _build_tools_section(
     tools["media"] = {
         "audio": {
             "enabled": True,
-            "models": [WHISPER_DEFAULT_MODEL],
+            "models": [OPENROUTER_STT_MODEL],
         },
     }
     # Tool-call loop detection. Off by default upstream — we turn it on as
@@ -2372,10 +2375,6 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 or getattr(settings, "OPENCLAW_USAGE_REPORTER_PLUGIN_ID", "")
             ).strip(),
             str(getattr(settings, "OPENCLAW_USAGE_REPORTER_PLUGIN_PATH", "") or "").strip(),
-        ),
-        (
-            str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_ID", "") or "").strip(),
-            str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_PATH", "") or "").strip(),
         ),
         # Settings plugin — primary-model read + switch (nbhd_get_preferred_model_state,
         # nbhd_set_preferred_model). Unconditional in production via base.py default
@@ -2795,7 +2794,6 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     # models routed through OpenRouter (e.g. DEEPSEEK_MODEL).
 
     if _active_plugins:
-        image_gen_id = str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_ID", "") or "").strip()
         usage_reporter_id = str(
             getattr(settings, "OPENCLAW_USAGE_PLUGIN_ID", "")
             or getattr(settings, "OPENCLAW_USAGE_REPORTER_PLUGIN_ID", "")
@@ -2815,10 +2813,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         conversation_hook_plugin_ids.discard("")
         plugin_config: dict[str, Any] = {
             "allow": [pid for pid, _ in _active_plugins],
-            "entries": {
-                pid: ({"enabled": True, "config": {"tier": tier}} if pid == image_gen_id else {"enabled": True})
-                for pid, _ in _active_plugins
-            },
+            "entries": {pid: {"enabled": True} for pid, _ in _active_plugins},
         }
 
         # These config-loaded plugins use OpenClaw conversation hooks. In
@@ -3080,6 +3075,12 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         providers = models_section.setdefault("providers", {})
         providers["openrouter"] = {
             "baseUrl": "https://openrouter.ai/api/v1",
+            "params": {
+                "provider": {
+                    "zdr": True,
+                    "data_collection": "deny",
+                },
+            },
             # Declared so the static registry can resolve them — see
             # OPENROUTER_DECLARED_MODELS for why this list stays minimal.
             # Emitted for BYO tenants too: it only extends the ``openrouter``

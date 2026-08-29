@@ -51,7 +51,6 @@ WORKDIR /opt/nbhd
 COPY runtime/openclaw/plugins/nbhd-google-tools /opt/nbhd/plugins/nbhd-google-tools
 COPY runtime/openclaw/plugins/nbhd-journal-tools /opt/nbhd/plugins/nbhd-journal-tools
 COPY runtime/openclaw/plugins/nbhd-usage-reporter /opt/nbhd/plugins/nbhd-usage-reporter
-COPY runtime/openclaw/plugins/nbhd-image-gen /opt/nbhd/plugins/nbhd-image-gen
 COPY runtime/openclaw/plugins/nbhd-reddit-tools /opt/nbhd/plugins/nbhd-reddit-tools
 COPY runtime/openclaw/plugins/nbhd-finance-tools /opt/nbhd/plugins/nbhd-finance-tools
 COPY runtime/openclaw/plugins/nbhd-fuel-tools /opt/nbhd/plugins/nbhd-fuel-tools
@@ -133,8 +132,6 @@ ENV OPENCLAW_USAGE_REPORTER_PLUGIN_ID=
 ENV OPENCLAW_JOURNAL_PLUGIN_ID=nbhd-journal-tools
 ENV OPENCLAW_USAGE_REPORTER_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-usage-reporter
 ENV OPENCLAW_JOURNAL_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-journal-tools
-ENV OPENCLAW_IMAGE_GEN_PLUGIN_ID=nbhd-image-gen
-ENV OPENCLAW_IMAGE_GEN_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-image-gen
 ENV OPENCLAW_AUTOMATION_PLUGIN_ID=nbhd-automation-tools
 ENV OPENCLAW_AUTOMATION_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-automation-tools
 ENV OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID=nbhd-cron-enforcement
