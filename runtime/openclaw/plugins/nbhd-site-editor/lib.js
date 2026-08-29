@@ -320,9 +320,9 @@ function createSiteEditor({
 
   function validateIndexHtml(oldContent, newContent) {
     const activeOldContent = oldContent.replace(/<!--[\s\S]*?-->/g, "");
-    const activeNewContent = newContent.replace(/<!--[\s\S]*?-->/g, "");
+    const rawNewContent = newContent;
     const count = (text, regex) => Array.from(text.matchAll(regex)).length;
-    if (count(activeNewContent, /[\s\/"'<]on[a-z]+\s*=/gi) > count(activeOldContent, /[\s\/"'<]on[a-z]+\s*=/gi)) {
+    if (count(rawNewContent, /[\s\/"'<]on[a-z]+\s*=/gi) > count(activeOldContent, /[\s\/"'<]on[a-z]+\s*=/gi)) {
       throw new Error("index.html cannot add inline event handlers.");
     }
     const containmentPatterns = [
@@ -337,27 +337,41 @@ function createSiteEditor({
       /\bsrcdoc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
     ];
     for (const pattern of containmentPatterns) {
-      for (const match of activeNewContent.matchAll(pattern)) {
+      for (const match of rawNewContent.matchAll(pattern)) {
         if (!activeOldContent.includes(match[0])) {
           throw new Error("index.html cannot add active or embedded content.");
         }
       }
     }
+    const namedEntities = {
+      Tab: "\t",
+      NewLine: "\n",
+      colon: ":",
+      sol: "/",
+      lpar: "(",
+      rpar: ")",
+      quot: '"',
+      apos: "'",
+      amp: "&",
+      lt: "<",
+      gt: ">",
+    };
     const normalizeSchemes = (text) => text
       .replace(/&#(?:x([0-9a-f]+)|(\d+));?/gi, (entity, hex, decimal) => {
         const value = Number.parseInt(hex || decimal, hex ? 16 : 10);
         return value <= 0x10ffff && !(value >= 0xd800 && value <= 0xdfff) ? String.fromCodePoint(value) : entity;
       })
-      .replace(/[\t\n\r]/g, "");
+      .replace(/&(Tab|NewLine|colon|sol|lpar|rpar|quot|apos|amp|lt|gt);/g, (entity, name) => namedEntities[name] ?? entity)
+      .replace(/[\x00-\x1f\x7f]/g, "");
     const normalizedOldContent = normalizeSchemes(activeOldContent);
-    const unsafeAttributePattern = /\b[\w:-]+\s*=\s*(?:"\s*(?:javascript:|data:)[^"]*"|'\s*(?:javascript:|data:)[^']*'|(?:javascript:|data:)[^\s>]+)/gi;
-    for (const match of normalizeSchemes(activeNewContent).matchAll(unsafeAttributePattern)) {
+    const unsafeAttributePattern = /\b[\w:-]+\s*=\s*(?:"\s*(?:javascript:|data:|vbscript:)[^"]*"|'\s*(?:javascript:|data:|vbscript:)[^']*'|(?:javascript:|data:|vbscript:)[^\s>]+)/gi;
+    for (const match of normalizeSchemes(rawNewContent).matchAll(unsafeAttributePattern)) {
       if (!normalizedOldContent.includes(match[0])) {
         throw new Error("index.html cannot add active or embedded content.");
       }
     }
     const oldOrigins = remoteOrigins(activeOldContent);
-    for (const origin of remoteOrigins(activeNewContent)) {
+    for (const origin of remoteOrigins(rawNewContent)) {
       if (!oldOrigins.has(origin)) throw new Error("index.html cannot add a new remote origin.");
     }
   }

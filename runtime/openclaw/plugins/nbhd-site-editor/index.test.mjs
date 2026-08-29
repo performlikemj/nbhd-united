@@ -362,6 +362,9 @@ test("index.html containment rejects each reviewed bypass", async () => {
     ["entity-encoded javascript attribute", original.replace("<body>", '<body><a href="&#106;avascript:alert(1)">x</a>')],
     ["hex-entity javascript attribute", original.replace("<body>", '<body><a href="&#x6a;avascript:alert(1)">x</a>')],
     ["whitespace-split javascript attribute", original.replace("<body>", '<body><a href="java\tscript:alert(1)">x</a>')],
+    ["named-tab javascript attribute", original.replace("<body>", '<body><a href="java&Tab;script:alert(1)">x</a>')],
+    ["named-colon javascript attribute", original.replace("<body>", '<body><a href="javascript&colon;alert(1)">x</a>')],
+    ["leading-control javascript attribute", original.replace("<body>", '<body><a href="\x01javascript:alert(1)">x</a>')],
   ];
   for (const [name, injection] of bypasses) {
     const fixture = repositoryFixture(
@@ -371,6 +374,31 @@ test("index.html containment rejects each reviewed bypass", async () => {
     const { tools } = editor({ allowPaths: KIHO_ALLOW_PATHS }, fixture.fetchImpl);
     assert.match(
       text(await tools.site_stage_file({ path: "web/public/index.html", content: injection })),
+      /index\.html cannot/,
+      name,
+    );
+  }
+});
+
+test("index.html scans raw new content across fake comment starts", async () => {
+  const original = '<html><head><title>Old</title><meta name="description" content="old"><script src="/static/x.js"></script></head><body><textarea>Old</textarea></body></html>';
+  const payload = '<script src="/evil.js"></script>';
+  const bypasses = [
+    ["title", original.replace("Old</title>", `<!--</title>${payload}`)],
+    ["attribute", original.replace('<meta name="description" content="old">', `<meta name="description" content="<!--">${payload}`)],
+    ["script string", original.replace('</script>', `;const marker="<!--";</script>${payload}`)],
+    ["textarea", original.replace("Old</textarea>", `<!--</textarea>${payload}`)],
+  ];
+  for (const [name, injection] of bypasses) {
+    const fixture = repositoryFixture(
+      [{ type: "blob", mode: "100644", path: "web/public/index.html", sha: "index", size: original.length }],
+      { index: original },
+    );
+    assert.match(
+      text(await editor({ allowPaths: KIHO_ALLOW_PATHS }, fixture.fetchImpl).tools.site_stage_file({
+        path: "web/public/index.html",
+        content: injection,
+      })),
       /index\.html cannot/,
       name,
     );
@@ -408,6 +436,22 @@ test("index.html permits a title and meta-description-only change", async () => 
   );
   const { tools } = editor({ allowPaths: KIHO_ALLOW_PATHS }, fixture.fetchImpl);
   assert.match(text(await tools.site_stage_file({ path: "web/public/index.html", content: updated })), /^Staged /);
+});
+
+test("index.html permits unchanged Kiho-style label comments", async () => {
+  const labels = ["fonts", "analytics", "theme", "header", "main", "footer", "scripts"];
+  const original = `<html><head>${labels.map((label) => `<!-- ${label} -->`).join("")}<title>Kiho</title></head><body></body></html>`;
+  const fixture = repositoryFixture(
+    [{ type: "blob", mode: "100644", path: "web/public/index.html", sha: "index", size: original.length }],
+    { index: original },
+  );
+  assert.match(
+    text(await editor({ allowPaths: KIHO_ALLOW_PATHS }, fixture.fetchImpl).tools.site_stage_file({
+      path: "web/public/index.html",
+      content: original,
+    })),
+    /^Staged /,
+  );
 });
 
 test("tree verification rejects symlinks and submodules before blob reads", async () => {
