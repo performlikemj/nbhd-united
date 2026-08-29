@@ -76,8 +76,8 @@ class RulesDeliveryTest(TestCase):
     def test_all_gates_render_within_pin(self):
         prompt = render_workspace_files("neighbor", tenant=self._all_gates_tenant())["NBHD_AGENTS_MD"]
 
-        # Measured after rules-delivery W0: 21,920 chars. The R0 ceiling remains unchanged.
-        self.assertLessEqual(len(prompt), 22_759)
+        # Measured after rules-delivery W0: 21,920 chars (R0 ceiling 22,759). 2026-08-30: +1,665 for the per-tenant "## Website edit gate" (site_editor_enabled) → 23,585; runtime cap BOOTSTRAP_MAX_CHARS=26,000.
+        self.assertLessEqual(len(prompt), 23_585)
 
 
 class ToolsReferenceCronStubTest(SimpleTestCase):

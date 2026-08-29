@@ -36,8 +36,8 @@ class SiteEditorGateAndConfigTest(TestCase):
         self.tenant.save(update_fields=["site_editor_enabled"])
         on = render_workspace_files("neighbor", tenant=self.tenant)["NBHD_AGENTS_MD"]
         self.assertIn(_GATE, on)
-        self.assertIn("read the current file(s) first (`site_read_file`)", on)
-        self.assertIn("only after they say go", on)
+        self.assertIn("Every time: `site_read_file` first", on)
+        self.assertIn("ONLY after they say go", on)
         self.assertIn("returned a commit THIS turn", on)
         expected = (
             (
