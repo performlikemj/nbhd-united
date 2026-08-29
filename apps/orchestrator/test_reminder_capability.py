@@ -42,16 +42,16 @@ _REMINDER_TOOL = "nbhd_cron_create_pure_reminder"
 _CANT_DO_HEADING = "## What You Can't Do"
 
 # Budget, measured against the real fleet and every AGENTS.md tenant gate
-# in personas.py (site publishing, situation capture, friends, document keep,
+# in personas.py (site publishing, site editing, situation capture, friends, document keep,
 # email provenance, sautai, tour guide, journal shaping, and Gravity):
 #
 #   runtime cap                           26,000
 #   CI truncation-alarm ceiling           25,950 (50-char cap margin)
-#   R0 content-growth pin                 22,759
+#   R0 content-growth pin                 23,762
 #   template alone                        14,170
 #   MJ-shaped gates + 1,500 extras        20,491
-#   ALL gates, no extras                  21,920
-#   ALL gates + 1,500 extras              23,422 after rules-delivery W0
+#   ALL gates, no extras                  23,762
+#   ALL gates + 1,500 extras              25,264 after KSE-2
 #
 # The ceiling is the truncation alarm, fixed 50 chars below the runtime cap. P5 permits
 # raising it only together with that cap, never alone. The separate R0 content pin below
@@ -135,6 +135,7 @@ class MaximalTenantBudgetTest(TestCase):
         if all_gates:
             # Enable every simultaneously realizable conditional AGENTS.md section.
             tenant.site_publishing_enabled = True
+            tenant.site_editor_enabled = True
             tenant.situational_context_enabled = True
             tenant.email_provenance_enabled = True
             tenant.sautai_enabled = True
@@ -144,6 +145,7 @@ class MaximalTenantBudgetTest(TestCase):
             tenant.journal_shaping_enabled = True
             fields += [
                 "site_publishing_enabled",
+                "site_editor_enabled",
                 "situational_context_enabled",
                 "email_provenance_enabled",
                 "sautai_enabled",
@@ -171,6 +173,7 @@ class MaximalTenantBudgetTest(TestCase):
         md = _agents_md(self._tenant(all_gates=True))
         for marker in (
             "## Portfolio publish gate",
+            "## Website edit gate",
             "## Current location",
             "## Neighborhood — you are BACKSTAGE",
             "## Save with its source attached",
@@ -200,13 +203,12 @@ class MaximalTenantBudgetTest(TestCase):
 
     def test_rules_delivery_r0_all_gates_budget(self):
         md = _agents_md(self._tenant(all_gates=True))
-        # rules-delivery R0 (2026-08-27): Tier I diet; raise only when funded by a trim or per the P5 size policy
+        # KSE-5 (2026-08-30): the trimmed Website edit gate is part of the maximal tenant shape.
         self.assertLessEqual(
             len(md),
-            22_759,
-            "the D5 Reddit fallback plus the pinned subagent anchor costs 56 chars "
-            "above the original 22,703 Tier I-only target; do not raise this measured "
-            "R0 pin without review",
+            23_585,
+            "the reviewed all-gates shape, including Website edit, grew beyond its "
+            "measured 23,585-char pin; fund further growth with a trim",
         )
 
     def test_an_mj_shaped_tenant_fits_under_the_cap(self):

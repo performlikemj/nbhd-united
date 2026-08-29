@@ -67,6 +67,20 @@ class Command(BaseCommand):
                 tenant.experimental_typed_crons = True
                 tenant.fuel_enabled = True
                 tenant.site_publishing_enabled = True
+                tenant.site_editor_enabled = True
+                tenant.site_editor_config = {
+                    "owner": "smoke-owner",
+                    "repo": "smoke-repo",
+                    "branch": "main",
+                    "allowPaths": ["web/src/pages/*.js", "web/public/index.html"],
+                    "denyPaths": [".github/**"],
+                    "maxTextBytes": 262144,
+                    "maxImageBytes": 2097152,
+                    "maxFiles": 20,
+                    "maxTotalBytes": 5242880,
+                    "deployMinutes": 6,
+                    "authorEmail": "nbhd-site-editor@users.noreply.github.com",
+                }
                 tenant.journal_shaping_enabled = True
                 tenant.document_ingestion_enabled = True
                 tenant.datebook_manifest_ok = True

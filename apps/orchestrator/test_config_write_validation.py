@@ -231,11 +231,28 @@ class GenerateSmokeConfigCommandTests(TestCase):
         self.assertTrue(any("nbhd-friends-tools" in p for p in paths))
         self.assertIn("/opt/nbhd/plugins/nbhd-journal-shaping", paths)
         self.assertIn("/opt/nbhd/plugins/nbhd-document-keep", paths)
+        self.assertIn("/opt/nbhd/plugins/nbhd-site-editor", paths)
         entries = config.get("plugins", {}).get("entries", {})
         self.assertIn("nbhd-journal-shaping", entries)
         self.assertTrue(entries["nbhd-journal-shaping"]["config"]["journalShapingEnabled"])
         self.assertIn("nbhd-document-keep", entries)
         self.assertTrue(entries["nbhd-document-keep"]["config"]["documentIngestionEnabled"])
+        self.assertEqual(
+            entries["nbhd-site-editor"]["config"],
+            {
+                "owner": "smoke-owner",
+                "repo": "smoke-repo",
+                "branch": "main",
+                "allowPaths": ["web/src/pages/*.js", "web/public/index.html"],
+                "denyPaths": [".github/**"],
+                "maxTextBytes": 262144,
+                "maxImageBytes": 2097152,
+                "maxFiles": 20,
+                "maxTotalBytes": 5242880,
+                "deployMinutes": 6,
+                "authorEmail": "nbhd-site-editor@users.noreply.github.com",
+            },
+        )
         self.assertEqual(
             entries["nbhd-subagent-bridge"]["hooks"],
             {"allowConversationAccess": True, "timeoutMs": 30000},

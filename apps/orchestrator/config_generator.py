@@ -2491,6 +2491,24 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
         )
 
+    # Site-editor plugin — conditionally loaded only for tenants whose image
+    # manifest has been verified and whose dedicated feature flag is enabled.
+    # The tool self-gates on the injected config and GitHub token.
+    if getattr(tenant, "site_editor_enabled", False):
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_SITE_EDITOR_PLUGIN_ID", "nbhd-site-editor") or "").strip(),
+                str(
+                    getattr(
+                        settings,
+                        "OPENCLAW_SITE_EDITOR_PLUGIN_PATH",
+                        "/opt/nbhd/plugins/nbhd-site-editor",
+                    )
+                    or ""
+                ).strip(),
+            )
+        )
+
     # Neighborhood (Friends) plugin — propose-share + neighborhood-context tools,
     # gated on friends_enabled. All tools are pull-or-propose; there is
     # deliberately no direct-post tool (the human approves every share). Mission
@@ -2909,6 +2927,26 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 "blobPathPrefix",
             )
             plugin_config["entries"][sitepub_id]["config"] = {k: _sc[k] for k in _sc_keys if _sc.get(k)}
+
+        # Site-editor plugin — whitelist and type-check every manifest key.
+        # The tenant flag is the manifest-ready gate, so no config can reach an
+        # older image whose additionalProperties:false schema lacks these keys.
+        site_editor_id = str(getattr(settings, "OPENCLAW_SITE_EDITOR_PLUGIN_ID", "nbhd-site-editor") or "").strip()
+        if site_editor_id and site_editor_id in plugin_config["entries"]:
+            editor_source = getattr(tenant, "site_editor_config", None) or {}
+            editor_config = {}
+            for key in ("owner", "repo", "branch", "authorEmail"):
+                if isinstance(editor_source.get(key), str):
+                    editor_config[key] = editor_source[key]
+            for key in ("allowPaths", "denyPaths"):
+                value = editor_source.get(key)
+                if isinstance(value, list) and all(isinstance(item, str) for item in value):
+                    editor_config[key] = value
+            for key in ("maxTextBytes", "maxImageBytes", "maxFiles", "maxTotalBytes", "deployMinutes"):
+                value = editor_source.get(key)
+                if type(value) is int:
+                    editor_config[key] = value
+            plugin_config["entries"][site_editor_id]["config"] = editor_config
 
         # Older settings-tools manifests hard-reject unknown plugin config at
         # LOAD (additionalProperties:false), so this block stays absent until

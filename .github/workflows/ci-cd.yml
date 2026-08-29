@@ -382,6 +382,8 @@ jobs:
           node --test runtime/openclaw/plugins/hook-activation.test.mjs
           node --test runtime/openclaw/plugins/nbhd-friends-tools/index.test.mjs
           node --test runtime/openclaw/plugins/nbhd-fuel-tools/index.test.mjs
+          npm ci --prefix runtime/openclaw/plugins/nbhd-site-editor --omit=dev --no-audit --no-fund
+          node --test runtime/openclaw/plugins/nbhd-site-editor/index.test.mjs
           node --test runtime/openclaw/external-content-wrap.test.js
           node --test runtime/openclaw/plugins/nbhd-doc-taint-guard/test.js
           node --test runtime/openclaw/evals/upload_security_corpus.test.js
