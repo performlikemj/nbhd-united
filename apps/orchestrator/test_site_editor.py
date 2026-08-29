@@ -13,7 +13,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 
-from apps.orchestrator.azure_client import ensure_site_editor_secret
+from apps.orchestrator.azure_client import ensure_site_editor_secret, site_editor_kv_secret_name
 from apps.orchestrator.config_generator import BOOTSTRAP_MAX_CHARS, generate_openclaw_config
 from apps.orchestrator.config_validator import assert_config_writable
 from apps.orchestrator.personas import render_workspace_files
@@ -158,11 +158,44 @@ class SiteEditorSecretReconcileTest(TestCase):
         self.assertFalse(ensure_site_editor_secret(self.tenant, enabled=True))
         self.assertEqual(self.client.container_apps.begin_create_or_update.call_count, 1)
 
+        self.assertTrue(ensure_site_editor_secret(self.tenant, enabled=True, force_revision=True))
+        self.assertEqual(self.client.container_apps.begin_create_or_update.call_count, 2)
+
         self.assertTrue(ensure_site_editor_secret(self.tenant, enabled=False))
         self.assertEqual(self.app.configuration.secrets, [])
         self.assertEqual(self.openclaw.env, [])
         self.assertFalse(ensure_site_editor_secret(self.tenant, enabled=False))
-        self.assertEqual(self.client.container_apps.begin_create_or_update.call_count, 2)
+        self.assertEqual(self.client.container_apps.begin_create_or_update.call_count, 3)
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_sdk_shaped_normalized_secret_is_idempotent(self, get_client, _is_mock):
+        self.app.configuration.secrets = [
+            SimpleNamespace(
+                name="github-site-token",
+                key_vault_url="HTTPS://KV-TEST.VAULT.AZURE.NET/SECRETS/TENANT-TEST-GITHUB-SITE-TOKEN",
+                identity="/SUBSCRIPTIONS/TEST/MI-TEST",
+            )
+        ]
+        self.openclaw.env = [SimpleNamespace(name="NBHD_SITE_GITHUB_TOKEN", secret_ref="github-site-token")]
+        get_client.return_value = self.client
+
+        self.assertFalse(ensure_site_editor_secret(self.tenant, enabled=True))
+        self.client.container_apps.begin_create_or_update.assert_not_called()
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    def test_missing_container_id_and_openclaw_raise(self, _is_mock):
+        self.tenant.container_id = ""
+        with self.assertRaisesRegex(ValueError, "no container_id"):
+            ensure_site_editor_secret(self.tenant, enabled=True)
+
+        self.tenant.container_id = "oc-test"
+        self.app.template.containers = [self.sidecar]
+        with (
+            patch("apps.orchestrator.azure_client.get_container_client", return_value=self.client),
+            self.assertRaisesRegex(ValueError, "no openclaw container"),
+        ):
+            ensure_site_editor_secret(self.tenant, enabled=True)
 
     @patch("apps.orchestrator.azure_client._is_mock", return_value=True)
     def test_mock_mode_does_not_claim_a_new_revision(self, _is_mock):
@@ -173,7 +206,9 @@ class SiteEditorManagementCommandTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Command Tenant", telegram_chat_id=940003)
         self.tenant.key_vault_prefix = "tenant-command"
-        self.tenant.save(update_fields=["key_vault_prefix"])
+        self.tenant.container_id = "oc-command"
+        self.tenant.managed_identity_id = "/subscriptions/test/resourceGroups/rg-test/providers/Microsoft.ManagedIdentity/userAssignedIdentities/mi-command"
+        self.tenant.save(update_fields=["key_vault_prefix", "container_id", "managed_identity_id"])
         self.temp_paths: list[Path] = []
 
     def tearDown(self):
@@ -187,9 +222,20 @@ class SiteEditorManagementCommandTest(TestCase):
         self.temp_paths.append(path)
         return str(path)
 
+    @override_settings(AZURE_RESOURCE_GROUP="rg-test")
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.is_mock", return_value=False)
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.get_identity_client")
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.assign_key_vault_role")
     @patch("apps.orchestrator.management.commands.set_site_editor_secret.ensure_site_editor_secret")
     @patch("apps.orchestrator.management.commands.set_site_editor_secret._write_secret_to_kv")
-    def test_secret_stdin_writes_kv_reconciles_and_prints_only_ok(self, write_secret, ensure_secret):
+    def test_secret_orders_write_grant_and_forced_reconcile(
+        self, write_secret, ensure_secret, assign_role, get_identity, _is_mock
+    ):
+        events = []
+        write_secret.side_effect = lambda *args, **kwargs: events.append("write")
+        assign_role.side_effect = lambda *args, **kwargs: events.append("grant")
+        ensure_secret.side_effect = lambda *args, **kwargs: events.append("reconcile")
+        get_identity.return_value.user_assigned_identities.get.return_value.principal_id = "principal-123"
         output = StringIO()
         with patch(
             "apps.orchestrator.management.commands.set_site_editor_secret.sys.stdin",
@@ -205,9 +251,97 @@ class SiteEditorManagementCommandTest(TestCase):
         write_secret.assert_called_once_with(
             "tenant-command-github-site-token",
             "github_pat_FAKE_TEST_VALUE",
+            log_label="site-editor",
         )
-        ensure_secret.assert_called_once_with(self.tenant, enabled=True)
+        get_identity.return_value.user_assigned_identities.get.assert_called_once_with(
+            resource_group_name="rg-test",
+            resource_name="mi-command",
+        )
+        assign_role.assert_called_once_with(
+            "principal-123",
+            secret_names=["tenant-command-github-site-token"],
+        )
+        ensure_secret.assert_called_once_with(self.tenant, enabled=True, force_revision=True)
+        self.assertEqual(events, ["write", "grant", "reconcile"])
         self.assertEqual(output.getvalue(), "ok\n")
+
+    @override_settings(AZURE_RESOURCE_GROUP="rg-test")
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.is_mock", return_value=False)
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.get_identity_client")
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.assign_key_vault_role")
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.ensure_site_editor_secret")
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret._write_secret_to_kv")
+    def test_grant_failure_aborts_before_reconcile(
+        self, write_secret, ensure_secret, assign_role, get_identity, _is_mock
+    ):
+        get_identity.return_value.user_assigned_identities.get.return_value.principal_id = "principal-123"
+        assign_role.side_effect = RuntimeError("grant failed")
+        output = StringIO()
+        with (
+            patch(
+                "apps.orchestrator.management.commands.set_site_editor_secret.sys.stdin",
+                StringIO("github_pat_FAKE_TEST_VALUE\n"),
+            ),
+            self.assertRaisesRegex(CommandError, "failed at grant; value not shown"),
+        ):
+            call_command(
+                "set_site_editor_secret",
+                "--tenant-id",
+                str(self.tenant.id),
+                "--from-stdin",
+                stdout=output,
+            )
+        write_secret.assert_called_once()
+        ensure_secret.assert_not_called()
+        self.assertNotIn("ok", output.getvalue())
+
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.is_mock", return_value=True)
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.ensure_site_editor_secret")
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret._write_secret_to_kv")
+    def test_blank_prefix_is_persisted_and_used_for_secret_name(self, write_secret, ensure_secret, _is_mock):
+        self.tenant.key_vault_prefix = ""
+        self.tenant.save(update_fields=["key_vault_prefix"])
+        output = StringIO()
+        with patch(
+            "apps.orchestrator.management.commands.set_site_editor_secret.sys.stdin",
+            StringIO("github_pat_FAKE_TEST_VALUE\n"),
+        ):
+            call_command(
+                "set_site_editor_secret",
+                "--tenant-id",
+                str(self.tenant.id),
+                "--from-stdin",
+                stdout=output,
+            )
+        self.tenant.refresh_from_db()
+        canonical = f"tenants-{self.tenant.user_id}"
+        self.assertEqual(self.tenant.key_vault_prefix, canonical)
+        self.assertEqual(site_editor_kv_secret_name(self.tenant), f"{canonical}-github-site-token")
+        write_secret.assert_called_once_with(
+            f"{canonical}-github-site-token",
+            "github_pat_FAKE_TEST_VALUE",
+            log_label="site-editor",
+        )
+        ensure_secret.assert_called_once_with(self.tenant, enabled=True, force_revision=True)
+        self.assertEqual(output.getvalue(), f"key_vault_prefix={canonical}\nok\n")
+
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.is_mock", return_value=True)
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.ensure_site_editor_secret")
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret._write_secret_to_kv")
+    def test_set_prefix_is_unchanged(self, write_secret, ensure_secret, _is_mock):
+        with patch(
+            "apps.orchestrator.management.commands.set_site_editor_secret.sys.stdin",
+            StringIO("github_pat_FAKE_TEST_VALUE\n"),
+        ):
+            call_command(
+                "set_site_editor_secret",
+                "--tenant-id",
+                str(self.tenant.id),
+                "--from-stdin",
+                stdout=StringIO(),
+            )
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.key_vault_prefix, "tenant-command")
 
     @patch("apps.orchestrator.management.commands.set_site_editor_secret.ensure_site_editor_secret")
     @patch("apps.orchestrator.management.commands.set_site_editor_secret._write_secret_to_kv")
@@ -230,6 +364,57 @@ class SiteEditorManagementCommandTest(TestCase):
                 )
         write_secret.assert_not_called()
         ensure_secret.assert_not_called()
+
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.is_mock", return_value=True)
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.ensure_site_editor_secret")
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret._write_secret_to_kv")
+    def test_write_error_never_echoes_submitted_token(self, write_secret, ensure_secret, _is_mock):
+        token = "github_pat_FAKE_SECRET_VALUE"
+        write_secret.side_effect = RuntimeError(f"proxy echoed {token}")
+        output = StringIO()
+        errors = StringIO()
+        with (
+            patch(
+                "apps.orchestrator.management.commands.set_site_editor_secret.sys.stdin",
+                StringIO(f"{token}\n"),
+            ),
+            self.assertRaises(CommandError) as raised,
+        ):
+            call_command(
+                "set_site_editor_secret",
+                "--tenant-id",
+                str(self.tenant.id),
+                "--from-stdin",
+                stdout=output,
+                stderr=errors,
+            )
+        combined = output.getvalue() + errors.getvalue() + str(raised.exception)
+        self.assertNotIn(token, combined)
+        self.assertNotIn("github_pat_", combined)
+        self.assertIn("failed at write; value not shown", str(raised.exception))
+        ensure_secret.assert_not_called()
+
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.is_mock", return_value=True)
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret.ensure_site_editor_secret")
+    @patch("apps.orchestrator.management.commands.set_site_editor_secret._write_secret_to_kv")
+    def test_reconcile_failure_does_not_print_ok(self, write_secret, ensure_secret, _is_mock):
+        ensure_secret.side_effect = ValueError("Tenant has no container_id")
+        output = StringIO()
+        with (
+            patch(
+                "apps.orchestrator.management.commands.set_site_editor_secret.sys.stdin",
+                StringIO("github_pat_FAKE_TEST_VALUE\n"),
+            ),
+            self.assertRaisesRegex(CommandError, "failed at reconcile; value not shown"),
+        ):
+            call_command(
+                "set_site_editor_secret",
+                "--tenant-id",
+                str(self.tenant.id),
+                "--from-stdin",
+                stdout=output,
+            )
+        self.assertNotIn("ok", output.getvalue())
 
     @patch("apps.orchestrator.management.commands.set_site_editor_secret.ensure_site_editor_secret")
     @patch("apps.orchestrator.management.commands.set_site_editor_secret._write_secret_to_kv")
@@ -271,6 +456,8 @@ class SiteEditorManagementCommandTest(TestCase):
         self.assertEqual(self.tenant.pending_config_version, before + 1)
         self.assertEqual(
             output.getvalue(),
+            "WARNING: the running image must already contain /opt/nbhd/plugins/nbhd-site-editor — "
+            "enable only after the image roll\n"
             "site_editor_enabled=True keys=allowPaths,branch,maxFiles,owner,repo\n",
         )
 
@@ -280,6 +467,10 @@ class SiteEditorManagementCommandTest(TestCase):
             {"owner": "performlikemj", "token": "not-allowed"},
             {"allowPaths": ["good", 3]},
             {"maxFiles": True},
+            {"owner": "bad/owner"},
+            {"repo": "bad repo"},
+            {"branch": "main/../escape"},
+            {"branch": "main\nother"},
         ):
             with self.subTest(config=config), self.assertRaises(CommandError):
                 call_command(

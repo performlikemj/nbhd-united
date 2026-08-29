@@ -6,6 +6,7 @@ const { TextDecoder } = require("util");
 
 const { parse: parseJavaScript } = require("@babel/parser");
 const postcss = require("postcss");
+const externalContentModule = import("../../external-content-wrap.js");
 
 const NOT_CONFIGURED = "Site editing isn't configured for this account.";
 const TEXT_EXTENSIONS = new Set([".js", ".jsx", ".css", ".html", ".md", ".txt"]);
@@ -72,6 +73,21 @@ function toolText(value) {
 function errorText(prefix, error) {
   const message = error && error.message ? error.message : String(error);
   return toolText(`${prefix}: ${message.replace(/\s+/g, " ").trim().slice(0, 800)}`);
+}
+
+async function externalToolText(value) {
+  const { wrapExternalContent } = await externalContentModule;
+  return toolText(wrapExternalContent(redactToken(value), { source: "api" }));
+}
+
+async function guardedErrorText(prefix, error) {
+  const message = error && error.message ? error.message : String(error);
+  const clean = message.replace(/\s+/g, " ").trim().slice(0, 800);
+  if (error && error.githubOrigin) {
+    const wrapped = await externalToolText(clean);
+    return toolText(`${prefix}: ${wrapped.content[0].text}`);
+  }
+  return errorText(prefix, error);
 }
 
 function positiveInt(value, fallback, ceiling) {
@@ -154,9 +170,9 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
   const cfg = config && typeof config === "object" && !Array.isArray(config) ? config : {};
   const allowPaths = Array.isArray(cfg.allowPaths) ? cfg.allowPaths.filter((item) => typeof item === "string") : [];
   const configured = Boolean(
-    typeof cfg.owner === "string" && cfg.owner.trim() &&
-      typeof cfg.repo === "string" && cfg.repo.trim() &&
-      typeof cfg.branch === "string" && cfg.branch.trim() &&
+    typeof cfg.owner === "string" && /^[A-Za-z0-9_.-]+$/.test(cfg.owner) &&
+      typeof cfg.repo === "string" && /^[A-Za-z0-9_.-]+$/.test(cfg.repo) &&
+      typeof cfg.branch === "string" && /^[A-Za-z0-9_./-]+$/.test(cfg.branch) && !cfg.branch.includes("..") &&
       allowPaths.length,
   );
   const denyPaths = [
@@ -171,6 +187,7 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
     deployMinutes: positiveInt(cfg.deployMinutes, 5, 120),
   };
   const pending = new Map();
+  let treeCache = null;
 
   function hasToken() {
     return typeof env.NBHD_SITE_GITHUB_TOKEN === "string" && env.NBHD_SITE_GITHUB_TOKEN.trim();
@@ -269,7 +286,7 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
   function validateSyntax(repoPath, content) {
     const ext = path.posix.extname(repoPath).toLowerCase();
     if (ext === ".js" || ext === ".jsx") {
-      parseJavaScript(content, { sourceType: "unambiguous", plugins: ["jsx"] });
+      parseJavaScript(content, { sourceType: "module", plugins: ["jsx"] });
     } else if (ext === ".css") {
       postcss.parse(content, { from: repoPath });
     }
@@ -277,9 +294,9 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
 
   function remoteOrigins(content) {
     const origins = new Set();
-    for (const match of content.matchAll(/https?:\/\/[^\s"'<>`)]+/gi)) {
+    for (const match of content.matchAll(/(?:https?:)?\/\/[^\s"'<>`)]+/gi)) {
       try {
-        origins.add(new URL(match[0]).origin);
+        origins.add(new URL(match[0].startsWith("//") ? `https:${match[0]}` : match[0]).origin);
       } catch {
         // An incomplete URL is left to the site's own parser/build checks.
       }
@@ -288,12 +305,27 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
   }
 
   function validateIndexHtml(oldContent, newContent) {
-    const count = (text, regex) => (text.match(regex) || []).length;
-    if (count(newContent, /<script\b/gi) > count(oldContent, /<script\b/gi)) {
-      throw new Error("index.html cannot add script tags.");
-    }
-    if (count(newContent, /\son[a-z]+\s*=/gi) > count(oldContent, /\son[a-z]+\s*=/gi)) {
+    const count = (text, regex) => Array.from(text.matchAll(regex)).length;
+    if (count(newContent, /[\s\/"'<]on[a-z]+\s*=/gi) > count(oldContent, /[\s\/"'<]on[a-z]+\s*=/gi)) {
       throw new Error("index.html cannot add inline event handlers.");
+    }
+    const containmentPatterns = [
+      /<script\b[^>]*>[\s\S]*?<\/script\s*>/gi,
+      /<script\b[^>]*\/\s*>/gi,
+      /<base\b[^>]*>/gi,
+      /<iframe\b[^>]*>/gi,
+      /<object\b[^>]*>/gi,
+      /<embed\b[^>]*>/gi,
+      /<meta\b[^>]*http-equiv[^>]*>/gi,
+      /\bsrcdoc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
+      /\b[\w:-]+\s*=\s*(?:"\s*(?:javascript:|data:)[^"]*"|'\s*(?:javascript:|data:)[^']*'|(?:javascript:|data:)[^\s>]+)/gi,
+    ];
+    for (const pattern of containmentPatterns) {
+      for (const match of newContent.matchAll(pattern)) {
+        if (!oldContent.includes(match[0])) {
+          throw new Error("index.html cannot add active or embedded content.");
+        }
+      }
     }
     const oldOrigins = remoteOrigins(oldContent);
     for (const origin of remoteOrigins(newContent)) {
@@ -335,21 +367,57 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
       const detail = data && data.message ? data.message : raw || `HTTP ${response.status}`;
       const error = new Error(`GitHub API ${response.status}: ${detail}`);
       error.status = response.status;
+      error.githubOrigin = true;
       throw error;
     }
     return data;
   }
 
-  async function getContents(repoPath, { allowNotFound = false } = {}) {
-    const suffix = repoPath ? `/${encodeRepoPath(repoPath)}` : "";
-    return github(`/contents${suffix}?ref=${encodeURIComponent(cfg.branch.trim())}`, { allowNotFound });
+  function cleanGitHubPath(value) {
+    if (typeof value !== "string") return "";
+    return value.replace(/[\u0000-\u001f\u007f]/g, "");
+  }
+
+  function isRegularBlob(entry) {
+    return entry && entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755");
+  }
+
+  async function repositoryTree() {
+    if (treeCache) return treeCache;
+    const branchRef = `heads/${cfg.branch}`;
+    const ref = await github(`/git/ref/${encodeRepoPath(branchRef)}`);
+    const refSha = ref && ref.object && ref.object.sha;
+    if (!refSha) throw new Error("GitHub returned a ref without a commit SHA.");
+    const commit = await github(`/git/commits/${encodeURIComponent(refSha)}`);
+    const treeSha = commit && commit.tree && commit.tree.sha;
+    if (!treeSha) throw new Error("GitHub returned a commit without a tree SHA.");
+    const data = await github(`/git/trees/${encodeURIComponent(treeSha)}?recursive=1`);
+    if (!data || !Array.isArray(data.tree) || data.truncated) {
+      throw new Error("GitHub returned an incomplete repository tree.");
+    }
+    const entries = data.tree.filter(
+      (entry) => entry && typeof entry.path === "string" && entry.path === cleanGitHubPath(entry.path),
+    );
+    treeCache = { refSha, entries };
+    return treeCache;
+  }
+
+  async function regularBlobEntry(repoPath, { allowNotFound = false } = {}) {
+    const { entries } = await repositoryTree();
+    const entry = entries.find((candidate) => candidate.path === repoPath);
+    if (!entry && allowNotFound) return null;
+    if (!isRegularBlob(entry)) {
+      throw new Error("The repository entry isn't a regular file.");
+    }
+    return entry;
   }
 
   async function currentText(repoPath, { allowNotFound = false } = {}) {
-    const data = await getContents(repoPath, { allowNotFound });
-    if (data === null) return "";
-    if (!data || data.type !== "file" || data.encoding !== "base64" || typeof data.content !== "string") {
-      throw new Error("The repository entry isn't a regular file.");
+    const entry = await regularBlobEntry(repoPath, { allowNotFound });
+    if (entry === null) return "";
+    const data = await github(`/git/blobs/${encodeURIComponent(entry.sha)}`);
+    if (!data || data.encoding !== "base64" || typeof data.content !== "string") {
+      throw new Error("GitHub returned an unreadable repository blob.");
     }
     const buffer = Buffer.from(data.content.replace(/\s+/g, ""), "base64");
     if (buffer.length > limits.maxTextBytes) throw new Error("The text file exceeds the configured size limit.");
@@ -441,6 +509,7 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
       if (error.status === 409 || error.status === 422) error.refMoved = true;
       throw error;
     }
+    treeCache = null;
     return commit.sha;
   }
 
@@ -449,34 +518,35 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
     try {
       return await work();
     } catch (error) {
-      return errorText(prefix, error);
+      return guardedErrorText(prefix, error);
     }
   }
 
   const tools = {
     async site_list_files({ path: directory = "" } = {}) {
       return guarded(async () => {
-        const repoPath = validatePath(directory, { allowEmpty: true });
+        const normalized = typeof directory === "string" && directory.length > 1 && directory.endsWith("/")
+          ? directory.slice(0, -1)
+          : directory;
+        const repoPath = validatePath(normalized, { allowEmpty: true });
         if (!allowedDirectory(repoPath)) return toolText("That folder isn't editable.");
-        const data = await getContents(repoPath);
-        if (!Array.isArray(data)) throw new Error("The repository entry isn't a folder.");
-        const visible = data
-          .filter(
-            (item) =>
-              item &&
-              (item.type === "file" || item.type === "dir") &&
-              typeof item.path === "string" &&
-              allowedDirectory(item.path),
-          )
-          .map((item) => `${item.type === "dir" ? "folder" : "file"}\t${item.name}\t${item.size || 0} bytes`);
-        return toolText(visible.length ? visible.join("\n") : "No editable files in that folder.");
+        const { entries } = await repositoryTree();
+        const prefix = repoPath ? `${repoPath}/` : "";
+        const visible = entries
+          .filter((item) => item.path.startsWith(prefix) && !item.path.slice(prefix.length).includes("/"))
+          .filter((item) => (isRegularBlob(item) ? allowedFile(item.path) : item.type === "tree" && allowedDirectory(item.path)))
+          .map((item) => {
+            const name = cleanGitHubPath(item.path.slice(prefix.length));
+            return `${item.type === "tree" ? "folder" : "file"}\t${name}\t${item.size || 0} bytes`;
+          });
+        return visible.length ? externalToolText(visible.join("\n")) : toolText("No editable files in that folder.");
       }, "Couldn't list website files");
     },
 
     async site_read_file({ path: repoPath } = {}) {
       return guarded(async () => {
         const checked = assertTextPath(repoPath);
-        return toolText(await currentText(checked));
+        return externalToolText(await currentText(checked));
       }, "Couldn't read the website file");
     },
 
@@ -500,10 +570,17 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
       return guarded(async () => {
         const checked = assertEditableFile(repoPath);
         if (typeof localPath !== "string" || !localPath) throw new Error("A local upload path is required.");
-        const stat = fs.statSync(localPath);
+        const workspace = fs.realpathSync(env.OPENCLAW_WORKSPACE || process.env.OPENCLAW_WORKSPACE || process.cwd());
+        const source = fs.realpathSync(localPath);
+        const relative = path.relative(workspace, source);
+        if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+          throw new Error("Only files in your workspace can be uploaded.");
+        }
+        const stat = fs.lstatSync(localPath);
         if (!stat.isFile()) throw new Error("The upload source isn't a regular file.");
         if (stat.size > limits.maxImageBytes) throw new Error("The image exceeds the configured size limit.");
-        const buffer = fs.readFileSync(localPath);
+        const buffer = fs.readFileSync(source);
+        if (buffer.length > limits.maxImageBytes) throw new Error("The image exceeds the configured size limit.");
         validateImage(checked, buffer);
         checkPendingCapacity(checked, buffer.length);
         pending.set(checked, { kind: "binary", buffer });
@@ -517,13 +594,14 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
         const sections = [];
         for (const [repoPath, item] of pending) {
           if (item.kind === "binary") {
+            await regularBlobEntry(repoPath, { allowNotFound: true });
             sections.push(`${repoPath}: binary, ${item.buffer.length} bytes`);
           } else {
             const oldContent = await currentText(repoPath, { allowNotFound: true });
             sections.push(unifiedDiff(repoPath, oldContent, item.content));
           }
         }
-        return toolText(sections.join("\n\n"));
+        return externalToolText(sections.join("\n\n"));
       }, "Couldn't show the staged website changes");
     },
 
@@ -561,21 +639,29 @@ function createSiteEditor({ config, env = {}, fetchImpl = globalThis.fetch, now 
         }
         pending.clear();
         const shortSha = sha.slice(0, 7);
-        const url = `https://github.com/${cfg.owner.trim()}/${cfg.repo.trim()}/commit/${sha}`;
-        return toolText(`Published commit ${shortSha}: ${url}. Deployment usually takes about ${limits.deployMinutes} minutes.`);
+        const url = `https://github.com/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/commit/${encodeURIComponent(sha)}`;
+        return externalToolText(
+          `Published commit ${shortSha}: ${url}. Deployment usually takes about ${limits.deployMinutes} minutes.`,
+        );
       }, "Couldn't publish the website changes");
     },
 
     async site_deploy_status() {
       return guarded(async () => {
-        const data = await github(
-          `/actions/runs?branch=${encodeURIComponent(cfg.branch.trim())}&per_page=1`,
-        );
+        let data;
+        try {
+          data = await github(`/actions/runs?branch=${encodeURIComponent(cfg.branch)}&per_page=1`);
+        } catch (error) {
+          if (error.status === 403) {
+            return toolText("I can't see deploy status; check in a few minutes. The site is not confirmed live.");
+          }
+          throw error;
+        }
         const run = data && Array.isArray(data.workflow_runs) ? data.workflow_runs[0] : null;
         if (!run) return toolText("No deployment run was found for this branch.");
-        const status = run.status === "completed" ? "completed" : run.status === "in_progress" ? "in progress" : "queued";
+        const status = run.status === "completed" ? "completed" : run.status === "in_progress" ? "in progress" : "not started";
         const conclusion = run.conclusion ? ` with result ${run.conclusion}` : "";
-        return toolText(
+        return externalToolText(
           `Latest deployment is ${status}${conclusion}; commit ${run.head_sha || "unknown"}; updated ${run.updated_at || "unknown"}.`,
         );
       }, "Couldn't check the website deployment");

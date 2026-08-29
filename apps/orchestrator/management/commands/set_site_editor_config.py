@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
@@ -17,6 +18,8 @@ _MANIFEST = (
     / "nbhd-site-editor"
     / "openclaw.plugin.json"
 )
+_OWNER_REPO_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+_BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9_./-]+$")
 
 
 def _validated_config(raw: object) -> dict:
@@ -37,6 +40,10 @@ def _validated_config(raw: object) -> dict:
         )
         if not valid:
             raise CommandError(f"invalid value for {key}: expected {expected}")
+        if key in ("owner", "repo") and not _OWNER_REPO_PATTERN.fullmatch(value):
+            raise CommandError(f"invalid value for {key}: unsupported characters")
+        if key == "branch" and (not _BRANCH_PATTERN.fullmatch(value) or ".." in value):
+            raise CommandError("invalid value for branch: unsupported characters")
     return raw
 
 
@@ -71,4 +78,11 @@ class Command(BaseCommand):
         tenant.save(update_fields=update_fields)
         tenant.bump_pending_config()
         keys = ",".join(sorted(config))
+        if options["enable"]:
+            self.stdout.write(
+                self.style.WARNING(
+                    "WARNING: the running image must already contain "
+                    "/opt/nbhd/plugins/nbhd-site-editor — enable only after the image roll"
+                )
+            )
         self.stdout.write(f"site_editor_enabled={tenant.site_editor_enabled} keys={keys}")

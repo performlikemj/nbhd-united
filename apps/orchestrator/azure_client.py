@@ -1715,12 +1715,20 @@ def apply_byo_credentials_to_container(tenant: Any) -> None:
     )
 
 
-def ensure_site_editor_secret(tenant: Any, *, enabled: bool) -> bool:
+def site_editor_kv_secret_name(tenant: Any) -> str:
+    """Return the canonical Key Vault secret name for a tenant's site token."""
+    if not tenant.key_vault_prefix:
+        raise ValueError(f"Tenant {tenant.id} has no key_vault_prefix")
+    return f"{tenant.key_vault_prefix}-github-site-token"
+
+
+def ensure_site_editor_secret(tenant: Any, *, enabled: bool, force_revision: bool = False) -> bool:
     """Reconcile the Kiho site-editor Key Vault reference and env binding.
 
-    Only a changed template creates a new Container Apps revision. The token
-    value never enters this function: the container secret points at the
-    tenant-scoped Key Vault secret through the tenant managed identity.
+    A changed template creates a new Container Apps revision. Callers that
+    just wrote a new value at the same Key Vault name may pass
+    ``force_revision=True`` to activate that rotation even when the binding
+    shape is already correct. The token value never enters this function.
 
     Returns ``True`` only when a new revision was persisted.
     """
@@ -1729,23 +1737,19 @@ def ensure_site_editor_secret(tenant: Any, *, enabled: bool) -> bool:
         return False
 
     if not tenant.container_id:
-        logger.warning("ensure_site_editor_secret skipped: tenant=%s has no container_id", tenant.id)
-        return False
+        raise ValueError(f"Tenant {tenant.id} has no container_id")
     if enabled and not tenant.managed_identity_id:
         raise ValueError(f"Tenant {tenant.id} has no managed_identity_id")
-    if enabled and not tenant.key_vault_prefix:
-        raise ValueError(f"Tenant {tenant.id} has no key_vault_prefix")
 
     client = get_container_client()
     app = client.container_apps.get(settings.AZURE_RESOURCE_GROUP, tenant.container_id)
     openclaw = next((container for container in app.template.containers if container.name == "openclaw"), None)
     if openclaw is None:
-        logger.warning("ensure_site_editor_secret skipped: container=%s has no openclaw container", tenant.container_id)
-        return False
+        raise ValueError(f"Container {tenant.container_id} has no openclaw container")
 
     secret_name = "github-site-token"
     env_name = "NBHD_SITE_GITHUB_TOKEN"
-    kv_secret_name = f"{tenant.key_vault_prefix}-github-site-token"
+    kv_secret_name = site_editor_kv_secret_name(tenant) if enabled else ""
 
     def field(entry: Any, *names: str) -> Any:
         for name in names:
@@ -1769,9 +1773,15 @@ def ensure_site_editor_secret(tenant: Any, *, enabled: bool) -> bool:
             key_vault_secret_name=kv_secret_name,
             identity_id=tenant.managed_identity_id,
         )
+
+        def desired_field_matches(key: str, value: Any) -> bool:
+            actual = field(existing_secret, key, {"keyVaultUrl": "key_vault_url"}.get(key, key))
+            if key in ("identity", "keyVaultUrl"):
+                return str(actual).lower() == str(value).lower()
+            return actual == value
+
         secret_matches = existing_secret is not None and all(
-            field(existing_secret, key, {"keyVaultUrl": "key_vault_url"}.get(key, key)) == value
-            for key, value in desired_secret.items()
+            desired_field_matches(key, value) for key, value in desired_secret.items()
         )
         if not secret_matches:
             app.configuration.secrets = [entry for entry in secrets if _entry_name(entry) != secret_name] + [
@@ -1798,7 +1808,7 @@ def ensure_site_editor_secret(tenant: Any, *, enabled: bool) -> bool:
             openclaw.env = filtered_env
             changed = True
 
-    if not changed:
+    if not changed and not force_revision:
         return False
 
     import hashlib

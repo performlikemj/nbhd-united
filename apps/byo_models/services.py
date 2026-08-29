@@ -49,7 +49,7 @@ def secret_name_for(tenant: Tenant, provider: str, mode: str) -> str:
     return f"{tenant.key_vault_prefix}-byo-{provider}-{safe_mode}"
 
 
-def _write_secret_to_kv(secret_name: str, value: str) -> None:
+def _write_secret_to_kv(secret_name: str, value: str, *, log_label: str = "BYO") -> None:
     """Persist a single string value to Key Vault.
 
     The token never appears in logs (we log only the secret_name) and
@@ -63,7 +63,7 @@ def _write_secret_to_kv(secret_name: str, value: str) -> None:
     """
     if _is_mock():
         _BYO_MOCK_KV_STORE[secret_name] = value
-        logger.info("[MOCK] Wrote BYO secret %s", secret_name)
+        logger.info("[MOCK] Wrote %s secret %s", log_label, secret_name)
         return
 
     from azure.core.exceptions import ResourceExistsError
@@ -83,7 +83,7 @@ def _write_secret_to_kv(secret_name: str, value: str) -> None:
         recover_poller = client.begin_recover_deleted_secret(secret_name)
         recover_poller.wait()
         client.set_secret(secret_name, value)
-    logger.info("Wrote BYO secret %s", secret_name)
+    logger.info("Wrote %s secret %s", log_label, secret_name)
 
 
 def _delete_secret_from_kv(secret_name: str) -> None:

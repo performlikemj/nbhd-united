@@ -18,9 +18,9 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "owner": { "type": "string" },
-      "repo": { "type": "string" },
-      "branch": { "type": "string" },
+      "owner": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+      "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+      "branch": { "type": "string", "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_./-]+$" },
       "allowPaths": { "type": "array", "items": { "type": "string" } },
       "denyPaths": { "type": "array", "items": { "type": "string" } },
       "maxTextBytes": { "type": "integer", "minimum": 1 },

@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import sys
 
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.byo_models.services import _write_secret_to_kv
-from apps.orchestrator.azure_client import ensure_site_editor_secret
+from apps.orchestrator.azure_client import (
+    assign_key_vault_role,
+    ensure_site_editor_secret,
+    get_identity_client,
+    is_mock,
+    site_editor_kv_secret_name,
+)
 from apps.tenants.models import Tenant
 
 
@@ -33,24 +40,43 @@ class Command(BaseCommand):
         except Tenant.DoesNotExist as exc:
             raise CommandError("tenant not found") from exc
 
-        try:
-            if options["clear"]:
+        if options["clear"]:
+            try:
                 ensure_site_editor_secret(tenant, enabled=False)
-            else:
-                raw = sys.stdin.read()
-                token = raw.strip()
+            except Exception as exc:
+                raise CommandError("failed at reconcile; value not shown") from exc
+        else:
+            token = sys.stdin.read().strip()
+            stage = "validate"
+            try:
                 if not token:
-                    raise CommandError("token is empty")
+                    raise ValueError("empty token")
                 if "\n" in token or "\r" in token:
-                    raise CommandError("token must be one line")
+                    raise ValueError("multiline token")
+
                 if not tenant.key_vault_prefix:
-                    raise CommandError("tenant has no Key Vault prefix")
-                secret_name = f"{tenant.key_vault_prefix}-github-site-token"
-                _write_secret_to_kv(secret_name, token)
-                ensure_site_editor_secret(tenant, enabled=True)
-        except CommandError:
-            raise
-        except Exception as exc:
-            raise CommandError(str(exc).replace("\n", " ")) from exc
+                    stage = "prefix"
+                    tenant.key_vault_prefix = f"tenants-{tenant.user_id}"
+                    tenant.save(update_fields=["key_vault_prefix"])
+                    self.stdout.write(f"key_vault_prefix={tenant.key_vault_prefix}")
+
+                secret_name = site_editor_kv_secret_name(tenant)
+                stage = "write"
+                _write_secret_to_kv(secret_name, token, log_label="site-editor")
+
+                stage = "grant"
+                if not is_mock():
+                    identity_client = get_identity_client()
+                    mi_name = tenant.managed_identity_id.rsplit("/", 1)[-1]
+                    principal_id = identity_client.user_assigned_identities.get(
+                        resource_group_name=settings.AZURE_RESOURCE_GROUP,
+                        resource_name=mi_name,
+                    ).principal_id
+                    assign_key_vault_role(principal_id, secret_names=[secret_name])
+
+                stage = "reconcile"
+                ensure_site_editor_secret(tenant, enabled=True, force_revision=True)
+            except Exception as exc:
+                raise CommandError(f"failed at {stage}; value not shown") from exc
 
         self.stdout.write("ok")
