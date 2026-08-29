@@ -16,7 +16,6 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import re
 import threading
 
@@ -52,7 +51,6 @@ LINE_API_BASE = "https://api.line.me/v2/bot"
 LINE_CONTENT_API = "https://api-data.line.me/v2/bot/message"
 VOICE_CHAT_TIMEOUT_EXTRA = 60.0  # additional seconds for voice (Whisper transcription)
 LOADING_SECONDS = 60  # loading animation max (auto-clears on response)
-WHISPER_API_URL = "https://api.openai.com/v1/audio/transcriptions"
 
 
 def _get_channel_secret() -> str:
@@ -101,16 +99,7 @@ def _show_loading(line_user_id: str) -> None:
 
 
 def _transcribe_line_audio(message_id: str, tenant: Tenant | None = None) -> str | None:
-    """Download audio from LINE Content API and transcribe via OpenAI Whisper.
-
-    When ``tenant`` is provided, a vocabulary hint built from the tenant's own
-    known non-PII proper nouns (denylisted brands, workspace names, the user's
-    display name) is passed as the Whisper ``prompt`` so distinctive names
-    transcribe consistently instead of being phonetically garbled. This is the
-    class behind the 2026-07 "Rakuten" -> "Rocketen" incident — that clip
-    entered via iOS on-device STT (fixed app-side via ``contextualStrings`` fed
-    from the same vocabulary); this hint hardens the LINE channel against the
-    same failure. See apps/router/transcription.py.
+    """Download LINE audio and transcribe through OpenRouter ZDR.
 
     Returns transcribed text, or None on failure.
     """
@@ -120,11 +109,6 @@ def _transcribe_line_audio(message_id: str, tenant: Tenant | None = None) -> str
             tenant.id,
         )
         return None
-    openai_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
-    if not openai_key:
-        logger.warning("Cannot transcribe LINE audio: no OPENAI_API_KEY configured")
-        return None
-
     access_token = _get_access_token()
     if not access_token:
         logger.warning("Cannot transcribe LINE audio: no LINE_CHANNEL_ACCESS_TOKEN")
@@ -161,33 +145,10 @@ def _transcribe_line_audio(message_id: str, tenant: Tenant | None = None) -> str
         else:
             ext = "m4a"  # LINE default for voice messages
 
-        # 2. Transcribe via OpenAI Whisper API. Bias decoding toward the
-        # tenant's own known non-PII vocabulary so brand/project names are
-        # spelled consistently instead of re-guessed per clip. See
-        # apps/router/transcription.py for the PII boundary on the hint.
-        from apps.router.transcription import build_transcription_prompt
+        # 2. Transcribe through the single fail-closed OpenRouter seam.
+        from apps.router.transcription import transcribe_audio
 
-        data = {"model": "whisper-1"}
-        prompt = build_transcription_prompt(tenant)
-        if prompt:
-            data["prompt"] = prompt
-        whisper_resp = httpx.post(
-            WHISPER_API_URL,
-            headers={"Authorization": f"Bearer {openai_key}"},
-            files={"file": (f"voice.{ext}", audio_data, f"audio/{ext}")},
-            data=data,
-            timeout=30,
-        )
-        if not whisper_resp.is_success:
-            logger.warning(
-                "Whisper transcription failed for LINE audio %s: %s %s",
-                message_id,
-                whisper_resp.status_code,
-                whisper_resp.text[:200],
-            )
-            return None
-
-        text = whisper_resp.json().get("text", "").strip()
+        text = transcribe_audio(audio_data, audio_format=ext, tenant=tenant)
         if text:
             logger.info(
                 "Transcribed LINE audio %s (%d bytes → %d chars)",

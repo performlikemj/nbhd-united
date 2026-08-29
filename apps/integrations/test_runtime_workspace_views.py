@@ -24,8 +24,8 @@ from apps.tenants.services import create_tenant
 from apps.tenants.test_utils import seed_internal_key
 
 
-def _fake_embedding(_text):
-    """Stand-in for OpenAI embedding calls in tests."""
+def _fake_embedding(_text, **_kwargs):
+    """Stand-in for the tenant-aware embedding seam in tests."""
     return [0.01] * 1536
 
 

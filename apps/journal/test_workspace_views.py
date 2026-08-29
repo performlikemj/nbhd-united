@@ -7,17 +7,18 @@ headers.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.journal.models import Workspace
+from apps.journal.workspace_services import embed_workspace_description
 from apps.tenants.models import Tenant, User
 
 
-def _fake_embedding(_text):
-    """Stand-in for OpenAI embedding calls in tests."""
+def _fake_embedding(_text, **_kwargs):
+    """Stand-in for OpenRouter embedding calls in tests."""
     return [0.01] * 1536
 
 
@@ -32,6 +33,23 @@ def _create_user_and_tenant(username: str, telegram_chat_id: int) -> tuple[User,
     user.telegram_chat_id = telegram_chat_id
     user.save(update_fields=["telegram_chat_id"])
     return user, tenant
+
+
+class WorkspaceDescriptionEgressTest(TestCase):
+    @override_settings(OPENROUTER_API_KEY="test-key")
+    @patch("apps.lessons.services.requests.post")
+    def test_workspace_description_passes_tenant_and_masks_known_value(self, mock_post):
+        _user, tenant = _create_user_and_tenant("workspace-egress", 404049)
+        tenant.pii_entity_map = {"[PERSON_1]": {"name": "Theo Smith"}}
+        tenant.save(update_fields=["pii_entity_map"])
+        response = Mock()
+        response.json.return_value = {"data": [{"embedding": [0.01] * 1536}]}
+        mock_post.return_value = response
+
+        result = embed_workspace_description(tenant, "Planning with Theo Smith")
+
+        self.assertEqual(len(result), 1536)
+        self.assertEqual(mock_post.call_args.kwargs["json"]["input"], "Planning with [PERSON_1]")
 
 
 @patch("apps.lessons.services.generate_embedding", side_effect=_fake_embedding)
@@ -201,7 +219,9 @@ class WorkspaceViewsTest(TestCase):
         self._create(name="Work", description="budget meetings")
         ws = Workspace.objects.get(tenant=self.tenant, slug="work")
         self.assertIsNotNone(ws.description_embedding)
-        self.assertTrue(embed_mock.called)
+        work_call = next(call for call in embed_mock.call_args_list if call.args[0] == "budget meetings")
+        self.assertEqual(work_call.kwargs["tenant"], self.tenant)
+        self.assertEqual(work_call.kwargs["seam"], "workspace_description_embedding")
 
     # ── Update ───────────────────────────────────────────────────────────
 

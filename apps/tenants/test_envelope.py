@@ -8,13 +8,73 @@ being non-empty. The Profile section is exercised indirectly via
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
-from apps.tenants.envelope import render_privacy_placeholders, render_situation
+from apps.pii.redactor import RedactionOutcome
+from apps.tenants.envelope import render_privacy_placeholders, render_safe_user_md, render_situation
 from apps.tenants.models import UserSituation
 from apps.tenants.services import create_tenant
+
+
+class SafeUserMdRenderTests(TestCase):
+    def _tenant(self):
+        tenant = create_tenant(display_name="Alex Rivera", telegram_chat_id=789999)
+        tenant.user.location_city = "Yokohama"
+        tenant.user.preferences = {"onboarding_interests": "Plan training with Priya Nair"}
+        tenant.user.save(update_fields=["location_city", "preferences"])
+        tenant.pii_entity_map = {
+            "[PERSON_1]": {"name": "Alex Rivera"},
+            "[LOCATION_1]": {"name": "Yokohama"},
+            "[PERSON_2]": {"name": "Priya Nair"},
+        }
+        tenant.save(update_fields=["pii_entity_map"])
+        return tenant
+
+    def test_output_contains_interests_but_no_raw_profile_values(self):
+        tenant = self._tenant()
+
+        content = render_safe_user_md(tenant)
+
+        self.assertIsNotNone(content)
+        self.assertIn("Interests and priorities", content)
+        self.assertIn("[PERSON_1", content)
+        self.assertIn("[LOCATION_1", content)
+        self.assertIn("[PERSON_2", content)
+        self.assertNotIn("Alex Rivera", content)
+        self.assertNotIn("Yokohama", content)
+        self.assertNotIn("Priya Nair", content)
+
+    def test_first_seen_profile_values_are_placeholdered_from_empty_entity_map(self):
+        tenant = create_tenant(display_name="Alex Rivera", telegram_chat_id=789998)
+        tenant.user.location_city = "Yokohama"
+        tenant.user.preferences = {"onboarding_interests": "Plan training with Priya Nair"}
+        tenant.user.save(update_fields=["location_city", "preferences"])
+        self.assertEqual(tenant.pii_entity_map, {})
+
+        content = render_safe_user_md(tenant)
+
+        self.assertIsNotNone(content)
+        self.assertIn("[PERSON_", content)
+        self.assertIn("[LOCATION_", content)
+        self.assertNotIn("Alex Rivera", content)
+        self.assertNotIn("Yokohama", content)
+        self.assertNotIn("Priya Nair", content)
+
+    @patch("apps.pii.redactor.redact_user_message_checked")
+    def test_first_pass_uses_minting_policy_and_failure_skips_render(self, redact):
+        tenant = self._tenant()
+        redact.return_value = RedactionOutcome(text="raw", confirmed=False, reason="redaction-error")
+
+        with patch("apps.orchestrator.workspace_envelope.render_managed_region") as render:
+            content = render_safe_user_md(tenant)
+
+        self.assertIsNone(content)
+        render.assert_not_called()
+        self.assertNotIn("mint", redact.call_args.kwargs)
+        self.assertFalse(redact.call_args.kwargs["allow_user_name"])
 
 
 class RightNowSectionTests(TestCase):

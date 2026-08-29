@@ -20,39 +20,36 @@ def _vector_with_dims(first: float = 0.0, second: float = 0.0, third: float = 0.
     return vector
 
 
-@skipUnless(connection.vendor == "postgresql", "pgvector query annotations require PostgreSQL in tests")
-class LessonServicesTests(TestCase):
+class EmbeddingGenerationTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Lessons Tenant", telegram_chat_id=123456)
 
-    @override_settings(OPENAI_API_KEY="test-key")
+    @override_settings(OPENROUTER_API_KEY="test-key")
     @patch("apps.lessons.services.requests.post")
-    def test_generate_embedding_calls_openai(self, mock_post: Mock) -> None:
+    def test_generate_embedding_calls_openrouter_zdr(self, mock_post: Mock) -> None:
+        vector = _vector_with_dims(0.123456, 0.654321)
         mock_response = Mock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": [
-                {
-                    "embedding": [0.123456, 0.654321],
-                }
-            ]
-        }
+        mock_response.json.return_value = {"data": [{"embedding": vector}]}
         mock_post.return_value = mock_response
 
         result = generate_embedding("A learning insight")
 
         mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args.args[0], "https://openrouter.ai/api/v1/embeddings")
         called_json = mock_post.call_args.kwargs["json"]
-        self.assertEqual(called_json["model"], "text-embedding-3-small")
+        self.assertEqual(called_json["model"], "openai/text-embedding-3-small")
         self.assertEqual(called_json["input"], "A learning insight")
+        self.assertEqual(called_json["provider"], {"zdr": True, "data_collection": "deny"})
         self.assertEqual(mock_post.call_args.kwargs["headers"]["Authorization"], "Bearer test-key")
-        self.assertEqual(result, [0.123456, 0.654321])
+        self.assertEqual(len(result), 1536)
+        self.assertEqual(result, vector)
 
-    @override_settings(OPENAI_API_KEY="test-key")
+    @override_settings(OPENROUTER_API_KEY="test-key")
     @patch("apps.lessons.services.requests.post")
     def test_index_and_query_embedding_inputs_are_symmetric_in_placeholder_space(self, mock_post: Mock) -> None:
         mock_response = Mock()
-        mock_response.json.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
+        mock_response.json.return_value = {"data": [{"embedding": _vector_with_dims(0.1, 0.2)}]}
         mock_post.return_value = mock_response
         self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Theo Smith"}}
         self.tenant.save(update_fields=["pii_entity_map"])
@@ -64,6 +61,34 @@ class LessonServicesTests(TestCase):
         queried = mock_post.call_args_list[1].kwargs["json"]["input"]
         self.assertEqual(indexed, "Lesson from [PERSON_1]")
         self.assertEqual(queried, indexed)
+
+    @override_settings(OPENROUTER_API_KEY="test-key")
+    @patch("apps.lessons.services.requests.post")
+    def test_generate_embedding_rejects_short_vector(self, mock_post: Mock) -> None:
+        mock_response = Mock()
+        mock_response.json.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
+        mock_post.return_value = mock_response
+
+        with self.assertRaisesMessage(ValueError, "exactly 1536 dimensions"):
+            generate_embedding("A learning insight")
+
+    @override_settings(OPENROUTER_API_KEY="test-key")
+    @patch("apps.lessons.services.requests.post")
+    def test_generate_embedding_rejects_malformed_vector(self, mock_post: Mock) -> None:
+        mock_response = Mock()
+        malformed = [0.0] * 1536
+        malformed[100] = "not-a-number"
+        mock_response.json.return_value = {"data": [{"embedding": malformed}]}
+        mock_post.return_value = mock_response
+
+        with self.assertRaisesMessage(ValueError, "non-numeric"):
+            generate_embedding("A learning insight")
+
+
+@skipUnless(connection.vendor == "postgresql", "pgvector query annotations require PostgreSQL in tests")
+class LessonServicesTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Lessons Tenant", telegram_chat_id=123456)
 
     def test_find_similar_lessons_with_pre_set_embeddings(self):
         source = Lesson.objects.create(

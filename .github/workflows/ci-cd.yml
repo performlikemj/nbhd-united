@@ -703,6 +703,22 @@ jobs:
           fi
           echo "Serving image identity confirmed: production is running ${{ github.sha }}."
 
+      - name: Alert on OpenRouter ZDR route drift
+        if: steps.freshness.outputs.superseded != 'true'
+        # Live API failures stay visible on this step but never fail the deploy job.
+        continue-on-error: true
+        run: |
+          # Run inside the deployed app so OPENROUTER_API_KEY comes from its
+          # existing Key Vault-backed secretRef; never copy the key into CI.
+          if ! az containerapp exec \
+              --name ${{ env.DJANGO_APP }} \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --container ${{ env.DJANGO_APP }} \
+              --command "python /app/manage.py check_zdr_routes"; then
+            echo "::warning title=ZDR route drift::check_zdr_routes failed after deploy; inspect the command output and OpenRouter endpoint policies."
+            exit 1
+          fi
+
       # Register this deploy as a Sentry release so errors map to a specific
       # build and Sentry can surface the suspect commit. Gated on the optional
       # SENTRY_AUTH_TOKEN secret and continue-on-error, so a release-tracking

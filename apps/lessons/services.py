@@ -2,8 +2,7 @@ from __future__ import annotations
 
 """Lesson vector services for constellation search and edge creation."""
 
-import os
-from typing import Any
+import math
 
 import requests
 from django.conf import settings
@@ -12,42 +11,56 @@ from django.db.models import FloatField, Q, QuerySet, Value
 from django.db.models.expressions import ExpressionWrapper
 from pgvector.django import CosineDistance
 
+from apps.common.openrouter import OPENROUTER_EMBEDDINGS_URL, build_openrouter_body
 from apps.tenants.models import Tenant
 
 from .models import Lesson, LessonConnection
 
-EMBEDDING_MODEL = "text-embedding-3-small"
-OPENAI_EMBEDDING_URL = "https://api.openai.com/v1/embeddings"
+# Its OpenAI endpoint is non-ZDR and excluded by mandatory provider.zdr (verified 2026-08-26).
+# check_zdr_routes guards that at least one eligible ZDR embedding endpoint remains.
+EMBEDDING_MODEL = "openai/text-embedding-3-small"
+EMBEDDING_DIMS = 1536
 
 
-def _resolve_openai_api_key() -> str:
-    """Return OpenAI API key from settings or environment."""
-    key = getattr(settings, "OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+def _resolve_openrouter_api_key() -> str:
+    """Return the platform OpenRouter key or fail closed."""
+    key = getattr(settings, "OPENROUTER_API_KEY", "")
     if not key:
-        raise ValueError("OPENAI API key is not configured")
+        raise ValueError("OPENROUTER_API_KEY is not configured")
     return key
 
 
 def generate_embedding(text: str, *, tenant: Tenant | None = None, seam: str = "embedding") -> list[float]:
-    """Generate an OpenAI embedding vector for the provided text."""
+    """Generate a 1536-dimension embedding through OpenRouter ZDR."""
     from apps.pii.egress import redact_known_values
 
     text = redact_known_values(tenant, text, seam=seam)
     response = requests.post(
-        OPENAI_EMBEDDING_URL,
-        json={"input": text, "model": EMBEDDING_MODEL},
-        headers={"Authorization": f"Bearer {_resolve_openai_api_key()}"},
+        OPENROUTER_EMBEDDINGS_URL,
+        json=build_openrouter_body(EMBEDDING_MODEL, input=text),
+        headers={
+            "Authorization": f"Bearer {_resolve_openrouter_api_key()}",
+            "Content-Type": "application/json",
+        },
         timeout=10,
     )
     response.raise_for_status()
 
     payload = response.json()
     data = payload.get("data", [])
-    if not data or not data[0].get("embedding"):
-        raise ValueError("OpenAI embeddings response is missing embedding data")
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        raise ValueError("OpenRouter embeddings response is missing embedding data")
 
-    embedding: list[Any] = data[0]["embedding"]
-    return [float(value) for value in embedding]
+    embedding = data[0].get("embedding")
+    if not isinstance(embedding, list) or len(embedding) != EMBEDDING_DIMS:
+        raise ValueError(f"OpenRouter embedding must contain exactly {EMBEDDING_DIMS} dimensions")
+    try:
+        vector = [float(value) for value in embedding]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("OpenRouter embedding contains a non-numeric value") from exc
+    if not all(math.isfinite(value) for value in vector):
+        raise ValueError("OpenRouter embedding contains a non-finite value")
+    return vector
 
 
 def find_similar_lessons(

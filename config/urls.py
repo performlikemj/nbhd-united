@@ -4,6 +4,7 @@ from django.urls import include, path
 from apps.cron import views as cron_views
 from apps.integrations.runtime_views import RuntimeBYOErrorReportView, RuntimeUsageReportView
 from apps.router.chat_views import ChatProgressEventView
+from apps.router.transcription import InternalTranscriptionView
 from apps.router.views import serve_chart_image, serve_meditation_audio
 from config.health import health
 
@@ -57,6 +58,11 @@ urlpatterns = [
         "api/v1/internal/runtime/<uuid:tenant_id>/chat/progress/",
         ChatProgressEventView.as_view(),
         name="chat-progress-event-internal",
+    ),
+    path(
+        "api/internal/transcribe/",
+        InternalTranscriptionView.as_view(),
+        name="internal-transcribe",
     ),
     # Action gating — container→Django (request + poll)
     path(

@@ -56,7 +56,7 @@ ARBITER_MODEL = "anthropic/claude-haiku-4-5"
 # denylist writes) on any failure, so the fallback only widens the chance of
 # getting a usable judgment this tick rather than waiting for the next.
 ARBITER_MODELS = [ARBITER_MODEL, DEEPSEEK_MODEL]
-ARBITER_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Requests are routed exclusively through apps.common.openrouter.chat_completion.
 ARBITER_TIMEOUT_SECONDS = 30
 
 ARBITER_BATCH_SIZE = 50

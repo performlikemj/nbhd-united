@@ -11,11 +11,11 @@ class TranscribeLineAudioTest(TestCase):
     """Tests for _transcribe_line_audio."""
 
     @override_settings(
-        OPENAI_API_KEY="test-key",
         LINE_CHANNEL_ACCESS_TOKEN="test-line-token",
     )
+    @patch("apps.router.transcription.transcribe_audio", return_value="Hello from LINE")
     @patch("apps.router.line_webhook.httpx")
-    def test_successful_transcription(self, mock_httpx):
+    def test_successful_transcription(self, mock_httpx, mock_transcribe):
         """Audio downloaded from LINE and transcribed successfully."""
         # Mock LINE Content API download
         dl_resp = MagicMock()
@@ -23,13 +23,7 @@ class TranscribeLineAudioTest(TestCase):
         dl_resp.content = b"fake-audio-data"
         dl_resp.headers = {"content-type": "audio/x-m4a"}
 
-        # Mock Whisper response
-        whisper_resp = MagicMock()
-        whisper_resp.is_success = True
-        whisper_resp.json.return_value = {"text": "Hello from LINE"}
-
         mock_httpx.get.return_value = dl_resp
-        mock_httpx.post.return_value = whisper_resp
 
         result = _transcribe_line_audio("msg-123")
         self.assertEqual(result, "Hello from LINE")
@@ -40,13 +34,9 @@ class TranscribeLineAudioTest(TestCase):
         self.assertIn("msg-123/content", call_args[0][0])
         self.assertIn("Bearer test-line-token", call_args[1]["headers"]["Authorization"])
 
-        # Verify Whisper was called
-        mock_httpx.post.assert_called_once()
-        whisper_call = mock_httpx.post.call_args
-        self.assertIn("transcriptions", whisper_call[0][0])
+        mock_transcribe.assert_called_once_with(b"fake-audio-data", audio_format="m4a", tenant=None)
 
     @override_settings(
-        OPENAI_API_KEY="test-key",
         LINE_CHANNEL_ACCESS_TOKEN="test-line-token",
     )
     @patch("apps.router.line_webhook.httpx")
@@ -61,44 +51,29 @@ class TranscribeLineAudioTest(TestCase):
         self.assertIsNone(result)
         mock_httpx.post.assert_not_called()
 
-    @override_settings(
-        OPENAI_API_KEY="test-key",
-        LINE_CHANNEL_ACCESS_TOKEN="test-line-token",
-    )
+    @override_settings(LINE_CHANNEL_ACCESS_TOKEN="test-line-token")
+    @patch("apps.router.transcription.transcribe_audio", side_effect=RuntimeError("upstream failed"))
     @patch("apps.router.line_webhook.httpx")
-    def test_whisper_fails(self, mock_httpx):
-        """Whisper API failure returns None."""
+    def test_openrouter_fails(self, mock_httpx, mock_transcribe):
+        """OpenRouter transcription failure returns None without fallback."""
         dl_resp = MagicMock()
         dl_resp.is_success = True
         dl_resp.content = b"fake-audio-data"
         dl_resp.headers = {"content-type": "audio/x-m4a"}
 
-        whisper_resp = MagicMock()
-        whisper_resp.is_success = False
-        whisper_resp.status_code = 500
-        whisper_resp.text = "Server error"
-
         mock_httpx.get.return_value = dl_resp
-        mock_httpx.post.return_value = whisper_resp
 
         result = _transcribe_line_audio("msg-123")
         self.assertIsNone(result)
+        mock_transcribe.assert_called_once()
 
-    @override_settings(OPENAI_API_KEY="", LINE_CHANNEL_ACCESS_TOKEN="test-token")
-    @patch.dict("os.environ", {"OPENAI_API_KEY": ""})
-    def test_no_openai_key_returns_none(self):
-        """No OpenAI API key returns None."""
-        result = _transcribe_line_audio("msg-123")
-        self.assertIsNone(result)
-
-    @override_settings(OPENAI_API_KEY="test-key", LINE_CHANNEL_ACCESS_TOKEN="")
+    @override_settings(LINE_CHANNEL_ACCESS_TOKEN="")
     def test_no_line_token_returns_none(self):
         """No LINE access token returns None."""
         result = _transcribe_line_audio("msg-123")
         self.assertIsNone(result)
 
     @override_settings(
-        OPENAI_API_KEY="test-key",
         LINE_CHANNEL_ACCESS_TOKEN="test-line-token",
     )
     @patch("apps.router.line_webhook.httpx")
@@ -115,56 +90,42 @@ class TranscribeLineAudioTest(TestCase):
         mock_httpx.post.assert_not_called()
 
     @override_settings(
-        OPENAI_API_KEY="test-key",
         LINE_CHANNEL_ACCESS_TOKEN="test-line-token",
     )
+    @patch("apps.router.transcription.transcribe_audio", return_value="OGG audio")
     @patch("apps.router.line_webhook.httpx")
-    def test_ogg_content_type(self, mock_httpx):
+    def test_ogg_content_type(self, mock_httpx, mock_transcribe):
         """OGG audio content type detected correctly."""
         dl_resp = MagicMock()
         dl_resp.is_success = True
         dl_resp.content = b"fake-ogg-data"
         dl_resp.headers = {"content-type": "audio/ogg"}
 
-        whisper_resp = MagicMock()
-        whisper_resp.is_success = True
-        whisper_resp.json.return_value = {"text": "OGG audio"}
-
         mock_httpx.get.return_value = dl_resp
-        mock_httpx.post.return_value = whisper_resp
 
         result = _transcribe_line_audio("msg-456")
         self.assertEqual(result, "OGG audio")
 
-        # Verify file extension passed to Whisper
-        whisper_call = mock_httpx.post.call_args
-        files_arg = whisper_call[1]["files"]["file"]
-        self.assertEqual(files_arg[0], "voice.ogg")
+        mock_transcribe.assert_called_once_with(b"fake-ogg-data", audio_format="ogg", tenant=None)
 
     @override_settings(
-        OPENAI_API_KEY="test-key",
         LINE_CHANNEL_ACCESS_TOKEN="test-line-token",
     )
+    @patch("apps.router.transcription.transcribe_audio", return_value=None)
     @patch("apps.router.line_webhook.httpx")
-    def test_empty_transcript_returns_none(self, mock_httpx):
+    def test_empty_transcript_returns_none(self, mock_httpx, _mock_transcribe):
         """Whisper returning empty text returns None."""
         dl_resp = MagicMock()
         dl_resp.is_success = True
         dl_resp.content = b"fake-audio-data"
         dl_resp.headers = {"content-type": "audio/x-m4a"}
 
-        whisper_resp = MagicMock()
-        whisper_resp.is_success = True
-        whisper_resp.json.return_value = {"text": "  "}
-
         mock_httpx.get.return_value = dl_resp
-        mock_httpx.post.return_value = whisper_resp
 
         result = _transcribe_line_audio("msg-123")
         self.assertIsNone(result)
 
     @override_settings(
-        OPENAI_API_KEY="test-key",
         LINE_CHANNEL_ACCESS_TOKEN="test-line-token",
     )
     @patch("apps.router.line_webhook.httpx")

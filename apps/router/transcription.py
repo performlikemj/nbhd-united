@@ -1,4 +1,4 @@
-"""Per-tenant vocabulary for speech-to-text, across all voice channels.
+"""OpenRouter speech-to-text and its optional non-PII vocabulary.
 
 Speech recognizers transcribe a short clip with no knowledge of the speaker's
 world, so distinctive proper nouns — brands, project names, people — come back
@@ -16,24 +16,26 @@ accepts text only; there is no server-side audio path for iOS). The fix for that
 channel is the iOS app feeding this same vocabulary into
 ``SFSpeechRecognitionRequest.contextualStrings`` — it fetches the terms from
 ``GET /api/v1/chat/transcription-vocab/`` (``TranscriptionVocabView``), which is
-why the term collection lives in a shared helper here. The two SERVER-side
-transcription sites — the Telegram poller and the LINE webhook, both OpenAI
-``whisper-1`` — previously sent no vocabulary at all; they now pass
-``build_transcription_prompt`` as the Whisper ``prompt`` (decoder bias, not an
-instruction), hardening them against the same garble class.
+why the term collection lives here. Server-side Telegram and LINE audio use
+the shared :func:`transcribe_audio` OpenRouter path. OpenRouter currently
+accepts but ignores the generic STT ``prompt`` field, so server requests send
+no prompt rather than leaking identity fields for no transcription benefit.
+
+OpenRouter's audio transcription endpoint also ignores the generic
+``provider`` routing object. We keep sending the mandatory shared body shape,
+but it is not the ZDR enforcement mechanism for STT. The actual control is
+that every endpoint for the configured model appears in OpenRouter's ZDR
+inventory; ``manage.py check_zdr_routes`` verifies that invariant.
 
 PII boundary
 ------------
-For Whisper the audio already goes to OpenAI, so the hint adds no new *audio*
-egress; for iOS the terms stay on the user's own device. Either way we
-deliberately draw ONLY from sources the user or the PII arbiter have already
-declared non-identifying:
+For server-side STT the audio is already sent through the configured
+OpenRouter model, while for iOS the terms stay on the user's own device. Either
+way we deliberately draw ONLY from sources the user or the PII arbiter have
+already declared non-identifying:
 
 * ``pii_denylist`` keys — brands / projects / jargon explicitly marked
-  "not PII for me" (this is exactly where "rakuten" lands once denylisted, so
-  the same signal that stops the redaction confusion also fixes the spelling).
-* workspace names — user-authored labels.
-* the user's own display name.
+  "not PII for me" (this is exactly where "rakuten" lands once denylisted).
 
 Contact names living in ``pii_entity_map`` are intentionally excluded: those
 are third-party PERSON entities the PII module works to keep out of provider
@@ -42,8 +44,19 @@ prompts, and the transcription win does not justify widening their egress.
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import TYPE_CHECKING
+
+import requests
+from django.conf import settings
+from rest_framework import status
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from apps.common.openrouter import OPENROUTER_TRANSCRIPTIONS_URL, build_openrouter_body
+from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
 
 if TYPE_CHECKING:
     from apps.tenants.models import Tenant
@@ -54,6 +67,68 @@ logger = logging.getLogger(__name__)
 # a short list. Stay well under both with coarse budgets.
 _MAX_TERMS = 48
 _MAX_PROMPT_CHARS = 600
+_MAX_AUDIO_BYTES = 25 * 1024 * 1024
+
+
+def transcribe_audio(
+    audio_data: bytes,
+    *,
+    audio_format: str,
+    tenant: Tenant | None = None,
+    timeout: int = 60,
+) -> str:
+    """Transcribe audio through the configured OpenRouter STT model.
+
+    The JSON/base64 request shape works for Telegram, LINE, and the internal
+    container shim. The provider object is retained but ignored by OpenRouter's
+    STT endpoint; run ``check_zdr_routes`` to verify all model endpoints are
+    ZDR. There is deliberately no direct-provider fallback.
+    """
+    del tenant  # Reserved for safe vocabulary routing if OpenRouter supports it.
+    if not audio_data:
+        raise ValueError("audio data is empty")
+    if len(audio_data) > _MAX_AUDIO_BYTES:
+        raise ValueError("audio data exceeds the 25 MB limit")
+
+    key = str(getattr(settings, "OPENROUTER_API_KEY", "") or "").strip()
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY not configured")
+
+    model = str(
+        getattr(settings, "OPENROUTER_STT_MODEL", "openai/whisper-large-v3-turbo") or "openai/whisper-large-v3-turbo"
+    ).strip()
+    normalized_format = _normalize_audio_format(audio_format)
+    body = build_openrouter_body(
+        model,
+        input_audio={
+            "data": base64.b64encode(audio_data).decode("ascii"),
+            "format": normalized_format,
+        },
+    )
+    response = requests.post(
+        OPENROUTER_TRANSCRIPTIONS_URL,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        json=body,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    text = payload.get("text") if isinstance(payload, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("OpenRouter transcription response is missing text")
+    return text.strip()
+
+
+def _normalize_audio_format(value: str) -> str:
+    normalized = str(value or "").strip().lower().lstrip(".")
+    aliases = {"mpeg": "mp3", "mp4": "m4a", "x-m4a": "m4a", "oga": "ogg"}
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"wav", "mp3", "flac", "m4a", "ogg", "webm", "aac"}:
+        raise ValueError("unsupported audio format")
+    return normalized
 
 
 def collect_transcription_vocab(tenant: Tenant | None) -> list[str]:
@@ -64,9 +139,9 @@ def collect_transcription_vocab(tenant: Tenant | None) -> list[str]:
     endpoint (``GET /api/v1/chat/transcription-vocab/`` →
     ``SFSpeechRecognitionRequest.contextualStrings``).
 
-    Order: denylisted brands / jargon, then workspace names, then the user's
-    own name — capped by term count and total length to respect the consumers'
-    budgets. Never raises: any lookup failure degrades to ``[]`` so
+    Only arbiter/user-vetted denylist brands and jargon are included. Identity
+    fields and workspace names are excluded. The result is capped by term count
+    and total length. Never raises: any lookup failure degrades to ``[]`` so
     transcription proceeds exactly as it does without a hint.
     """
     if tenant is None:
@@ -79,11 +154,10 @@ def collect_transcription_vocab(tenant: Tenant | None) -> list[str]:
 
 
 def build_transcription_prompt(tenant: Tenant | None) -> str | None:
-    """Return a Whisper ``prompt`` biasing decoding toward the tenant's known
-    non-PII proper nouns, or ``None`` when there is no useful vocabulary.
+    """Build an optional non-PII speech-recognition vocabulary prompt.
 
-    Used by the two server-side Whisper call sites (Telegram poller, LINE
-    webhook). Never raises — see ``collect_transcription_vocab``.
+    OpenRouter currently ignores this field for STT, so server requests do not
+    send it. Never raises — see ``collect_transcription_vocab``.
     """
     terms = collect_transcription_vocab(tenant)
     if not terms:
@@ -119,14 +193,6 @@ def _collect_vocabulary(tenant: Tenant) -> list[str]:
         for key in denylist:
             _add(_titleish(key))
 
-    # 2. Workspace names — user-authored labels (e.g. project names).
-    for name in _workspace_names(tenant):
-        _add(name)
-
-    # 3. The user's own display name.
-    user = getattr(tenant, "user", None)
-    _add(getattr(user, "display_name", "") if user is not None else "")
-
     # Enforce the budget.
     out: list[str] = []
     total = 0
@@ -149,9 +215,81 @@ def _titleish(key: str) -> str:
     return key
 
 
-def _workspace_names(tenant: Tenant) -> list[str]:
-    """Best-effort list of the tenant's workspace names (empty on any error)."""
+class InternalTranscriptionView(APIView):
+    """Per-tenant authenticated transcription seam for runtime containers."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        tenant_id = str(request.headers.get("X-NBHD-Tenant-Id", "") or "").strip()
+        try:
+            validate_internal_runtime_request(
+                provided_key=request.headers.get("X-NBHD-Internal-Key", ""),
+                provided_tenant_id=tenant_id,
+            )
+        except InternalAuthError as exc:
+            return Response(
+                {"error": "internal_auth_failed", "detail": str(exc)},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        from apps.tenants.models import Tenant
+
+        try:
+            tenant = Tenant.objects.get(id=tenant_id)
+        except Tenant.DoesNotExist:
+            return Response({"error": "tenant_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            audio_data, audio_format = _audio_from_internal_request(request)
+            text = transcribe_audio(audio_data, audio_format=audio_format, tenant=tenant)
+        except ValueError as exc:
+            logger.info(
+                "internal_transcription_rejected tenant=%s error_type=%s",
+                tenant_id,
+                type(exc).__name__,
+            )
+            return Response(
+                {"error": "invalid_audio", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as exc:
+            logger.warning(
+                "internal_transcription_failed tenant=%s error_type=%s",
+                tenant_id,
+                type(exc).__name__,
+            )
+            return Response(
+                {"error": "transcription_failed", "detail": "Couldn't transcribe this voice note."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        logger.info(
+            "internal_transcription_succeeded tenant=%s audio_bytes=%d transcript_chars=%d",
+            tenant_id,
+            len(audio_data),
+            len(text),
+        )
+        return Response({"text": text}, status=status.HTTP_200_OK)
+
+
+def _audio_from_internal_request(request) -> tuple[bytes, str]:
+    uploaded = request.FILES.get("file")
+    if uploaded is not None:
+        audio_data = uploaded.read(_MAX_AUDIO_BYTES + 1)
+        suffix = str(getattr(uploaded, "name", "")).rsplit(".", 1)
+        audio_format = suffix[-1] if len(suffix) == 2 else str(getattr(uploaded, "content_type", "")).split("/")[-1]
+        return audio_data, _normalize_audio_format(audio_format)
+
+    input_audio = request.data.get("input_audio") if hasattr(request.data, "get") else None
+    if not isinstance(input_audio, dict):
+        raise ValueError("file or input_audio is required")
+    encoded = input_audio.get("data")
+    if not isinstance(encoded, str) or not encoded:
+        raise ValueError("input_audio.data is required")
     try:
-        return [n for n in tenant.workspaces.values_list("name", flat=True)[:_MAX_TERMS] if n]
-    except Exception:
-        return []
+        audio_data = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("input_audio.data must be valid base64") from exc
+    return audio_data, _normalize_audio_format(str(input_audio.get("format", "")))
