@@ -725,6 +725,23 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + site_publish_gate
 
+    if tenant is not None and getattr(tenant, "site_editor_enabled", False):
+        site_editor_gate = (
+            "## Website edit gate\n\n"
+            "You can edit the user's website source (text, pages, layout, images) with the site_* tools —\n"
+            'find them via toolSearch; they are NOT pre-loaded. This is the ONE exception to "no coding\n'
+            "tools\": it works only inside the user's own site repository, through these tools, nothing else.\n\n"
+            "Flow, every time: read the current file(s) first (`site_read_file`) → stage edits\n"
+            "(`site_stage_file` / `site_stage_upload`) → show the user what will change\n"
+            "(`site_show_pending`) → only after they say go, call `site_publish` with `confirm: true` and a\n"
+            "short message. Never publish without that go. Never say a change is live unless `site_publish`\n"
+            "returned a commit THIS turn; then say the site updates in a few minutes.\n\n"
+            "Photos for the portfolio gallery still go through `publish_portfolio_image`. Keep edits small\n"
+            "and content-shaped; for structural/code rewrites or anything you're unsure will build, say so\n"
+            "and suggest asking MJ. If a tool says site editing isn't configured, don't retry — say so."
+        )
+        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + site_editor_gate
+
     # Current-location capture gate — behavioral, flag-gated, and imperative.
     # The tool being available is not enough under toolSearch: like the site-
     # publishing reconcile gate above, the agent needs an always-loaded cue to

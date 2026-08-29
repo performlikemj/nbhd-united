@@ -1,0 +1,34 @@
+{
+  "id": "nbhd-site-editor",
+  "name": "NBHD Site Editor",
+  "description": "Stage guarded website source edits and publish one GitHub commit after explicit confirmation.",
+  "contracts": {
+    "tools": [
+      "site_list_files",
+      "site_read_file",
+      "site_stage_file",
+      "site_stage_upload",
+      "site_show_pending",
+      "site_discard",
+      "site_publish",
+      "site_deploy_status"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "owner": { "type": "string" },
+      "repo": { "type": "string" },
+      "branch": { "type": "string" },
+      "allowPaths": { "type": "array", "items": { "type": "string" } },
+      "denyPaths": { "type": "array", "items": { "type": "string" } },
+      "maxTextBytes": { "type": "integer", "minimum": 1 },
+      "maxImageBytes": { "type": "integer", "minimum": 1 },
+      "maxFiles": { "type": "integer", "minimum": 1 },
+      "maxTotalBytes": { "type": "integer", "minimum": 1 },
+      "deployMinutes": { "type": "integer", "minimum": 1 },
+      "authorEmail": { "type": "string" }
+    }
+  }
+}

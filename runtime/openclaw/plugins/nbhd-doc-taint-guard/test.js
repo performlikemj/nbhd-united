@@ -393,7 +393,7 @@ describe("exported id sets", () => {
   it("EXFIL_TOOL_IDS matches the threat-model's exfil surface exactly", () => {
     assert.deepEqual(
       [...EXFIL_TOOL_IDS].sort(),
-      ["nbhd_reddit_post", "nbhd_reddit_reply", "publish_portfolio_image", "web_fetch"].sort(),
+      ["nbhd_reddit_post", "nbhd_reddit_reply", "publish_portfolio_image", "site_publish", "web_fetch"].sort(),
     );
   });
 

@@ -1715,6 +1715,110 @@ def apply_byo_credentials_to_container(tenant: Any) -> None:
     )
 
 
+def ensure_site_editor_secret(tenant: Any, *, enabled: bool) -> bool:
+    """Reconcile the Kiho site-editor Key Vault reference and env binding.
+
+    Only a changed template creates a new Container Apps revision. The token
+    value never enters this function: the container secret points at the
+    tenant-scoped Key Vault secret through the tenant managed identity.
+
+    Returns ``True`` only when a new revision was persisted.
+    """
+    if _is_mock():
+        logger.info("[MOCK] Reconciled site-editor secret for tenant=%s enabled=%s", tenant.id, enabled)
+        return False
+
+    if not tenant.container_id:
+        logger.warning("ensure_site_editor_secret skipped: tenant=%s has no container_id", tenant.id)
+        return False
+    if enabled and not tenant.managed_identity_id:
+        raise ValueError(f"Tenant {tenant.id} has no managed_identity_id")
+    if enabled and not tenant.key_vault_prefix:
+        raise ValueError(f"Tenant {tenant.id} has no key_vault_prefix")
+
+    client = get_container_client()
+    app = client.container_apps.get(settings.AZURE_RESOURCE_GROUP, tenant.container_id)
+    openclaw = next((container for container in app.template.containers if container.name == "openclaw"), None)
+    if openclaw is None:
+        logger.warning("ensure_site_editor_secret skipped: container=%s has no openclaw container", tenant.container_id)
+        return False
+
+    secret_name = "github-site-token"
+    env_name = "NBHD_SITE_GITHUB_TOKEN"
+    kv_secret_name = f"{tenant.key_vault_prefix}-github-site-token"
+
+    def field(entry: Any, *names: str) -> Any:
+        for name in names:
+            if isinstance(entry, dict) and name in entry:
+                return entry[name]
+            value = getattr(entry, name, None)
+            if value is not None:
+                return value
+        return None
+
+    secrets = list(app.configuration.secrets or [])
+    existing_secret = next((entry for entry in secrets if _entry_name(entry) == secret_name), None)
+    env_list = list(openclaw.env or [])
+    existing_env = next((entry for entry in env_list if _entry_name(entry) == env_name), None)
+    changed = False
+
+    if enabled:
+        desired_secret = _build_container_secret(
+            secret_name,
+            plain_value="",
+            key_vault_secret_name=kv_secret_name,
+            identity_id=tenant.managed_identity_id,
+        )
+        secret_matches = existing_secret is not None and all(
+            field(existing_secret, key, {"keyVaultUrl": "key_vault_url"}.get(key, key)) == value
+            for key, value in desired_secret.items()
+        )
+        if not secret_matches:
+            app.configuration.secrets = [entry for entry in secrets if _entry_name(entry) != secret_name] + [
+                desired_secret
+            ]
+            changed = True
+        env_matches = (
+            existing_env is not None
+            and field(existing_env, "secretRef", "secret_ref") == secret_name
+            and field(existing_env, "value") in (None, "")
+        )
+        if not env_matches:
+            openclaw.env = [entry for entry in env_list if _entry_name(entry) != env_name] + [
+                {"name": env_name, "secretRef": secret_name}
+            ]
+            changed = True
+    else:
+        filtered_secrets = [entry for entry in secrets if _entry_name(entry) != secret_name]
+        filtered_env = [entry for entry in env_list if _entry_name(entry) != env_name]
+        if len(filtered_secrets) != len(secrets):
+            app.configuration.secrets = filtered_secrets
+            changed = True
+        if len(filtered_env) != len(env_list):
+            openclaw.env = filtered_env
+            changed = True
+
+    if not changed:
+        return False
+
+    import hashlib
+    import time
+
+    app.template.revision_suffix = f"s{hashlib.sha256(f'site-{int(time.time_ns())}'.encode()).hexdigest()[:6]}"
+    client.container_apps.begin_create_or_update(
+        settings.AZURE_RESOURCE_GROUP,
+        tenant.container_id,
+        app,
+    ).result()
+    logger.info(
+        "Reconciled site-editor secret for tenant=%s container=%s enabled=%s",
+        tenant.id,
+        tenant.container_id,
+        enabled,
+    )
+    return True
+
+
 _PLUGIN_RUNTIME_DEPS_VOLUME = "plugin-runtime-deps"
 _PLUGIN_RUNTIME_DEPS_PATH = "/home/node/.openclaw/plugin-runtime-deps"
 
