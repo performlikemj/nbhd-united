@@ -87,6 +87,52 @@ function repositoryFixture(entries, contents = {}) {
   return { calls, fetchImpl };
 }
 
+function changingHeadFixture(stagedShaAtHead2) {
+  const calls = [];
+  let head = "head-1";
+  let commitCount = 0;
+  const stagedPath = "web/src/pages/AboutPage.js";
+  const trees = {
+    "head-1": [
+      { type: "blob", mode: "100644", path: stagedPath, sha: "about-v1", size: 20 },
+      { type: "blob", mode: "100644", path: "web/src/pages/ContactPage.js", sha: "contact-v1", size: 20 },
+    ],
+    "head-2": [
+      { type: "blob", mode: "100644", path: stagedPath, sha: stagedShaAtHead2, size: 20 },
+      { type: "blob", mode: "100644", path: "web/src/pages/ContactPage.js", sha: "contact-v2", size: 20 },
+    ],
+  };
+  const fetchImpl = async (url, options) => {
+    const parsed = new URL(url);
+    const call = { url: parsed, options, body: options.body ? JSON.parse(options.body) : undefined };
+    calls.push(call);
+    const pathname = parsed.pathname;
+    if (options.method === "GET" && pathname.endsWith("/git/ref/heads/main")) {
+      return response(200, { object: { sha: head } });
+    }
+    if (options.method === "GET" && pathname.endsWith(`/git/commits/${head}`)) {
+      return response(200, { tree: { sha: `tree-${head}` } });
+    }
+    if (options.method === "GET" && pathname.endsWith(`/git/trees/tree-${head}`)) {
+      return response(200, { tree: trees[head], truncated: false });
+    }
+    if (options.method === "GET" && pathname.endsWith("/git/blobs/about-v1")) {
+      return response(200, { encoding: "base64", content: Buffer.from('export default "v1";').toString("base64") });
+    }
+    if (options.method === "POST" && pathname.endsWith("/git/blobs")) return response(201, { sha: "new-blob" });
+    if (options.method === "POST" && pathname.endsWith("/git/trees")) return response(201, { sha: "new-tree" });
+    if (options.method === "POST" && pathname.endsWith("/git/commits")) {
+      commitCount += 1;
+      return response(201, { sha: `commit-${commitCount}` });
+    }
+    if (options.method === "PATCH" && pathname.endsWith("/git/refs/heads/main")) {
+      return response(200, { object: { sha: `commit-${commitCount}` } });
+    }
+    throw new Error(`unexpected ${options.method} ${pathname}`);
+  };
+  return { calls, fetchImpl, advance: () => { head = "head-2"; } };
+}
+
 function editor(overrides = {}, fetchImpl = async () => {
   throw new Error("unexpected fetch");
 }, instanceOverrides = {}) {
@@ -515,6 +561,9 @@ test("staging survives a new editor instance and publishing from it clears durab
   const shown = await instanceB.tools.site_show_pending();
   assert.match(text(shown), /web\/src\/pages\/AboutPage\.js/);
   assert.equal(instanceB._state.pending.size, 1);
+  assert.deepEqual(JSON.parse(readFileSync(instanceB._state.pendingStateFile, "utf8")).approval.base, {
+    "web/src/pages/AboutPage.js": null,
+  });
   const code = extractApprovalCode(shown);
 
   assert.match(
@@ -523,6 +572,89 @@ test("staging survives a new editor instance and publishing from it clears durab
   );
   assert.equal(instanceB._state.pending.size, 0);
   assert.equal(existsSync(instanceB._state.pendingStateFile), false);
+});
+
+test("publish rejects a staged-path base change and clears the reviewed approval", async () => {
+  const fake = changingHeadFixture("about-v2");
+  const { tools, _state } = editor({}, fake.fetchImpl);
+  const repoPath = "web/src/pages/AboutPage.js";
+  await tools.site_stage_file({ path: repoPath, content: 'export default "edited";' });
+  const code = await approve(tools);
+  assert.deepEqual(JSON.parse(readFileSync(_state.pendingStateFile, "utf8")).approval.base, {
+    [repoPath]: "about-v1",
+  });
+
+  fake.advance();
+  assert.match(
+    text(await tools.site_publish({ message: "Do not overwrite v2", confirm: true, approval_code: code })),
+    /The site changed since you reviewed this \(web\/src\/pages\/AboutPage\.js\)\. Run site_show_pending again\./,
+  );
+  const stored = JSON.parse(readFileSync(_state.pendingStateFile, "utf8"));
+  assert.equal(stored.approval, null);
+  assert.ok(stored.files[repoPath]);
+  assert.equal(fake.calls.some((call) => call.options.method === "POST"), false);
+});
+
+test("publish accepts an unrelated-path base change", async () => {
+  const fake = changingHeadFixture("about-v1");
+  const { tools, _state } = editor({}, fake.fetchImpl);
+  await tools.site_stage_file({
+    path: "web/src/pages/AboutPage.js",
+    content: 'export default "edited";',
+  });
+  const code = await approve(tools);
+
+  fake.advance();
+  assert.match(
+    text(await tools.site_publish({ message: "Keep unrelated update", confirm: true, approval_code: code })),
+    /Published commit/,
+  );
+  assert.equal(existsSync(_state.pendingStateFile), false);
+  const treeCall = fake.calls.find(
+    (call) => call.options.method === "POST" && call.url.pathname.endsWith("/git/trees"),
+  );
+  assert.equal(treeCall.body.base_tree, "tree-head-2");
+});
+
+test("show pending fails closed without dropping a concurrently staged file", async () => {
+  const stateDir = join(TEST_STATE_ROOT, "show-race");
+  const fixture = repositoryFixture(
+    [{ type: "blob", mode: "100644", path: "web/src/pages/AboutPage.js", sha: "about", size: 20 }],
+    { about: 'export default "old";' },
+  );
+  let releaseBlob;
+  let markBlobRead;
+  const blobRelease = new Promise((resolve) => { releaseBlob = resolve; });
+  const blobRead = new Promise((resolve) => { markBlobRead = resolve; });
+  const fetchImpl = async (url, options) => {
+    if (new URL(url).pathname.endsWith("/git/blobs/about")) {
+      markBlobRead();
+      await blobRelease;
+    }
+    return fixture.fetchImpl(url, options);
+  };
+  const instanceA = editor({}, fetchImpl, { stateDir });
+  await instanceA.tools.site_stage_file({
+    path: "web/src/pages/AboutPage.js",
+    content: 'export default "reviewed";',
+  });
+  const showPromise = instanceA.tools.site_show_pending();
+  await blobRead;
+
+  const instanceB = editor({}, fetchImpl, { stateDir });
+  await instanceB.tools.site_stage_file({ path: "web/src/styles/late.css", content: "body {}" });
+  releaseBlob();
+
+  assert.match(
+    text(await showPromise),
+    /Pending changes moved while I was reviewing — run site_show_pending again/,
+  );
+  const stored = JSON.parse(readFileSync(instanceA._state.pendingStateFile, "utf8"));
+  assert.deepEqual(Object.keys(stored.files).sort(), [
+    "web/src/pages/AboutPage.js",
+    "web/src/styles/late.css",
+  ]);
+  assert.equal(stored.approval, null);
 });
 
 test("publish approval rejects missing, wrong, invalidated, and expired codes", async () => {
@@ -619,6 +751,7 @@ test("durable state file is private and root listings alone include siteNotes", 
   const root = text(await tools.site_list_files());
   const nested = text(await tools.site_list_files({ path: "web" }));
   assert.match(root, /Site map: Home page hero = web\/public\/hero\.jpg\./);
+  assert.ok(root.indexOf("Site map:") < root.indexOf("<<<EXTERNAL_UNTRUSTED_CONTENT"));
   assert.doesNotMatch(nested, /Site map:/);
 
   await tools.site_stage_file({ path: "web/About.js", content: "export default 1;" });
@@ -633,6 +766,16 @@ test("durable state file is private and root listings alone include siteNotes", 
   });
   assert.equal(statSync(_state.pendingStateFile).mode & 0o777, 0o600);
   assert.equal(statSync(join(_state.pendingStateFile, "..")).mode & 0o777, 0o700);
+
+  const warnings = [];
+  const overlong = editor(
+    { allowPaths: ["web/**"], siteNotes: `${TOKEN}${"x".repeat(1001)}` },
+    listingFixture.fetchImpl,
+    { logger: { warn: (message) => warnings.push(message) } },
+  );
+  assert.doesNotMatch(text(await overlong.tools.site_list_files()), /Site map:/);
+  assert.deepEqual(warnings, ["nbhd-site-editor: ignored overlong siteNotes configuration."]);
+  assert.doesNotMatch(warnings[0], /github_pat_|TEST_TOKEN/);
 });
 
 test("repository reads and pending diffs refresh when the branch head changes", async () => {
@@ -732,8 +875,8 @@ test("two-file text and binary publish sends every exact Git Data request body",
       "GET /git/commits/head-1",
       "GET /git/trees/base-tree",
       "GET /git/ref/heads/main",
-      "GET /git/ref/heads/main",
       "GET /git/commits/head-1",
+      "GET /git/trees/base-tree",
       "POST /git/blobs",
       "POST /git/blobs",
       "POST /git/trees",
@@ -774,6 +917,50 @@ test("two-file text and binary publish sends every exact Git Data request body",
   assert.doesNotMatch(text(result), /EXTERNAL_UNTRUSTED_CONTENT/);
   assert.equal(_state.pending.size, 0);
   assert.equal(existsSync(_state.pendingStateFile), false);
+});
+
+test("publish leaves concurrently changed staged state untouched", async () => {
+  const stateDir = join(TEST_STATE_ROOT, "publish-race");
+  const fake = githubFixture();
+  let pauseBlobPost = false;
+  let releaseBlobPost;
+  let markBlobPost;
+  const blobPostRelease = new Promise((resolve) => { releaseBlobPost = resolve; });
+  const blobPost = new Promise((resolve) => { markBlobPost = resolve; });
+  const fetchImpl = async (url, options) => {
+    if (pauseBlobPost && options.method === "POST" && new URL(url).pathname.endsWith("/git/blobs")) {
+      markBlobPost();
+      await blobPostRelease;
+    }
+    return fake.fetchImpl(url, options);
+  };
+  const instanceA = editor({}, fetchImpl, { stateDir });
+  await instanceA.tools.site_stage_file({
+    path: "web/src/pages/AboutPage.js",
+    content: "export default 1;",
+  });
+  const code = await approve(instanceA.tools);
+  pauseBlobPost = true;
+  const publishPromise = instanceA.tools.site_publish({
+    message: "Publish reviewed state",
+    confirm: true,
+    approval_code: code,
+  });
+  await blobPost;
+
+  const instanceB = editor({}, fetchImpl, { stateDir });
+  await instanceB.tools.site_stage_file({ path: "web/src/styles/late.css", content: "body {}" });
+  releaseBlobPost();
+
+  const result = text(await publishPromise);
+  assert.match(result, /Published commit/);
+  assert.match(result, /left the latest pending state untouched/);
+  const stored = JSON.parse(readFileSync(instanceA._state.pendingStateFile, "utf8"));
+  assert.deepEqual(Object.keys(stored.files).sort(), [
+    "web/src/pages/AboutPage.js",
+    "web/src/styles/late.css",
+  ]);
+  assert.equal(stored.approval, null);
 });
 
 test("a moved ref retries exactly once from a fresh ref", async () => {

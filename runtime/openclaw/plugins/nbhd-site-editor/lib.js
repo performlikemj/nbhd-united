@@ -216,6 +216,11 @@ function createSiteEditor({
     if (logger && typeof logger.warn === "function") logger.warn(redactToken(message));
   }
 
+  const siteNotes = typeof cfg.siteNotes === "string" && cfg.siteNotes.length <= 1000 ? cfg.siteNotes : "";
+  if (typeof cfg.siteNotes === "string" && cfg.siteNotes.length > 1000) {
+    warn("nbhd-site-editor: ignored overlong siteNotes configuration.");
+  }
+
   function clearCachedState() {
     pending.clear();
     approval = null;
@@ -244,7 +249,9 @@ function createSiteEditor({
         clearCachedState();
         return;
       }
-      throw error;
+      const stateError = new Error("Couldn't read staged changes.");
+      stateError.pendingStateRead = true;
+      throw stateError;
     }
 
     let stored;
@@ -272,7 +279,12 @@ function createSiteEditor({
     try {
       for (const [repoPath, item] of Object.entries(stored.files)) {
         const checked = validatePath(repoPath);
-        if (!allowedFile(checked) || !item || typeof item !== "object" || Array.isArray(item)) {
+        if (!allowedFile(checked)) {
+          const error = new Error("staged path no longer allowed");
+          error.configNarrowed = true;
+          throw error;
+        }
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
           throw new Error("invalid staged file");
         }
         if ((item.kind !== "text" && item.kind !== "binary") || typeof item.content !== "string") {
@@ -290,21 +302,32 @@ function createSiteEditor({
           : { kind: "binary", buffer });
       }
       if (loaded.size > limits.maxFiles || totalBytes > limits.maxTotalBytes) throw new Error("oversized state");
-    } catch {
-      discardUnreadableState("nbhd-site-editor: discarded invalid pending state.");
+    } catch (error) {
+      discardUnreadableState(error && error.configNarrowed
+        ? "nbhd-site-editor: discarded pending state because the editable path configuration was narrowed."
+        : "nbhd-site-editor: discarded invalid pending state.");
       return;
     }
 
     pending.clear();
     for (const [repoPath, item] of loaded) pending.set(repoPath, item);
     const storedApproval = stored.approval;
+    const approvalBase = storedApproval && storedApproval.base;
+    const stagedPaths = [...pending.keys()].sort();
+    const basePaths = approvalBase && typeof approvalBase === "object" && !Array.isArray(approvalBase)
+      ? Object.keys(approvalBase).sort()
+      : [];
+    const validBase = stagedPaths.length === basePaths.length && stagedPaths.every((repoPath, index) =>
+      repoPath === basePaths[index] && (approvalBase[repoPath] === null || typeof approvalBase[repoPath] === "string")
+    );
     approval = storedApproval && typeof storedApproval === "object" && !Array.isArray(storedApproval) &&
       typeof storedApproval.code === "string" && typeof storedApproval.issuedAt === "string" &&
-      typeof storedApproval.fingerprint === "string"
+      typeof storedApproval.fingerprint === "string" && validBase
       ? {
           code: storedApproval.code,
           issuedAt: storedApproval.issuedAt,
           fingerprint: storedApproval.fingerprint,
+          base: { ...approvalBase },
         }
       : null;
   }
@@ -352,6 +375,19 @@ function createSiteEditor({
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([repoPath, item]) => [repoPath, crypto.createHash("sha256").update(item.buffer).digest("hex")]);
     return crypto.createHash("sha256").update(JSON.stringify(Object.fromEntries(entries))).digest("hex");
+  }
+
+  function reloadStateAtFingerprint(expected, message) {
+    loadState();
+    if (pendingFingerprint() !== expected) throw new Error(message);
+  }
+
+  function clearApprovalIfCurrent(code, fingerprint) {
+    loadState();
+    if (!approval || approval.code !== code || approval.fingerprint !== fingerprint) return;
+    approval = null;
+    if (pending.size) writeState();
+    else deleteStateFile();
   }
 
   async function externalToolText(value) {
@@ -596,6 +632,16 @@ function createSiteEditor({
     return entry && entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755");
   }
 
+  async function treeEntries(treeSha) {
+    const data = await github(`/git/trees/${encodeURIComponent(treeSha)}?recursive=1`);
+    if (!data || !Array.isArray(data.tree) || data.truncated) {
+      throw new Error("GitHub returned an incomplete repository tree.");
+    }
+    return data.tree.filter(
+      (entry) => entry && typeof entry.path === "string" && entry.path === cleanGitHubPath(entry.path),
+    );
+  }
+
   async function repositoryTree() {
     const branchRef = `heads/${branch}`;
     const ref = await github(`/git/ref/${encodeRepoPath(branchRef)}`);
@@ -606,20 +652,13 @@ function createSiteEditor({
     const commit = await github(`/git/commits/${encodeURIComponent(refSha)}`);
     const treeSha = commit && commit.tree && commit.tree.sha;
     if (!treeSha) throw new Error("GitHub returned a commit without a tree SHA.");
-    const data = await github(`/git/trees/${encodeURIComponent(treeSha)}?recursive=1`);
-    if (!data || !Array.isArray(data.tree) || data.truncated) {
-      throw new Error("GitHub returned an incomplete repository tree.");
-    }
-    const entries = data.tree.filter(
-      (entry) => entry && typeof entry.path === "string" && entry.path === cleanGitHubPath(entry.path),
-    );
+    const entries = await treeEntries(treeSha);
     const nextCache = { refSha, entries };
     treeCaches.set(repoIdentity, nextCache);
     return nextCache;
   }
 
-  async function regularBlobEntry(repoPath, { allowNotFound = false } = {}) {
-    const { entries } = await repositoryTree();
+  function regularBlobEntryFrom(entries, repoPath, { allowNotFound = false } = {}) {
     const entry = entries.find((candidate) => candidate.path === repoPath);
     if (!entry && allowNotFound) return null;
     if (!isRegularBlob(entry)) {
@@ -628,8 +667,12 @@ function createSiteEditor({
     return entry;
   }
 
-  async function currentText(repoPath, { allowNotFound = false } = {}) {
-    const entry = await regularBlobEntry(repoPath, { allowNotFound });
+  async function regularBlobEntry(repoPath, { allowNotFound = false } = {}) {
+    const { entries } = await repositoryTree();
+    return regularBlobEntryFrom(entries, repoPath, { allowNotFound });
+  }
+
+  async function currentTextFromEntry(entry) {
     if (entry === null) return "";
     if (entry.size > limits.maxTextBytes) throw new Error("The text file exceeds the configured size limit.");
     const data = await github(`/git/blobs/${encodeURIComponent(entry.sha)}`);
@@ -639,6 +682,10 @@ function createSiteEditor({
     const buffer = Buffer.from(data.content.replace(/\s+/g, ""), "base64");
     if (buffer.length > limits.maxTextBytes) throw new Error("The text file exceeds the configured size limit.");
     return decodeUtf8(buffer);
+  }
+
+  async function currentText(repoPath, { allowNotFound = false } = {}) {
+    return currentTextFromEntry(await regularBlobEntry(repoPath, { allowNotFound }));
   }
 
   function unifiedDiff(repoPath, oldText, newText) {
@@ -685,7 +732,7 @@ function createSiteEditor({
     }
   }
 
-  async function publishAttempt(commitMessage) {
+  async function publishAttempt(commitMessage, reviewedBase, stagedFiles) {
     const branchRef = `heads/${branch}`;
     const ref = await github(`/git/ref/${encodeRepoPath(branchRef)}`);
     const headSha = ref && ref.object && ref.object.sha;
@@ -693,9 +740,21 @@ function createSiteEditor({
     const headCommit = await github(`/git/commits/${encodeURIComponent(headSha)}`);
     const baseTree = headCommit && headCommit.tree && headCommit.tree.sha;
     if (!baseTree) throw new Error("GitHub returned a commit without a tree SHA.");
+    const entries = await treeEntries(baseTree);
+    for (const [repoPath] of stagedFiles) {
+      const entry = entries.find((candidate) => candidate.path === repoPath);
+      const currentBase = !entry ? null : isRegularBlob(entry) ? entry.sha : undefined;
+      if (currentBase !== reviewedBase[repoPath]) {
+        const error = new Error(
+          `The site changed since you reviewed this (${repoPath}). Run site_show_pending again.`,
+        );
+        error.baseChanged = true;
+        throw error;
+      }
+    }
 
     const tree = [];
-    for (const [repoPath, item] of pending) {
+    for (const [repoPath, item] of stagedFiles) {
       const blob = await github("/git/blobs", {
         method: "POST",
         body: { content: item.buffer.toString("base64"), encoding: "base64" },
@@ -738,6 +797,7 @@ function createSiteEditor({
       loadState();
       return await work();
     } catch (error) {
+      if (error && error.pendingStateRead) return toolText("Couldn't read staged changes.");
       if (error && error.contentIsolationMissing) return toolText(CONTENT_ISOLATION_MISSING);
       try {
         return await guardedErrorText(prefix, error);
@@ -765,11 +825,12 @@ function createSiteEditor({
             const name = cleanGitHubPath(item.path.slice(prefix.length));
             return `${item.type === "tree" ? "folder" : "file"}\t${name}\t${item.size || 0} bytes`;
           });
-        const siteNotes = typeof cfg.siteNotes === "string" && cfg.siteNotes ? cfg.siteNotes : "";
         const files = visible.length ? visible.join("\n") : "No editable files in that folder.";
-        const listing = repoPath === "" && siteNotes ? `Site map: ${siteNotes}\n${files}` : files;
         if (!visible.length && !(repoPath === "" && siteNotes)) return toolText(files);
-        return externalToolText(listing);
+        const wrapped = await externalToolText(files);
+        return repoPath === "" && siteNotes
+          ? toolText(`Site map: ${siteNotes}\n\n${wrapped.content[0].text}`)
+          : wrapped;
       }, "Couldn't list website files");
     },
 
@@ -787,7 +848,12 @@ function createSiteEditor({
         if (buffer.length > limits.maxTextBytes) throw new Error("The text file exceeds the configured size limit.");
         validateSyntax(checked, content);
         if (checked === "web/public/index.html") {
+          const stagedFingerprint = pendingFingerprint();
           const oldContent = await currentText(checked, { allowNotFound: true });
+          reloadStateAtFingerprint(
+            stagedFingerprint,
+            "Pending changes moved while I was staging — try again.",
+          );
           validateIndexHtml(oldContent, content);
         }
         checkPendingCapacity(checked, buffer.length);
@@ -825,19 +891,28 @@ function createSiteEditor({
     async site_show_pending() {
       return guarded(async () => {
         if (!pending.size) return toolText("No website changes are staged.");
+        const reviewedFingerprint = pendingFingerprint();
+        const stagedFiles = [...pending.entries()];
+        const { entries } = await repositoryTree();
         const sections = [];
-        for (const [repoPath, item] of pending) {
+        const base = Object.create(null);
+        for (const [repoPath, item] of stagedFiles) {
+          const entry = regularBlobEntryFrom(entries, repoPath, { allowNotFound: true });
+          base[repoPath] = entry === null ? null : entry.sha;
           if (item.kind === "binary") {
-            await regularBlobEntry(repoPath, { allowNotFound: true });
             sections.push(`${repoPath}: binary, ${item.buffer.length} bytes`);
           } else {
-            const oldContent = await currentText(repoPath, { allowNotFound: true });
+            const oldContent = await currentTextFromEntry(entry);
             sections.push(unifiedDiff(repoPath, oldContent, item.content));
           }
         }
         const wrapped = await externalToolText(sections.join("\n\n"));
+        reloadStateAtFingerprint(
+          reviewedFingerprint,
+          "Pending changes moved while I was reviewing — run site_show_pending again.",
+        );
         const code = approvalCode();
-        approval = { code, issuedAt: isoTimestamp(now), fingerprint: pendingFingerprint() };
+        approval = { code, issuedAt: isoTimestamp(now), fingerprint: reviewedFingerprint, base };
         writeState();
         return toolText(
           `${wrapped.content[0].text}\n\nApproval code: ${code}. Ask the user for a go, then call site_publish with this code.`,
@@ -882,6 +957,10 @@ function createSiteEditor({
         if (pendingFingerprint() !== approval.fingerprint) {
           throw new Error("The staged changes changed after approval. Call site_show_pending again.");
         }
+        const publishedFingerprint = approval.fingerprint;
+        const reviewedCode = approval.code;
+        const reviewedBase = { ...approval.base };
+        const stagedFiles = [...pending.entries()];
         const issuedAt = Date.parse(approval.issuedAt);
         const age = new Date(isoTimestamp(now)).getTime() - issuedAt;
         if (!Number.isFinite(issuedAt) || age < 0 || age > APPROVAL_TTL_MS) {
@@ -892,18 +971,35 @@ function createSiteEditor({
         const commitMessage = tenantId ? `${cleanMessage}\n\nNBHD-Tenant: ${tenantId.slice(0, 8)}` : cleanMessage;
         let sha;
         try {
-          sha = await publishAttempt(commitMessage);
+          sha = await publishAttempt(commitMessage, reviewedBase, stagedFiles);
         } catch (error) {
+          if (error.baseChanged) {
+            clearApprovalIfCurrent(reviewedCode, publishedFingerprint);
+            throw error;
+          }
           if (!error.refMoved) throw error;
-          sha = await publishAttempt(commitMessage);
+          try {
+            sha = await publishAttempt(commitMessage, reviewedBase, stagedFiles);
+          } catch (retryError) {
+            if (retryError.baseChanged) {
+              clearApprovalIfCurrent(reviewedCode, publishedFingerprint);
+            }
+            throw retryError;
+          }
         }
-        pending.clear();
-        approval = null;
-        deleteStateFile();
+        loadState();
+        const pendingMoved = pendingFingerprint() !== publishedFingerprint;
+        if (!pendingMoved) {
+          pending.clear();
+          approval = null;
+          deleteStateFile();
+        }
         const shortSha = sha.slice(0, 7);
         const url = `https://github.com/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/commit/${encodeURIComponent(sha)}`;
         return toolText(
-          `Published commit ${shortSha}: ${url}. Deployment usually takes about ${limits.deployMinutes} minutes.`,
+          `Published commit ${shortSha}: ${url}. Deployment usually takes about ${limits.deployMinutes} minutes.${
+            pendingMoved ? " Staged state changed while publishing; I left the latest pending state untouched." : ""
+          }`,
         );
       }, "Couldn't publish the website changes");
     },
