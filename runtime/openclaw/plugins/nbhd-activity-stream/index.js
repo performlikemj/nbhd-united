@@ -29,6 +29,18 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 4000;
 // the fleet default): a real tool call arrives as tool_call({id:"nbhd_journal_add"}).
 const TOOL_DISPATCH_META = "tool_call";
 
+const EXACT_TOOL_PHRASES = {
+  site_list_files: "reviewing site files",
+  site_read_file: "reading your site",
+  site_stage_file: "preparing site changes",
+  site_stage_upload: "preparing a site image",
+  site_show_pending: "reviewing site changes",
+  site_discard: "discarding site changes",
+  site_publish: "publishing your site",
+  site_deploy_status: "checking your site deployment",
+  publish_portfolio_image: "publishing a portfolio image",
+};
+
 // tool-id substring → friendly spoken phrase. First match wins; order matters.
 const TOOL_PHRASES = [
   [/journal|note|daily|reflect/, "checking your journal"],
@@ -65,10 +77,21 @@ export function phaseForEvent(event) {
   if (id === "tool_search" || id === "tool_describe") {
     return { phase: "thinking", detail: "" };
   }
+  if (EXACT_TOOL_PHRASES[id]) {
+    return { phase: "tool", detail: EXACT_TOOL_PHRASES[id] };
+  }
   for (const [re, phrase] of TOOL_PHRASES) {
     if (re.test(id)) return { phase: "tool", detail: phrase };
   }
-  return { phase: "tool", detail: "working on it" };
+  const derived = id
+    .replace(/^nbhd_/, "")
+    .split("_")
+    .filter((token) => token && !/^\d+$/.test(token))
+    .join(" ")
+    .toLowerCase()
+    .slice(0, 40)
+    .trim();
+  return { phase: "tool", detail: derived.length >= 4 ? derived : "working on it" };
 }
 
 function getRuntimeConfig() {
@@ -90,7 +113,7 @@ export async function postProgress(phase, detail, api) {
       `/api/v1/internal/runtime/${encodeURIComponent(cfg.tenantId)}/chat/progress/`,
       cfg.apiBaseUrl,
     );
-    await fetch(url, {
+    const response = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -100,6 +123,18 @@ export async function postProgress(phase, detail, api) {
       body: JSON.stringify({ phase, detail: detail || "" }),
       signal: controller.signal,
     });
+    if (!response.ok) {
+      api?.logger?.warn(`nbhd-activity-stream: progress post http ${response.status}`);
+      return;
+    }
+    try {
+      const body = await response.json();
+      if (body && body.updated === false) {
+        api?.logger?.warn("nbhd-activity-stream: progress not attributed (updated=false)");
+      }
+    } catch (_ignored) {
+      // A successful response with no JSON body still counts as best-effort success.
+    }
   } catch (err) {
     // Best-effort narration — a failed/slow progress ping must never affect the turn.
     if (api && api.logger) {
@@ -114,6 +149,19 @@ export async function postProgress(phase, detail, api) {
   }
 }
 
+function emitProgress(toolId, phase, detail, api) {
+  try {
+    const safeToolId = asTrimmedString(toolId).replace(/\s+/g, "-") || "none";
+    const safeDetail = (detail || "").replace(/\s+/g, "-");
+    api?.logger?.debug(
+      `nbhd-activity-stream: emit tool=${safeToolId} phase=${phase} detail=${safeDetail}`,
+    );
+  } catch (_ignored) {
+    // logging must never interfere with narration
+  }
+  void postProgress(phase, detail, api);
+}
+
 export default function register(api) {
   if (!api || typeof api.on !== "function") {
     return;
@@ -125,7 +173,7 @@ export default function register(api) {
   api.on("before_tool_call", (event) => {
     try {
       const p = phaseForEvent(event);
-      if (p) void postProgress(p.phase, p.detail, api);
+      if (p) emitProgress(realToolId(event), p.phase, p.detail, api);
     } catch (_ignored) {
       // never let narration break a tool call
     }
@@ -136,7 +184,7 @@ export default function register(api) {
   // with the output-guard plugin's revise/finalize decision.
   api.on("before_agent_finalize", () => {
     try {
-      void postProgress("composing", "", api);
+      emitProgress("none", "composing", "", api);
     } catch (_ignored) {
       // no-op
     }
