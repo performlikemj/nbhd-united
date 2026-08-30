@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { TextDecoder } = require("util");
@@ -10,8 +11,14 @@ const defaultExternalContentModule = import("../../external-content-wrap.js").ca
 
 const NOT_CONFIGURED = "Site editing isn't configured for this account.";
 const CONTENT_ISOLATION_MISSING = "Site editing is temporarily unavailable (content isolation module missing).";
+const PENDING_STATE_VERSION = 1;
+const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
+const APPROVAL_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const TEXT_EXTENSIONS = new Set([".js", ".jsx", ".css", ".html", ".md", ".txt"]);
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
+// OpenClaw may call register() for every agent run. Module-scope cache state
+// survives those registrations for the lifetime of the gateway process.
+const treeCaches = new Map();
 const HARD_DENY_PATHS = [
   ".git/**",
   ".github/**",
@@ -79,6 +86,21 @@ function errorText(prefix, error) {
 function positiveInt(value, fallback, ceiling) {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) return fallback;
   return Math.min(value, ceiling);
+}
+
+function workspaceRoot(env) {
+  return env.OPENCLAW_WORKSPACE_PATH ||
+    env.OPENCLAW_WORKSPACE ||
+    path.join(env.OPENCLAW_HOME || "/home/node/.openclaw", "workspace");
+}
+
+function isoTimestamp(now) {
+  const timestamp = now();
+  return (timestamp instanceof Date ? timestamp : new Date(timestamp)).toISOString();
+}
+
+function approvalCode() {
+  return Array.from(crypto.randomBytes(6), (byte) => APPROVAL_ALPHABET[byte & 31]).join("");
 }
 
 function globRegex(pattern, ignoreCase = false) {
@@ -158,6 +180,8 @@ function createSiteEditor({
   fetchImpl = globalThis.fetch,
   now = () => new Date(),
   externalContentModule = defaultExternalContentModule,
+  stateDir,
+  logger,
 }) {
   const cfg = config && typeof config === "object" && !Array.isArray(config) ? config : {};
   const branch = typeof cfg.branch === "string" ? cfg.branch.trim() : "";
@@ -179,9 +203,192 @@ function createSiteEditor({
     maxTotalBytes: positiveInt(cfg.maxTotalBytes, 5 * 1024 * 1024, 5 * 1024 * 1024),
     deployMinutes: positiveInt(cfg.deployMinutes, 5, 120),
   };
+  const repoIdentity = `${typeof cfg.owner === "string" ? cfg.owner.trim() : ""}/${
+    typeof cfg.repo === "string" ? cfg.repo.trim() : ""
+  }@${branch}`;
+  const pendingStateDir = stateDir || path.join(workspaceRoot(env), ".nbhd-site-editor");
+  const pendingStateFile = path.join(pendingStateDir, "pending.json");
   const pending = new Map();
+  let approval = null;
   const safeExternalContentModule = Promise.resolve(externalContentModule).catch(() => null);
-  let treeCache = null;
+
+  function warn(message) {
+    if (logger && typeof logger.warn === "function") logger.warn(redactToken(message));
+  }
+
+  const siteNotes = typeof cfg.siteNotes === "string" && cfg.siteNotes.length <= 1000 ? cfg.siteNotes : "";
+  if (typeof cfg.siteNotes === "string" && cfg.siteNotes.length > 1000) {
+    warn("nbhd-site-editor: ignored overlong siteNotes configuration.");
+  }
+
+  function clearCachedState() {
+    pending.clear();
+    approval = null;
+  }
+
+  function deleteStateFile() {
+    try {
+      fs.unlinkSync(pendingStateFile);
+    } catch (error) {
+      if (!error || error.code !== "ENOENT") throw error;
+    }
+  }
+
+  function discardUnreadableState(message) {
+    clearCachedState();
+    deleteStateFile();
+    warn(message);
+  }
+
+  function loadState() {
+    let raw;
+    try {
+      raw = fs.readFileSync(pendingStateFile, "utf8");
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        clearCachedState();
+        return;
+      }
+      const stateError = new Error("Couldn't read staged changes.");
+      stateError.pendingStateRead = true;
+      throw stateError;
+    }
+
+    let stored;
+    try {
+      stored = JSON.parse(raw);
+    } catch {
+      discardUnreadableState("nbhd-site-editor: discarded unreadable pending state.");
+      return;
+    }
+    if (!stored || typeof stored !== "object" || Array.isArray(stored) || stored.version !== PENDING_STATE_VERSION) {
+      discardUnreadableState("nbhd-site-editor: discarded invalid pending state.");
+      return;
+    }
+    if (stored.repo !== repoIdentity) {
+      discardUnreadableState("nbhd-site-editor: discarded pending state for a different repository configuration.");
+      return;
+    }
+    if (!stored.files || typeof stored.files !== "object" || Array.isArray(stored.files)) {
+      discardUnreadableState("nbhd-site-editor: discarded invalid pending state.");
+      return;
+    }
+
+    const loaded = new Map();
+    let totalBytes = 0;
+    try {
+      for (const [repoPath, item] of Object.entries(stored.files)) {
+        const checked = validatePath(repoPath);
+        if (!allowedFile(checked)) {
+          const error = new Error("staged path no longer allowed");
+          error.configNarrowed = true;
+          throw error;
+        }
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          throw new Error("invalid staged file");
+        }
+        if ((item.kind !== "text" && item.kind !== "binary") || typeof item.content !== "string") {
+          throw new Error("invalid staged content");
+        }
+        const buffer = item.kind === "text" ? utf8Buffer(item.content) : Buffer.from(item.content, "base64");
+        if (!Number.isInteger(item.size) || item.size < 0 || item.size !== buffer.length) {
+          throw new Error("invalid staged size");
+        }
+        if (item.kind === "text" && buffer.length > limits.maxTextBytes) throw new Error("oversized text");
+        if (item.kind === "binary" && buffer.length > limits.maxImageBytes) throw new Error("oversized image");
+        totalBytes += buffer.length;
+        loaded.set(checked, item.kind === "text"
+          ? { kind: "text", content: item.content, buffer }
+          : { kind: "binary", buffer });
+      }
+      if (loaded.size > limits.maxFiles || totalBytes > limits.maxTotalBytes) throw new Error("oversized state");
+    } catch (error) {
+      discardUnreadableState(error && error.configNarrowed
+        ? "nbhd-site-editor: discarded pending state because the editable path configuration was narrowed."
+        : "nbhd-site-editor: discarded invalid pending state.");
+      return;
+    }
+
+    pending.clear();
+    for (const [repoPath, item] of loaded) pending.set(repoPath, item);
+    const storedApproval = stored.approval;
+    const approvalBase = storedApproval && storedApproval.base;
+    const stagedPaths = [...pending.keys()].sort();
+    const basePaths = approvalBase && typeof approvalBase === "object" && !Array.isArray(approvalBase)
+      ? Object.keys(approvalBase).sort()
+      : [];
+    const validBase = stagedPaths.length === basePaths.length && stagedPaths.every((repoPath, index) =>
+      repoPath === basePaths[index] && (approvalBase[repoPath] === null || typeof approvalBase[repoPath] === "string")
+    );
+    approval = storedApproval && typeof storedApproval === "object" && !Array.isArray(storedApproval) &&
+      typeof storedApproval.code === "string" && typeof storedApproval.issuedAt === "string" &&
+      typeof storedApproval.fingerprint === "string" && validBase
+      ? {
+          code: storedApproval.code,
+          issuedAt: storedApproval.issuedAt,
+          fingerprint: storedApproval.fingerprint,
+          base: { ...approvalBase },
+        }
+      : null;
+  }
+
+  function serializedFiles() {
+    return Object.fromEntries(
+      [...pending.entries()].map(([repoPath, item]) => [
+        repoPath,
+        {
+          kind: item.kind,
+          content: item.kind === "text" ? item.content : item.buffer.toString("base64"),
+          size: item.buffer.length,
+        },
+      ]),
+    );
+  }
+
+  function writeState() {
+    fs.mkdirSync(pendingStateDir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(pendingStateDir, 0o700);
+    const state = {
+      version: PENDING_STATE_VERSION,
+      repo: repoIdentity,
+      updatedAt: isoTimestamp(now),
+      approval,
+      files: serializedFiles(),
+    };
+    const tempFile = `${pendingStateFile}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+    try {
+      fs.writeFileSync(tempFile, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      fs.chmodSync(tempFile, 0o600);
+      fs.renameSync(tempFile, pendingStateFile);
+    } catch (error) {
+      try {
+        fs.unlinkSync(tempFile);
+      } catch {
+        // Best-effort cleanup; preserve the original write error.
+      }
+      throw error;
+    }
+  }
+
+  function pendingFingerprint() {
+    const entries = [...pending.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([repoPath, item]) => [repoPath, crypto.createHash("sha256").update(item.buffer).digest("hex")]);
+    return crypto.createHash("sha256").update(JSON.stringify(Object.fromEntries(entries))).digest("hex");
+  }
+
+  function reloadStateAtFingerprint(expected, message) {
+    loadState();
+    if (pendingFingerprint() !== expected) throw new Error(message);
+  }
+
+  function clearApprovalIfCurrent(code, fingerprint) {
+    loadState();
+    if (!approval || approval.code !== code || approval.fingerprint !== fingerprint) return;
+    approval = null;
+    if (pending.size) writeState();
+    else deleteStateFile();
+  }
 
   async function externalToolText(value) {
     const module = await safeExternalContentModule;
@@ -425,28 +632,33 @@ function createSiteEditor({
     return entry && entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755");
   }
 
+  async function treeEntries(treeSha) {
+    const data = await github(`/git/trees/${encodeURIComponent(treeSha)}?recursive=1`);
+    if (!data || !Array.isArray(data.tree) || data.truncated) {
+      throw new Error("GitHub returned an incomplete repository tree.");
+    }
+    return data.tree.filter(
+      (entry) => entry && typeof entry.path === "string" && entry.path === cleanGitHubPath(entry.path),
+    );
+  }
+
   async function repositoryTree() {
     const branchRef = `heads/${branch}`;
     const ref = await github(`/git/ref/${encodeRepoPath(branchRef)}`);
     const refSha = ref && ref.object && ref.object.sha;
     if (!refSha) throw new Error("GitHub returned a ref without a commit SHA.");
+    const treeCache = treeCaches.get(repoIdentity);
     if (treeCache && refSha === treeCache.refSha) return treeCache;
     const commit = await github(`/git/commits/${encodeURIComponent(refSha)}`);
     const treeSha = commit && commit.tree && commit.tree.sha;
     if (!treeSha) throw new Error("GitHub returned a commit without a tree SHA.");
-    const data = await github(`/git/trees/${encodeURIComponent(treeSha)}?recursive=1`);
-    if (!data || !Array.isArray(data.tree) || data.truncated) {
-      throw new Error("GitHub returned an incomplete repository tree.");
-    }
-    const entries = data.tree.filter(
-      (entry) => entry && typeof entry.path === "string" && entry.path === cleanGitHubPath(entry.path),
-    );
-    treeCache = { refSha, entries };
-    return treeCache;
+    const entries = await treeEntries(treeSha);
+    const nextCache = { refSha, entries };
+    treeCaches.set(repoIdentity, nextCache);
+    return nextCache;
   }
 
-  async function regularBlobEntry(repoPath, { allowNotFound = false } = {}) {
-    const { entries } = await repositoryTree();
+  function regularBlobEntryFrom(entries, repoPath, { allowNotFound = false } = {}) {
     const entry = entries.find((candidate) => candidate.path === repoPath);
     if (!entry && allowNotFound) return null;
     if (!isRegularBlob(entry)) {
@@ -455,8 +667,12 @@ function createSiteEditor({
     return entry;
   }
 
-  async function currentText(repoPath, { allowNotFound = false } = {}) {
-    const entry = await regularBlobEntry(repoPath, { allowNotFound });
+  async function regularBlobEntry(repoPath, { allowNotFound = false } = {}) {
+    const { entries } = await repositoryTree();
+    return regularBlobEntryFrom(entries, repoPath, { allowNotFound });
+  }
+
+  async function currentTextFromEntry(entry) {
     if (entry === null) return "";
     if (entry.size > limits.maxTextBytes) throw new Error("The text file exceeds the configured size limit.");
     const data = await github(`/git/blobs/${encodeURIComponent(entry.sha)}`);
@@ -466,6 +682,10 @@ function createSiteEditor({
     const buffer = Buffer.from(data.content.replace(/\s+/g, ""), "base64");
     if (buffer.length > limits.maxTextBytes) throw new Error("The text file exceeds the configured size limit.");
     return decodeUtf8(buffer);
+  }
+
+  async function currentText(repoPath, { allowNotFound = false } = {}) {
+    return currentTextFromEntry(await regularBlobEntry(repoPath, { allowNotFound }));
   }
 
   function unifiedDiff(repoPath, oldText, newText) {
@@ -512,7 +732,7 @@ function createSiteEditor({
     }
   }
 
-  async function publishAttempt(commitMessage) {
+  async function publishAttempt(commitMessage, reviewedBase, stagedFiles) {
     const branchRef = `heads/${branch}`;
     const ref = await github(`/git/ref/${encodeRepoPath(branchRef)}`);
     const headSha = ref && ref.object && ref.object.sha;
@@ -520,9 +740,21 @@ function createSiteEditor({
     const headCommit = await github(`/git/commits/${encodeURIComponent(headSha)}`);
     const baseTree = headCommit && headCommit.tree && headCommit.tree.sha;
     if (!baseTree) throw new Error("GitHub returned a commit without a tree SHA.");
+    const entries = await treeEntries(baseTree);
+    for (const [repoPath] of stagedFiles) {
+      const entry = entries.find((candidate) => candidate.path === repoPath);
+      const currentBase = !entry ? null : isRegularBlob(entry) ? entry.sha : undefined;
+      if (currentBase !== reviewedBase[repoPath]) {
+        const error = new Error(
+          `The site changed since you reviewed this (${repoPath}). Run site_show_pending again.`,
+        );
+        error.baseChanged = true;
+        throw error;
+      }
+    }
 
     const tree = [];
-    for (const [repoPath, item] of pending) {
+    for (const [repoPath, item] of stagedFiles) {
       const blob = await github("/git/blobs", {
         method: "POST",
         body: { content: item.buffer.toString("base64"), encoding: "base64" },
@@ -530,8 +762,7 @@ function createSiteEditor({
       tree.push({ path: repoPath, mode: "100644", type: "blob", sha: blob.sha });
     }
     const newTree = await github("/git/trees", { method: "POST", body: { base_tree: baseTree, tree } });
-    const timestamp = now();
-    const date = (timestamp instanceof Date ? timestamp : new Date(timestamp)).toISOString();
+    const date = isoTimestamp(now);
     const signature = {
       name: "NBHD Site Editor (Pistachio)",
       email:
@@ -552,19 +783,21 @@ function createSiteEditor({
     } catch (error) {
       if (error.status === 409 || error.status === 422) {
         error.refMoved = true;
-        treeCache = null;
+        treeCaches.delete(repoIdentity);
       }
       throw error;
     }
-    treeCache = null;
+    treeCaches.delete(repoIdentity);
     return commit.sha;
   }
 
   async function guarded(work, prefix = "Couldn't complete the site edit") {
     if (!ready()) return toolText(NOT_CONFIGURED);
     try {
+      loadState();
       return await work();
     } catch (error) {
+      if (error && error.pendingStateRead) return toolText("Couldn't read staged changes.");
       if (error && error.contentIsolationMissing) return toolText(CONTENT_ISOLATION_MISSING);
       try {
         return await guardedErrorText(prefix, error);
@@ -592,7 +825,12 @@ function createSiteEditor({
             const name = cleanGitHubPath(item.path.slice(prefix.length));
             return `${item.type === "tree" ? "folder" : "file"}\t${name}\t${item.size || 0} bytes`;
           });
-        return visible.length ? externalToolText(visible.join("\n")) : toolText("No editable files in that folder.");
+        const files = visible.length ? visible.join("\n") : "No editable files in that folder.";
+        if (!visible.length && !(repoPath === "" && siteNotes)) return toolText(files);
+        const wrapped = await externalToolText(files);
+        return repoPath === "" && siteNotes
+          ? toolText(`Site map: ${siteNotes}\n\n${wrapped.content[0].text}`)
+          : wrapped;
       }, "Couldn't list website files");
     },
 
@@ -610,11 +848,18 @@ function createSiteEditor({
         if (buffer.length > limits.maxTextBytes) throw new Error("The text file exceeds the configured size limit.");
         validateSyntax(checked, content);
         if (checked === "web/public/index.html") {
+          const stagedFingerprint = pendingFingerprint();
           const oldContent = await currentText(checked, { allowNotFound: true });
+          reloadStateAtFingerprint(
+            stagedFingerprint,
+            "Pending changes moved while I was staging — try again.",
+          );
           validateIndexHtml(oldContent, content);
         }
         checkPendingCapacity(checked, buffer.length);
         pending.set(checked, { kind: "text", content, buffer });
+        approval = null;
+        writeState();
         return toolText(`Staged ${checked} (${buffer.length} bytes).`);
       }, "Couldn't stage the website file");
     },
@@ -623,8 +868,7 @@ function createSiteEditor({
       return guarded(async () => {
         const checked = assertEditableFile(repoPath);
         if (typeof localPath !== "string" || !localPath) throw new Error("A local upload path is required.");
-        const workspaceRoot = env.OPENCLAW_WORKSPACE_PATH || env.OPENCLAW_WORKSPACE || path.join(env.OPENCLAW_HOME || "/home/node/.openclaw", "workspace");
-        const workspace = fs.realpathSync(workspaceRoot);
+        const workspace = fs.realpathSync(workspaceRoot(env));
         const source = fs.realpathSync(localPath);
         const relative = path.relative(workspace, source);
         if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -638,6 +882,8 @@ function createSiteEditor({
         validateImage(checked, buffer);
         checkPendingCapacity(checked, buffer.length);
         pending.set(checked, { kind: "binary", buffer });
+        approval = null;
+        writeState();
         return toolText(`Staged ${checked} (binary, ${buffer.length} bytes).`);
       }, "Couldn't stage the website image");
     },
@@ -645,17 +891,32 @@ function createSiteEditor({
     async site_show_pending() {
       return guarded(async () => {
         if (!pending.size) return toolText("No website changes are staged.");
+        const reviewedFingerprint = pendingFingerprint();
+        const stagedFiles = [...pending.entries()];
+        const { entries } = await repositoryTree();
         const sections = [];
-        for (const [repoPath, item] of pending) {
+        const base = Object.create(null);
+        for (const [repoPath, item] of stagedFiles) {
+          const entry = regularBlobEntryFrom(entries, repoPath, { allowNotFound: true });
+          base[repoPath] = entry === null ? null : entry.sha;
           if (item.kind === "binary") {
-            await regularBlobEntry(repoPath, { allowNotFound: true });
             sections.push(`${repoPath}: binary, ${item.buffer.length} bytes`);
           } else {
-            const oldContent = await currentText(repoPath, { allowNotFound: true });
+            const oldContent = await currentTextFromEntry(entry);
             sections.push(unifiedDiff(repoPath, oldContent, item.content));
           }
         }
-        return externalToolText(sections.join("\n\n"));
+        const wrapped = await externalToolText(sections.join("\n\n"));
+        reloadStateAtFingerprint(
+          reviewedFingerprint,
+          "Pending changes moved while I was reviewing — run site_show_pending again.",
+        );
+        const code = approvalCode();
+        approval = { code, issuedAt: isoTimestamp(now), fingerprint: reviewedFingerprint, base };
+        writeState();
+        return toolText(
+          `${wrapped.content[0].text}\n\nApproval code: ${code}. Ask the user for a go, then call site_publish with this code.`,
+        );
       }, "Couldn't show the staged website changes");
     },
 
@@ -664,15 +925,20 @@ function createSiteEditor({
         if (repoPath === undefined || repoPath === null || repoPath === "") {
           const count = pending.size;
           pending.clear();
+          approval = null;
+          deleteStateFile();
           return toolText(`Discarded ${count} staged file${count === 1 ? "" : "s"}.`);
         }
         const checked = validatePath(repoPath);
         const removed = pending.delete(checked);
+        approval = null;
+        if (pending.size) writeState();
+        else deleteStateFile();
         return toolText(removed ? `Discarded ${checked}.` : `${checked} wasn't staged.`);
       }, "Couldn't discard the staged website change");
     },
 
-    async site_publish({ message, confirm } = {}) {
+    async site_publish({ message, confirm, approval_code: suppliedApprovalCode } = {}) {
       return guarded(async () => {
         if (confirm !== true) throw new Error("Publishing requires explicit confirmation.");
         if (typeof message !== "string" || !message.trim()) throw new Error("A short commit message is required.");
@@ -681,21 +947,59 @@ function createSiteEditor({
           throw new Error("The commit message must be one line and at most 200 characters.");
         }
         if (!pending.size) throw new Error("No website changes are staged.");
+        if (typeof suppliedApprovalCode !== "string" || !suppliedApprovalCode) {
+          throw new Error("An approval code from site_show_pending is required.");
+        }
+        if (!approval) throw new Error("No publish approval is on file. Call site_show_pending again.");
+        if (suppliedApprovalCode !== approval.code) {
+          throw new Error("The approval code doesn't match. Call site_show_pending again.");
+        }
+        if (pendingFingerprint() !== approval.fingerprint) {
+          throw new Error("The staged changes changed after approval. Call site_show_pending again.");
+        }
+        const publishedFingerprint = approval.fingerprint;
+        const reviewedCode = approval.code;
+        const reviewedBase = { ...approval.base };
+        const stagedFiles = [...pending.entries()];
+        const issuedAt = Date.parse(approval.issuedAt);
+        const age = new Date(isoTimestamp(now)).getTime() - issuedAt;
+        if (!Number.isFinite(issuedAt) || age < 0 || age > APPROVAL_TTL_MS) {
+          throw new Error("The approval code expired. Call site_show_pending again.");
+        }
         validateAllPending();
         const tenantId = typeof env.NBHD_TENANT_ID === "string" ? env.NBHD_TENANT_ID.trim() : "";
         const commitMessage = tenantId ? `${cleanMessage}\n\nNBHD-Tenant: ${tenantId.slice(0, 8)}` : cleanMessage;
         let sha;
         try {
-          sha = await publishAttempt(commitMessage);
+          sha = await publishAttempt(commitMessage, reviewedBase, stagedFiles);
         } catch (error) {
+          if (error.baseChanged) {
+            clearApprovalIfCurrent(reviewedCode, publishedFingerprint);
+            throw error;
+          }
           if (!error.refMoved) throw error;
-          sha = await publishAttempt(commitMessage);
+          try {
+            sha = await publishAttempt(commitMessage, reviewedBase, stagedFiles);
+          } catch (retryError) {
+            if (retryError.baseChanged) {
+              clearApprovalIfCurrent(reviewedCode, publishedFingerprint);
+            }
+            throw retryError;
+          }
         }
-        pending.clear();
+        loadState();
+        const pendingMoved = pendingFingerprint() !== publishedFingerprint;
+        if (!pendingMoved) {
+          pending.clear();
+          approval = null;
+          deleteStateFile();
+        }
         const shortSha = sha.slice(0, 7);
         const url = `https://github.com/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/commit/${encodeURIComponent(sha)}`;
         return toolText(
-          `Published commit ${shortSha}: ${url}. Deployment usually takes about ${limits.deployMinutes} minutes.`,
+          `Published commit ${shortSha}: ${url}. Deployment usually takes about ${limits.deployMinutes} minutes.${
+            pendingMoved ? " Staged state changed while publishing; I left the latest pending state untouched." : ""
+          }`,
         );
       }, "Couldn't publish the website changes");
     },
@@ -722,11 +1026,21 @@ function createSiteEditor({
     },
   };
 
-  return { tools, _state: { pending } };
+  return {
+    tools,
+    _state: {
+      pending,
+      pendingStateFile,
+      get approval() {
+        return approval;
+      },
+    },
+  };
 }
 
 module.exports = {
   createSiteEditor,
   redactToken,
   HARD_DENY_PATHS,
+  _treeCaches: treeCaches,
 };

@@ -37,6 +37,8 @@ class SiteEditorGateAndConfigTest(TestCase):
         on = render_workspace_files("neighbor", tenant=self.tenant)["NBHD_AGENTS_MD"]
         self.assertIn(_GATE, on)
         self.assertIn("Every time: `site_read_file` first", on)
+        self.assertIn("`site_show_pending` returns an approval code", on)
+        self.assertIn("call `site_publish` with that code", on)
         self.assertIn("ONLY after they say go", on)
         self.assertIn("returned a commit THIS turn", on)
         expected = (
@@ -70,6 +72,7 @@ class SiteEditorGateAndConfigTest(TestCase):
             "maxTotalBytes": 12345,
             "deployMinutes": 6,
             "authorEmail": "site-editor@example.invalid",
+            "siteNotes": "Home page hero = web/public/hero.jpg.",
             "garbage": "drop-me",
         }
         self.tenant.save(update_fields=["site_editor_enabled", "site_editor_config"])
@@ -89,8 +92,24 @@ class SiteEditorGateAndConfigTest(TestCase):
                 "maxTotalBytes": 12345,
                 "deployMinutes": 6,
                 "authorEmail": "site-editor@example.invalid",
+                "siteNotes": "Home page hero = web/public/hero.jpg.",
             },
         )
+
+    def test_site_notes_over_limit_is_not_injected(self):
+        self.tenant.site_editor_enabled = True
+        self.tenant.site_editor_config = {
+            "owner": "performlikemj",
+            "repo": "kihoko",
+            "branch": "main",
+            "allowPaths": ["web/src/pages/AboutPage.js"],
+            "siteNotes": "x" * 1001,
+        }
+        self.tenant.save(update_fields=["site_editor_enabled", "site_editor_config"])
+
+        config = generate_openclaw_config(self.tenant)
+
+        self.assertNotIn("siteNotes", config["plugins"]["entries"]["nbhd-site-editor"]["config"])
 
     def test_flagged_generated_config_passes_write_validator(self):
         self.tenant.site_editor_enabled = True
@@ -439,6 +458,7 @@ class SiteEditorManagementCommandTest(TestCase):
             "branch": "main",
             "allowPaths": ["web/src/pages/AboutPage.js"],
             "maxFiles": 20,
+            "siteNotes": "Home page hero = web/public/hero.jpg.",
         }
         output = StringIO()
         call_command(
@@ -458,7 +478,7 @@ class SiteEditorManagementCommandTest(TestCase):
             output.getvalue(),
             "WARNING: the running image must already contain /opt/nbhd/plugins/nbhd-site-editor — "
             "enable only after the image roll\n"
-            "site_editor_enabled=True keys=allowPaths,branch,maxFiles,owner,repo\n",
+            "site_editor_enabled=True keys=allowPaths,branch,maxFiles,owner,repo,siteNotes\n",
         )
 
     def test_config_command_rejects_unknown_keys_and_wrong_types_without_mutation(self):
@@ -471,6 +491,7 @@ class SiteEditorManagementCommandTest(TestCase):
             {"repo": "bad repo"},
             {"branch": "main/../escape"},
             {"branch": "main\nother"},
+            {"siteNotes": "x" * 1001},
         ):
             with self.subTest(config=config), self.assertRaises(CommandError):
                 call_command(

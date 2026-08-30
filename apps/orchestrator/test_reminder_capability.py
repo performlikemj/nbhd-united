@@ -203,12 +203,12 @@ class MaximalTenantBudgetTest(TestCase):
 
     def test_rules_delivery_r0_all_gates_budget(self):
         md = _agents_md(self._tenant(all_gates=True))
-        # KSE-5 (2026-08-30): the trimmed Website edit gate is part of the maximal tenant shape.
+        # KSE-9 (2026-08-30): approval-code Website edit gate; measured maximal shape is 23,505 chars.
         self.assertLessEqual(
             len(md),
-            23_585,
+            23_505,
             "the reviewed all-gates shape, including Website edit, grew beyond its "
-            "measured 23,585-char pin; fund further growth with a trim",
+            "measured 23,505-char pin; fund further growth with a trim",
         )
 
     def test_an_mj_shaped_tenant_fits_under_the_cap(self):

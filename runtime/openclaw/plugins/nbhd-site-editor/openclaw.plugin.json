@@ -28,7 +28,8 @@
       "maxFiles": { "type": "integer", "minimum": 1 },
       "maxTotalBytes": { "type": "integer", "minimum": 1 },
       "deployMinutes": { "type": "integer", "minimum": 1 },
-      "authorEmail": { "type": "string" }
+      "authorEmail": { "type": "string" },
+      "siteNotes": { "type": "string", "maxLength": 1000 }
     }
   }
 }

@@ -40,6 +40,8 @@ def _validated_config(raw: object) -> dict:
         )
         if not valid:
             raise CommandError(f"invalid value for {key}: expected {expected}")
+        if expected == "string" and len(value) > properties[key].get("maxLength", len(value)):
+            raise CommandError(f"invalid value for {key}: too long")
         if key in ("owner", "repo") and not _OWNER_REPO_PATTERN.fullmatch(value):
             raise CommandError(f"invalid value for {key}: unsupported characters")
         if key == "branch" and (not _BRANCH_PATTERN.fullmatch(value) or ".." in value):

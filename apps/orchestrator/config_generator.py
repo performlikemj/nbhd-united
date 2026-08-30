@@ -2938,6 +2938,9 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             for key in ("owner", "repo", "branch", "authorEmail"):
                 if isinstance(editor_source.get(key), str):
                     editor_config[key] = editor_source[key]
+            site_notes = editor_source.get("siteNotes")
+            if isinstance(site_notes, str) and len(site_notes) <= 1000:
+                editor_config["siteNotes"] = site_notes
             for key in ("allowPaths", "denyPaths"):
                 value = editor_source.get(key)
                 if isinstance(value, list) and all(isinstance(item, str) for item in value):

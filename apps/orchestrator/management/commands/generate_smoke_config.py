@@ -80,6 +80,7 @@ class Command(BaseCommand):
                     "maxTotalBytes": 5242880,
                     "deployMinutes": 6,
                     "authorEmail": "nbhd-site-editor@users.noreply.github.com",
+                    "siteNotes": "Home page hero = web/public/hero.jpg.",
                 }
                 tenant.journal_shaping_enabled = True
                 tenant.document_ingestion_enabled = True
