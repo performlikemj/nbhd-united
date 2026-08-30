@@ -11,6 +11,7 @@ module.exports = function register(api) {
     env: process.env,
     fetchImpl: globalThis.fetch,
     now: () => new Date(),
+    logger: api.logger,
   });
 
   api.registerTool(wrap({
@@ -85,7 +86,7 @@ module.exports = function register(api) {
   api.registerTool(wrap({
     name: "site_show_pending",
     description:
-      "Show every staged website change to the user as text diffs or binary sizes. Call this before asking for an explicit go; do not publish yet.",
+      "Show every staged website change as text diffs or binary sizes and issue an approval code bound to those exact changes. Show the result to the user and wait for their explicit go before publishing.",
     parameters: { type: "object", additionalProperties: false, properties: {} },
     async execute(_toolCallId, params = {}) {
       return editor.tools.site_show_pending(params);
@@ -111,14 +112,18 @@ module.exports = function register(api) {
   api.registerTool(wrap({
     name: "site_publish",
     description:
-      "Publish all shown, staged website changes in one commit only after the user explicitly says go. Pass confirm=true and a short message. Never claim the site is live unless this tool returns a commit this turn; say deployment takes a few minutes.",
+      "Publish all shown, staged website changes in one commit only after the user explicitly says go. Pass the approval code returned by site_show_pending, confirm=true, and a short message. Never claim the site is live unless this tool returns a commit this turn; say deployment takes a few minutes.",
     parameters: {
       type: "object",
       additionalProperties: false,
-      required: ["message", "confirm"],
+      required: ["message", "confirm", "approval_code"],
       properties: {
         message: { type: "string", maxLength: 200, description: "Single-line commit message." },
         confirm: { type: "boolean", description: "Must be true only after the user's explicit go." },
+        approval_code: {
+          type: "string",
+          description: "Six-character code returned by site_show_pending for the exact staged changes the user approved.",
+        },
       },
     },
     async execute(_toolCallId, params = {}) {

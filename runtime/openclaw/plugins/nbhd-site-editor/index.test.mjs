@@ -1,12 +1,12 @@
-import test from "node:test";
+import test, { after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import siteEditorLib from "./lib.js";
 
-const { createSiteEditor, HARD_DENY_PATHS } = siteEditorLib;
+const { createSiteEditor, HARD_DENY_PATHS, _treeCaches } = siteEditorLib;
 
 const TOKEN = "github_pat_TEST_TOKEN_123";
 const BASE_CONFIG = {
@@ -46,6 +46,11 @@ const KIHO_ALLOW_PATHS = [
   "web/public/*.{jpg,jpeg,png,gif,webp}",
   "web/public/images/**/*.{jpg,jpeg,png,gif,webp}",
 ];
+const TEST_STATE_ROOT = mkdtempSync(join(tmpdir(), "nbhd-site-editor-state-tests-"));
+let stateSequence = 0;
+
+after(() => rmSync(TEST_STATE_ROOT, { recursive: true, force: true }));
+beforeEach(() => _treeCaches.clear());
 
 function response(status, body = {}) {
   return {
@@ -84,7 +89,7 @@ function repositoryFixture(entries, contents = {}) {
 
 function editor(overrides = {}, fetchImpl = async () => {
   throw new Error("unexpected fetch");
-}) {
+}, instanceOverrides = {}) {
   return createSiteEditor({
     config: { ...BASE_CONFIG, ...overrides },
     env: {
@@ -93,12 +98,24 @@ function editor(overrides = {}, fetchImpl = async () => {
       OPENCLAW_WORKSPACE: tmpdir(),
     },
     fetchImpl,
-    now: () => new Date("2026-08-30T01:02:03.000Z"),
+    now: instanceOverrides.now || (() => new Date("2026-08-30T01:02:03.000Z")),
+    stateDir: instanceOverrides.stateDir || join(TEST_STATE_ROOT, `state-${stateSequence += 1}`),
+    logger: instanceOverrides.logger,
   });
 }
 
 function text(result) {
   return result.content[0].text;
+}
+
+function extractApprovalCode(result) {
+  const match = text(result).match(/Approval code: ([A-HJ-NP-Z2-9]{6})\./);
+  assert.ok(match, `missing approval code in: ${text(result)}`);
+  return match[1];
+}
+
+async function approve(tools) {
+  return extractApprovalCode(await tools.site_show_pending());
 }
 
 test("path fence accepts intended source and rejects traversal plus every hard-deny class", async () => {
@@ -481,7 +498,141 @@ test("show pending renders a unified LCS line diff", async () => {
   assert.match(shown, /--- a\/web\/src\/pages\/AboutPage\.js/);
   assert.match(shown, /-two/);
   assert.match(shown, /\+changed/);
+  assert.match(shown, /Approval code: [A-HJ-NP-Z2-9]{6}/);
   assert.equal(fixture.calls.filter((call) => call.url.pathname.endsWith("/git/trees/read-tree")).length, 1);
+});
+
+test("staging survives a new editor instance and publishing from it clears durable state", async () => {
+  const stateDir = join(TEST_STATE_ROOT, "cross-instance");
+  const fake = githubFixture();
+  const instanceA = editor({}, fake.fetchImpl, { stateDir });
+  await instanceA.tools.site_stage_file({
+    path: "web/src/pages/AboutPage.js",
+    content: "export default <main>Durable</main>;",
+  });
+
+  const instanceB = editor({}, fake.fetchImpl, { stateDir });
+  const shown = await instanceB.tools.site_show_pending();
+  assert.match(text(shown), /web\/src\/pages\/AboutPage\.js/);
+  assert.equal(instanceB._state.pending.size, 1);
+  const code = extractApprovalCode(shown);
+
+  assert.match(
+    text(await instanceB.tools.site_publish({ message: "Publish durable edit", confirm: true, approval_code: code })),
+    /Published commit/,
+  );
+  assert.equal(instanceB._state.pending.size, 0);
+  assert.equal(existsSync(instanceB._state.pendingStateFile), false);
+});
+
+test("publish approval rejects missing, wrong, invalidated, and expired codes", async () => {
+  {
+    const fake = githubFixture();
+    const { tools } = editor({}, fake.fetchImpl);
+    await tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: "export default 1;" });
+    assert.match(
+      text(await tools.site_publish({ message: "No code", confirm: true })),
+      /approval code from site_show_pending is required/,
+    );
+  }
+
+  {
+    const fake = githubFixture();
+    const { tools } = editor({}, fake.fetchImpl);
+    await tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: "export default 2;" });
+    await approve(tools);
+    assert.match(
+      text(await tools.site_publish({ message: "Wrong code", confirm: true, approval_code: "ABC234" })),
+      /approval code doesn't match/,
+    );
+  }
+
+  {
+    const fake = githubFixture();
+    const { tools } = editor({}, fake.fetchImpl);
+    await tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: "export default 3;" });
+    const code = await approve(tools);
+    await tools.site_stage_file({ path: "web/src/styles/site.css", content: "body {}" });
+    assert.match(
+      text(await tools.site_publish({ message: "Changed after show", confirm: true, approval_code: code })),
+      /No publish approval is on file/,
+    );
+  }
+
+  {
+    let clock = new Date("2026-08-30T01:02:03.000Z");
+    const fake = githubFixture();
+    const { tools } = editor({}, fake.fetchImpl, { now: () => clock });
+    await tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: "export default 4;" });
+    const code = await approve(tools);
+    clock = new Date("2026-08-31T01:02:03.001Z");
+    assert.match(
+      text(await tools.site_publish({ message: "Expired", confirm: true, approval_code: code })),
+      /approval code expired/,
+    );
+  }
+});
+
+test("discard invalidates approval and all-discard deletes the state file", async () => {
+  const fake = githubFixture();
+  const { tools, _state } = editor({}, fake.fetchImpl);
+  await tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: "export default 1;" });
+  await tools.site_stage_file({ path: "web/src/styles/site.css", content: "body {}" });
+  await approve(tools);
+  assert.ok(_state.approval);
+
+  await tools.site_discard({ path: "web/src/styles/site.css" });
+  assert.equal(_state.approval, null);
+  assert.equal(JSON.parse(readFileSync(_state.pendingStateFile, "utf8")).approval, null);
+
+  await tools.site_discard();
+  assert.equal(existsSync(_state.pendingStateFile), false);
+});
+
+test("repo mismatch discards durable state with a redacted warning", async () => {
+  const stateDir = join(TEST_STATE_ROOT, "repo-mismatch");
+  const original = editor({}, async () => {
+    throw new Error("unexpected fetch");
+  }, { stateDir });
+  await original.tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: "export default 1;" });
+  const warnings = [];
+  const changed = editor({ repo: "another-repo" }, async () => {
+    throw new Error("unexpected fetch");
+  }, { stateDir, logger: { warn: (message) => warnings.push(message) } });
+
+  assert.equal(text(await changed.tools.site_show_pending()), "No website changes are staged.");
+  assert.equal(changed._state.pending.size, 0);
+  assert.equal(existsSync(changed._state.pendingStateFile), false);
+  assert.deepEqual(warnings, ["nbhd-site-editor: discarded pending state for a different repository configuration."]);
+  assert.doesNotMatch(warnings[0], /performlikemj|kihoko|another-repo/);
+});
+
+test("durable state file is private and root listings alone include siteNotes", async () => {
+  const listingFixture = repositoryFixture([
+    { type: "tree", mode: "040000", path: "web", sha: "web-tree" },
+    { type: "blob", mode: "100644", path: "web/About.js", sha: "about", size: 12 },
+  ]);
+  const { tools, _state } = editor(
+    { allowPaths: ["web/**"], siteNotes: "Home page hero = web/public/hero.jpg." },
+    listingFixture.fetchImpl,
+  );
+  const root = text(await tools.site_list_files());
+  const nested = text(await tools.site_list_files({ path: "web" }));
+  assert.match(root, /Site map: Home page hero = web\/public\/hero\.jpg\./);
+  assert.doesNotMatch(nested, /Site map:/);
+
+  await tools.site_stage_file({ path: "web/About.js", content: "export default 1;" });
+  const stored = JSON.parse(readFileSync(_state.pendingStateFile, "utf8"));
+  assert.equal(stored.version, 1);
+  assert.equal(stored.repo, "performlikemj/kihoko@main");
+  assert.equal(stored.approval, null);
+  assert.deepEqual(stored.files["web/About.js"], {
+    kind: "text",
+    content: "export default 1;",
+    size: 17,
+  });
+  assert.equal(statSync(_state.pendingStateFile).mode & 0o777, 0o600);
+  assert.equal(statSync(join(_state.pendingStateFile, "..")).mode & 0o777, 0o700);
 });
 
 test("repository reads and pending diffs refresh when the branch head changes", async () => {
@@ -537,6 +688,9 @@ function githubFixture({ firstPatchStatus = 200 } = {}) {
       return response(200, { object: { sha: patchCount ? "head-2" : "head-1" } });
     }
     if (method === "GET" && pathname.includes("/git/commits/head-")) return response(200, { tree: { sha: "base-tree" } });
+    if (method === "GET" && pathname.endsWith("/git/trees/base-tree")) {
+      return response(200, { tree: [], truncated: false });
+    }
     if (method === "POST" && pathname.endsWith("/git/blobs")) return response(201, { sha: `blob-${calls.length}` });
     if (method === "POST" && pathname.endsWith("/git/trees")) return response(201, { sha: "new-tree" });
     if (method === "POST" && pathname.endsWith("/git/commits")) {
@@ -564,11 +718,20 @@ test("two-file text and binary publish sends every exact Git Data request body",
   writeFileSync(imagePath, imageContent);
   await tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: textContent });
   await tools.site_stage_upload({ path: "web/public/hero.png", local_path: imagePath });
-  const result = await tools.site_publish({ message: "Update About copy", confirm: true });
+  const approvalCode = await approve(tools);
+  const result = await tools.site_publish({
+    message: "Update About copy",
+    confirm: true,
+    approval_code: approvalCode,
+  });
 
   assert.deepEqual(
     fake.calls.map((call) => `${call.options.method} ${call.url.pathname.replace("/repos/performlikemj/kihoko", "")}`),
     [
+      "GET /git/ref/heads/main",
+      "GET /git/commits/head-1",
+      "GET /git/trees/base-tree",
+      "GET /git/ref/heads/main",
       "GET /git/ref/heads/main",
       "GET /git/commits/head-1",
       "POST /git/blobs",
@@ -585,13 +748,13 @@ test("two-file text and binary publish sends every exact Git Data request body",
   }
   assert.equal(fake.calls[0].body, undefined);
   assert.equal(fake.calls[1].body, undefined);
-  assert.deepEqual(fake.calls[2].body, { content: Buffer.from(textContent).toString("base64"), encoding: "base64" });
-  assert.deepEqual(fake.calls[3].body, { content: imageContent.toString("base64"), encoding: "base64" });
-  assert.deepEqual(fake.calls[4].body, {
+  assert.deepEqual(fake.calls[6].body, { content: Buffer.from(textContent).toString("base64"), encoding: "base64" });
+  assert.deepEqual(fake.calls[7].body, { content: imageContent.toString("base64"), encoding: "base64" });
+  assert.deepEqual(fake.calls[8].body, {
     base_tree: "base-tree",
     tree: [
-      { path: "web/src/pages/AboutPage.js", mode: "100644", type: "blob", sha: "blob-3" },
-      { path: "web/public/hero.png", mode: "100644", type: "blob", sha: "blob-4" },
+      { path: "web/src/pages/AboutPage.js", mode: "100644", type: "blob", sha: "blob-7" },
+      { path: "web/public/hero.png", mode: "100644", type: "blob", sha: "blob-8" },
     ],
   });
   const commitCall = fake.calls.find((call) => call.options.method === "POST" && call.url.pathname.endsWith("/git/commits"));
@@ -610,16 +773,21 @@ test("two-file text and binary publish sends every exact Git Data request body",
   assert.match(text(result), /about 6 minutes/);
   assert.doesNotMatch(text(result), /EXTERNAL_UNTRUSTED_CONTENT/);
   assert.equal(_state.pending.size, 0);
+  assert.equal(existsSync(_state.pendingStateFile), false);
 });
 
 test("a moved ref retries exactly once from a fresh ref", async () => {
   const fake = githubFixture({ firstPatchStatus: 422 });
   const { tools } = editor({}, fake.fetchImpl);
   await tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: "export default 2;" });
-  assert.match(text(await tools.site_publish({ message: "Retry safely", confirm: true })), /Published commit/);
-  assert.equal(fake.calls.filter((call) => call.options.method === "GET" && call.url.pathname.endsWith("/git/ref/heads/main")).length, 2);
+  const approvalCode = await approve(tools);
+  assert.match(
+    text(await tools.site_publish({ message: "Retry safely", confirm: true, approval_code: approvalCode })),
+    /Published commit/,
+  );
+  assert.equal(fake.calls.filter((call) => call.options.method === "GET" && call.url.pathname.endsWith("/git/ref/heads/main")).length, 3);
   assert.equal(fake.calls.filter((call) => call.options.method === "PATCH").length, 2);
-  assert.match(fake.calls[7].url.pathname, /git\/commits\/head-2$/);
+  assert.ok(fake.calls.some((call) => call.options.method === "GET" && /git\/commits\/head-2$/.test(call.url.pathname)));
 });
 
 test("a second moved ref fails loudly and retains pending changes", async () => {
@@ -634,9 +802,14 @@ test("a second moved ref fails loudly and retains pending changes", async () => 
     return originalFetch(url, options);
   });
   await tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: "export default 3;" });
-  assert.match(text(await tools.site_publish({ message: "Retry twice", confirm: true })), /GitHub API 409/);
+  const approvalCode = await approve(tools);
+  assert.match(
+    text(await tools.site_publish({ message: "Retry twice", confirm: true, approval_code: approvalCode })),
+    /GitHub API 409/,
+  );
   assert.equal(patches, 2);
   assert.equal(_state.pending.size, 1);
+  assert.equal(existsSync(_state.pendingStateFile), true);
 });
 
 test("all eight tools redact token patterns including rejected fetch promises", async () => {
@@ -653,10 +826,6 @@ test("all eight tools redact token patterns including rejected fetch promises", 
       await tools.site_stage_file({ path: `web/src/pages/${echoed}.js`, content: "export default 1;" });
       return tools.site_discard({ path: `web/src/pages/${echoed}.js` });
     },
-    site_publish: async (tools) => {
-      await tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: "export default 1;" });
-      return tools.site_publish({ message: "Publish", confirm: true });
-    },
     site_deploy_status: async (tools) => tools.site_deploy_status(),
   };
   for (const echoed of [TOKEN, "ghp_ABC123value"]) {
@@ -668,6 +837,23 @@ test("all eight tools redact token patterns including rejected fetch promises", 
       assert.doesNotMatch(JSON.stringify(result), /github_pat_|ghp_/, name);
       assert.match(text(result), /\[REDACTED\]/, name);
     }
+
+    let rejectPublish = false;
+    const fixture = repositoryFixture([]);
+    const instance = editor({}, async (...args) => {
+      if (rejectPublish) throw new Error(`rejected fetch echoed ${echoed}`);
+      return fixture.fetchImpl(...args);
+    });
+    await instance.tools.site_stage_file({ path: "web/src/pages/AboutPage.js", content: "export default 1;" });
+    const code = await approve(instance.tools);
+    rejectPublish = true;
+    const publishResult = await instance.tools.site_publish({
+      message: "Publish",
+      confirm: true,
+      approval_code: code,
+    });
+    assert.doesNotMatch(JSON.stringify(publishResult), /github_pat_|ghp_/, "site_publish");
+    assert.match(text(publishResult), /\[REDACTED\]/, "site_publish");
   }
 });
 
