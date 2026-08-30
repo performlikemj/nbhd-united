@@ -694,7 +694,8 @@ def ingest_healthkit_payload(tenant, payload: dict) -> dict:
     tz = tenant_tz(tenant)
 
     profile = FuelProfile.objects.filter(tenant=tenant).first()
-    tombstones = set(profile.healthkit_tombstones or []) if profile else set()
+    ordered_tombstones = list(profile.healthkit_tombstones or []) if profile else []
+    tombstones = set(ordered_tombstones)
 
     # Deletions first: per-instance deletes so post_delete receivers fire
     # (tombstone capture + fuel_version). Bounded by MAX_DELETED.
@@ -707,7 +708,10 @@ def ingest_healthkit_payload(tenant, payload: dict) -> dict:
         for row in Workout.objects.filter(tenant=tenant, source=WorkoutSource.HEALTHKIT, external_id__in=deleted_ids):
             row.delete()
             deleted_count += 1
-        tombstones.update(deleted_ids)
+        for deleted_id in deleted_ids:
+            if deleted_id not in tombstones:
+                ordered_tombstones.append(deleted_id)
+                tombstones.add(deleted_id)
         # Persist the full tombstone set regardless of whether any rows were
         # actually deleted.  The post_delete signal only fires when a row
         # exists; when the HK sample was deleted before it ever synced, or was
@@ -715,7 +719,7 @@ def ingest_healthkit_payload(tenant, payload: dict) -> dict:
         # Without this, an anchor reset / app reinstall can resurrect the
         # sample — the same resurrection class as PR #847.
         if profile is not None:
-            profile.healthkit_tombstones = list(tombstones)[-_TOMBSTONE_CAP:]
+            profile.healthkit_tombstones = ordered_tombstones[-_TOMBSTONE_CAP:]
             profile.save(update_fields=["healthkit_tombstones", "updated_at"])
 
     raw_workouts = payload.get("workouts") or []
