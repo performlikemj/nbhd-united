@@ -53,7 +53,7 @@ def _make_tenant(*, chat_id: int, entity_map=None, denylist=None) -> Tenant:
 class MemorySyncMintNeverTests(TestCase):
     """RedactionSession(mint='never') — the memory-sync + co-pilot policy."""
 
-    def test_junk_never_minted_but_known_name_still_replaced(self):
+    def test_liquid_score_one_cannot_bypass_mint_never(self):
         # Agent markdown carrying a KNOWN contact plus structure NER would junk.
         tenant = _make_tenant(chat_id=31001, entity_map={"[PERSON_1]": {"name": "Sautai"}})
 
@@ -62,7 +62,7 @@ class MemorySyncMintNeverTests(TestCase):
 
         # Even if the detector WOULD fire (junk ACCOUNT on the table row), the
         # never-policy must not consult it or mint anything.
-        junk = [DetectedEntity("ACCOUNT", 0, 6, 0.99)]
+        junk = [DetectedEntity("ACCOUNT", 0, 6, 1.0)]
         with patch("apps.pii.redactor._detect_pii", return_value=junk) as mock_detect:
             out = session.redact(md)
 
@@ -101,12 +101,12 @@ class MemorySyncMintNeverTests(TestCase):
 class ToolResponseMintValidatedTests(TestCase):
     """redact_tool_response — the mint='validated' machine-text policy."""
 
-    def test_unvalidated_person_hit_is_not_minted(self):
+    def test_liquid_score_one_cannot_bypass_mint_validated(self):
         # A neural PERSON span in an email body (newsletter sender etc.) must NOT
         # coin a new binding — it is left verbatim.
         tenant = _make_tenant(chat_id=31010, entity_map={})
         data = {"snippet": "Bob said hi"}
-        detected = [DetectedEntity("PERSON", 0, 3, 0.99)]
+        detected = [DetectedEntity("PERSON", 0, 3, 1.0)]
         with (
             patch("apps.pii.redactor._detect_pii", return_value=detected),
             patch("apps.pii.redactor._structured_validator", return_value=_fake_validate),

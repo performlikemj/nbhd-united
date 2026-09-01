@@ -15,9 +15,10 @@ from apps.pii.config import (
     DEBERTA_LABEL_MAP,
     DEFAULT_DETECTOR_ENGINE,
     LIQUID_LABEL_MAP,
+    TIER_POLICIES,
     resolve_detector_engine,
 )
-from apps.pii.redactor import redact_text
+from apps.pii.redactor import _detect_pii, _filter_results, redact_text
 
 
 class DetectorEngineSelectionTests(SimpleTestCase):
@@ -168,6 +169,107 @@ class EngineIndependentPresidioTests(SimpleTestCase):
         empty_neural_pipeline.assert_called_once_with(text)
         self.assertNotIn("taro@example.jp", result)
         self.assertEqual(result, "明日は田中さんと[EMAIL_ADDRESS_1]に連絡")
+
+    def _assert_structured_presidio_beats_liquid_person(self, *, text, entity_type, span):
+        start = text.index(span)
+        neural = Mock(
+            return_value=[
+                {
+                    "entity_group": "identity.person_name",
+                    "score": 1.0,
+                    "start": 0,
+                    "end": len(text),
+                }
+            ]
+        )
+        recognizer = Mock()
+        recognizer.analyze.return_value = [
+            SimpleNamespace(entity_type=entity_type, score=0.6, start=start, end=start + len(span))
+        ]
+        empty_recognizer = Mock()
+        empty_recognizer.analyze.return_value = []
+        recognizers = {
+            name: recognizer if name == entity_type else empty_recognizer
+            for name in ("CREDIT_CARD", "IBAN_CODE", "EMAIL_ADDRESS", "PHONE_NUMBER")
+        }
+
+        with (
+            patch.dict(os.environ, {"PII_DETECTOR_ENGINE": "liquid"}),
+            patch("apps.pii.liquid_engine.get_liquid_pii_pipeline", return_value=neural),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value=recognizers),
+        ):
+            result = redact_text(text, tier="starter")
+
+        self.assertEqual(result, text[:start] + f"[{entity_type}_1]" + text[start + len(span) :])
+
+    def test_validated_email_beats_overlapping_liquid_person_at_one(self):
+        self._assert_structured_presidio_beats_liquid_person(
+            text="Email bob@example.com now",
+            entity_type="EMAIL_ADDRESS",
+            span="bob@example.com",
+        )
+
+    def test_validated_phone_beats_overlapping_liquid_person_at_one(self):
+        self._assert_structured_presidio_beats_liquid_person(
+            text="Call +1 202-555-0100 today",
+            entity_type="PHONE_NUMBER",
+            span="+1 202-555-0100",
+        )
+
+
+class LiquidScoreGateTests(SimpleTestCase):
+    def setUp(self):
+        self.policy = TIER_POLICIES["starter"]
+
+    def _detect(self, text, raw_span):
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=Mock(return_value=[raw_span])),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+        ):
+            return _detect_pii(text, self.policy["entities"], self.policy["score_threshold"])
+
+    def test_score_one_still_uses_liquid_label_mapping(self):
+        text = "Contact Alice"
+        start = text.index("Alice")
+        results = self._detect(
+            text,
+            {
+                "entity_group": "identity.person_name",
+                "score": 1.0,
+                "start": start,
+                "end": start + len("Alice"),
+            },
+        )
+
+        self.assertEqual([(item.entity_type, item.source) for item in results], [("PERSON", "neural")])
+
+    def test_score_one_cannot_bypass_structured_validation(self):
+        text = "django"
+        results = self._detect(
+            text,
+            {
+                "entity_group": "financial.credit_card",
+                "score": 1.0,
+                "start": 0,
+                "end": len(text),
+            },
+        )
+
+        self.assertEqual(_filter_results(results, text, set()), [])
+
+    def test_score_one_cannot_bypass_hygiene(self):
+        text = "USER.md"
+        results = self._detect(
+            text,
+            {
+                "entity_group": "identity.person_name",
+                "score": 1.0,
+                "start": 0,
+                "end": len(text),
+            },
+        )
+
+        self.assertEqual(_filter_results(results, text, set()), [])
 
 
 class LiquidEngineSingletonTests(SimpleTestCase):

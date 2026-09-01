@@ -1033,6 +1033,7 @@ class DetectedEntity:
     start: int
     end: int
     score: float
+    source: str = "neural"
 
 
 def redact_text(
@@ -2148,6 +2149,7 @@ def _detect_pii(
                             start=r.start,
                             end=r.end,
                             score=r.score,
+                            source="presidio",
                         )
                     )
 
@@ -2212,6 +2214,7 @@ def _merge_adjacent_spans(results: list[DetectedEntity], text: str = "") -> list
                 start=prev.start,
                 end=current.end,
                 score=min(prev.score, current.score),
+                source=prev.source,
             )
         else:
             merged.append(current)
@@ -2442,12 +2445,22 @@ def _filter_results(
     return filtered
 
 
+_PRESIDIO_STRUCTURED_TYPES = frozenset({"EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "IBAN_CODE"})
+
+
+def _is_validated_presidio_span(result: DetectedEntity) -> bool:
+    """Whether a post-filter span came from a structured Presidio recognizer."""
+    return result.source == "presidio" and result.entity_type in _PRESIDIO_STRUCTURED_TYPES
+
+
 def _deduplicate_overlapping(results: list) -> list:
     """Remove overlapping entity spans, keeping the best match.
 
-    When two entities overlap (e.g. PERSON "Email bob@test.com" vs
-    EMAIL_ADDRESS "bob@test.com"), keep the one with the higher confidence
-    score. On ties, prefer the more specific (shorter) span.
+    A validated structured Presidio result always beats an overlapping neural
+    result, so score-less Liquid spans cannot outrank an email, phone, card, or
+    IBAN merely because the adapter emits ``score=1.0``. For spans from the same
+    source class, keep the higher confidence score; on ties, prefer the more
+    specific (shorter) span.
     """
     if not results:
         return results
@@ -2464,6 +2477,12 @@ def _deduplicate_overlapping(results: list) -> list:
         prev = deduplicated[-1]
         # Check for overlap: current starts before previous ends
         if result.start < prev.end:
+            prev_is_structured = _is_validated_presidio_span(prev)
+            result_is_structured = _is_validated_presidio_span(result)
+            if prev_is_structured != result_is_structured:
+                if result_is_structured:
+                    deduplicated[-1] = result
+                continue
             # Keep the higher-scoring one; on tie, prefer shorter (more specific)
             if result.score > prev.score or (
                 result.score == prev.score and (result.end - result.start) < (prev.end - prev.start)
