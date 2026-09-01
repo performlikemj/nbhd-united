@@ -303,6 +303,26 @@ def _sized_realistic_text(size: int) -> str:
     return (seed * math.ceil(size / len(seed)))[:size]
 
 
+def _golden_failure_ids(golden_rows: list[dict]) -> set[str]:
+    from apps.pii import golden_check
+
+    failures = set()
+    for row in golden_rows:
+        text = row["text"]
+        spans = golden_check._redacted_spans(text)
+        if row["expect"] == "clean":
+            if spans:
+                failures.add(row["id"])
+            continue
+        if any(
+            (start := text.find(expected["span"])) < 0
+            or not any(span.start < start + len(expected["span"]) and start < span.end for span in spans)
+            for expected in row["expect"]
+        ):
+            failures.add(row["id"])
+    return failures
+
+
 @skipUnless(os.environ.get("PII_REAL_MODEL_TESTS") == "1", "Set PII_REAL_MODEL_TESTS=1 for D7 measurements")
 class SharedDetectorRealModelTests(SimpleTestCase):
     def test_d7_parity_latency_and_soak(self):
@@ -391,11 +411,22 @@ class SharedDetectorRealModelTests(SimpleTestCase):
                     "PII_SHARED_DEADLINE_S": "300",
                 },
             ):
-                golden_exit = golden_check.main()
-                if engine == "deberta":
-                    self.assertEqual(golden_exit, 0)
-                else:
-                    print(f"D7 GOLDEN engine={engine} exit={golden_exit} (differences reported above)")
+                golden_failures = _golden_failure_ids(golden_rows)
+                expected_failures = (
+                    {
+                        "fuel-catalog-control-002",
+                        "fuel-catalog-control-004",
+                        "control-018",
+                    }
+                    if engine == "liquid"
+                    else set()
+                )
+                self.assertSetEqual(
+                    golden_failures,
+                    expected_failures,
+                    f"{engine} golden failure set drifted; review every added or removed ID",
+                )
+                print(f"D7 GOLDEN engine={engine} failure_ids={sorted(golden_failures)}")
 
             sequential_calls = int(os.environ.get("PII_D7_SEQUENTIAL_CALLS", "50"))
             burst_rounds = int(os.environ.get("PII_D7_BURST_ROUNDS", "3"))
