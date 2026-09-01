@@ -427,7 +427,7 @@ jobs:
       SENTRY_ORG: by-way-of-mj
       SENTRY_PROJECT: python-django
       # Deploy-only pins belong here, not workflow-global env (which also affects tests).
-      PII_DETECTOR_ENGINE: deberta
+      PII_DETECTOR_ENGINE: liquid
       PII_DETECTOR_TRANSPORT: shared
       PII_PROVISIONAL_TENANT_IDS: ${{ vars.PII_PROVISIONAL_TENANT_IDS }}
     steps:

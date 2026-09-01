@@ -164,6 +164,20 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
             {"name": "PII_DETECTOR_ENGINE", "value": "liquid"},
         )
 
+    def test_deberta_engine_remains_a_valid_rollback(self):
+        result = prepare_deployment(
+            self.definition,
+            container_name="django",
+            image="registry/new:sha",
+            environment={"PII_DETECTOR_ENGINE": "deberta"},
+        )
+
+        container = result["properties"]["template"]["containers"][0]
+        self.assertEqual(
+            next(item for item in container["env"] if item["name"] == "PII_DETECTOR_ENGINE"),
+            {"name": "PII_DETECTOR_ENGINE", "value": "deberta"},
+        )
+
     def test_unsupported_pii_detector_transport_fails_closed(self):
         with self.assertRaisesMessage(
             ValueError,
@@ -210,12 +224,13 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
 
         self.assertIn("python3 -m config.containerapp_deploy", workflow)
         self.assertIn('--yaml "$DEPLOY_SPEC"', workflow)
-        self.assertIn("PII_DETECTOR_ENGINE: deberta", workflow)
+        self.assertEqual(workflow.count("PII_DETECTOR_ENGINE:"), 1)
+        self.assertIn("PII_DETECTOR_ENGINE: liquid", workflow)
         self.assertIn("PII_DETECTOR_TRANSPORT: shared", workflow)
         self.assertIn("PII_PROVISIONAL_TENANT_IDS: ${{ vars.PII_PROVISIONAL_TENANT_IDS }}", workflow)
         self.assertNotIn("PII_DETECTOR_ENGINE", workflow.split("jobs:", 1)[0])
         deploy_job = workflow.split("  deploy-backend:", 1)[1].split("\n  fleet-rollout:", 1)[0]
-        self.assertIn("PII_DETECTOR_ENGINE: deberta", deploy_job)
+        self.assertIn("PII_DETECTOR_ENGINE: liquid", deploy_job)
         self.assertIn("PII_MODEL_TAG=deberta-liquid-a038061af92047b0-b8c9cf3d2d6ae525", workflow)
         self.assertIn("--build-arg INCLUDE_LIQUID=true", workflow)
         self.assertIn("os.listdir('/app/pii-model/liquid')", workflow)
