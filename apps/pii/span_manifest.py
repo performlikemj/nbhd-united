@@ -11,7 +11,7 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -31,28 +31,18 @@ def _ensure_django() -> None:
 
 
 def _load_corpus(name: str) -> list[dict[str, str]]:
-    if name != "golden+eval":
+    if name not in {"golden", "golden+eval"}:
         raise ValueError(f"unsupported corpus: {name}")
 
-    from apps.pii.eval_corpus import CASES
     from apps.pii.golden_check import GOLDEN_PATH
 
     golden_rows = json.loads(Path(GOLDEN_PATH).read_text(encoding="utf-8"))
     rows = [{"id": row["id"], "source": "golden", "text": row["text"]} for row in golden_rows]
-    rows.extend({"id": case.id, "source": "eval", "text": case.text} for case in CASES)
+    if name == "golden+eval":
+        from apps.pii.eval_corpus import CASES
+
+        rows.extend({"id": case.id, "source": "eval", "text": case.text} for case in CASES)
     return sorted(rows, key=lambda row: (row["source"], row["id"], row["text"]))
-
-
-def _load_pipeline(engine: str) -> Callable[[str], list[dict[str, Any]]]:
-    if engine == "liquid":
-        from apps.pii.liquid_engine import get_liquid_pii_pipeline
-
-        return get_liquid_pii_pipeline()
-    if engine == "deberta":
-        from apps.pii.engine import get_deberta_pii_pipeline
-
-        return get_deberta_pii_pipeline()
-    raise ValueError(f"unsupported engine: {engine}")
 
 
 def _canonical_raw_spans(spans: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -105,6 +95,7 @@ def _canonical_detected(spans: Iterable[Any], text: str) -> list[dict[str, Any]]
 
 def build_manifest(corpus_name: str, engines: Iterable[str]) -> dict[str, Any]:
     _ensure_django()
+    from apps.pii.engine import get_pii_pipeline
     from apps.pii.redactor import _detect_pii
 
     corpus = _load_corpus(corpus_name)
@@ -112,25 +103,28 @@ def build_manifest(corpus_name: str, engines: Iterable[str]) -> dict[str, Any]:
     engine_manifests: dict[str, list[dict[str, Any]]] = {}
     for engine in engines:
         print(f"span-manifest: loading {engine}", file=sys.stderr, flush=True)
-        pipeline = _load_pipeline(engine)
-        cases = []
-        for row in corpus:
-            raw_spans = pipeline(row["text"])
-            with patch("apps.pii.engine.get_pii_pipeline", return_value=pipeline):
+        with patch.dict(
+            os.environ,
+            {"PII_DETECTOR_ENGINE": engine, "PII_DETECTOR_TRANSPORT": "local"},
+        ):
+            pipeline = get_pii_pipeline()
+            cases = []
+            for row in corpus:
+                raw_spans = pipeline(row["text"])
                 detected = _detect_pii(
                     row["text"],
                     policy["entities"],
                     policy["score_threshold"],
                 )
-            cases.append(
-                {
-                    "detect_pii": _canonical_detected(detected, row["text"]),
-                    "id": row["id"],
-                    "raw_spans": _canonical_raw_spans(raw_spans),
-                    "source": row["source"],
-                    "text": row["text"],
-                }
-            )
+                cases.append(
+                    {
+                        "detect_pii": _canonical_detected(detected, row["text"]),
+                        "id": row["id"],
+                        "raw_spans": _canonical_raw_spans(raw_spans),
+                        "source": row["source"],
+                        "text": row["text"],
+                    }
+                )
         engine_manifests[engine] = cases
         print(f"span-manifest: completed {engine} ({len(cases)} texts)", file=sys.stderr, flush=True)
 
@@ -143,7 +137,7 @@ def build_manifest(corpus_name: str, engines: Iterable[str]) -> dict[str, Any]:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--corpus", choices=("golden+eval",), required=True)
+    parser.add_argument("--corpus", choices=("golden", "golden+eval"), required=True)
     parser.add_argument(
         "--engine",
         choices=("both", "deberta", "liquid"),
