@@ -39,16 +39,15 @@ Resource group `rg-nbhd-prod`, region `westus2`. Env names in
    once reinstalled the CUDA build and corrupted `transformers` imports — reading
    the version from the file makes that skew impossible.
 2. **PII model as a frozen ACR layer** ([`Dockerfile:34`](../../Dockerfile)):
-   `COPY --from=nbhdunited.azurecr.io/pii-model:deberta-only-a038061af92047b0`. ~554 MB
-   DeBERTa-v3 + ai4privacy, pulled into the Django build from *our own* ACR, so
-   ordinary deploys do not hit HF 429s. The first deploy of a new content tag
-   mints that ACR layer from the pinned HF revision. Placed before `COPY . .` so
-   app changes don't invalidate it. The old `deberta-finetuned-pii-v2` alias is
-   not a safe rollback target: the Liquid lane briefly pushed a dual bundle
-   under that name. CI now
-   builds/verifies a content-named DeBERTa-only tag and asserts the Django image
-   has no `/app/pii-model/liquid` directory. **Bump the tag in `Dockerfile:34`
-   and the CI model-image step together** ([`ci-cd.yml:355`](../../.github/workflows/ci-cd.yml)).
+   `COPY --from=nbhdunited.azurecr.io/pii-model:deberta-liquid-a038061af92047b0-b8c9cf3d2d6ae525`.
+   The ~1.7 GiB compressed artifact contains pinned FP32 DeBERTa-v3 + ai4privacy
+   at `/app/pii-model` and Liquid at `/app/pii-model/liquid`, pulled into the
+   Django build from *our own* ACR so ordinary deploys do not hit HF 429s. The
+   immutable tag is `<shape>-<first 16 DeBERTa revision chars>-<first 16 Liquid
+   revision chars>`. The first deploy of new pinned content mints that ACR layer;
+   app changes do not invalidate it. CI verifies both bundles are present and
+   weight-bearing. **Bump the tag in `Dockerfile:34` and the CI model-image step
+   together** ([`ci-cd.yml:355`](../../.github/workflows/ci-cd.yml)).
 3. `collectstatic` with a placeholder secret key ([`Dockerfile:38`](../../Dockerfile)),
    then `CMD ["./startup.sh"]`. Image is ~2.56 GB by design (PII ML stack).
 
@@ -56,8 +55,8 @@ The PII model itself is built by [`Dockerfile.pii-model`](../../Dockerfile.pii-m
 a two-stage `snapshot_download` (5× retry/backoff for HF 429s) → `FROM scratch`
 so the layer Django pulls is *only* weights. The repo ships `pytorch_model.bin`
 (no safetensors), so the `.bin` must survive `ignore_patterns`. The recipe's
-default is DeBERTa-only; `INCLUDE_LIQUID=true` retains the shelved dual build as
-an explicit opt-in that must use a separate immutable tag.
+default remains DeBERTa-only as a safe local fallback; CI explicitly sets
+`INCLUDE_LIQUID=true` to produce the current immutable dual-model artifact.
 
 ### `nbhd-openclaw` — per-tenant runtime ([`Dockerfile.openclaw`](../../Dockerfile.openclaw))
 
@@ -96,7 +95,7 @@ Runs as `USER node`; `ENTRYPOINT` is `nbhd-openclaw-entrypoint`
 |---|---|---|---|
 | `django` | `<github.sha>` (+ `:latest`) | `:latest` moves | [`ci-cd.yml:371`](../../.github/workflows/ci-cd.yml) |
 | `nbhd-openclaw` | `<ocver>-<shortsha>` e.g. `2026.5.28-a1b2c3d` | **never moves; no `:latest`** | [`ci-cd.yml:403`](../../.github/workflows/ci-cd.yml) |
-| `pii-model` | `deberta-only-a038061af92047b0` | immutable by convention/content tag | deploy builds once, then verifies, [`ci-cd.yml:355`](../../.github/workflows/ci-cd.yml) |
+| `pii-model` | `deberta-liquid-a038061af92047b0-b8c9cf3d2d6ae525` | immutable by convention/content tag | deploy builds once, then verifies both bundles, [`ci-cd.yml:355`](../../.github/workflows/ci-cd.yml) |
 
 OpenClaw deliberately has **no `:latest`** ([`ci-cd.yml:404`](../../.github/workflows/ci-cd.yml)):
 a moving tag could pull an unvalidated build into a tenant on the next
