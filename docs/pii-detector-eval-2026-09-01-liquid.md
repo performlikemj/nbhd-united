@@ -152,3 +152,60 @@ cases. No score was rounded or normalized to conceal that distinction.
 - DEFERRED: Azure sidecar PSS, 4 GiB cgroup headroom, and revision pull time are
   flip-PR rollout measurements; they cannot be established from this PR's
   macOS host without touching production.
+
+## Flip runbook
+
+Rollback is a revert PR through the normal protected-main deploy path:
+
+```bash
+gh pr revert feat/pii-liquid-flip -R performlikemj/nbhd-united
+```
+
+Emergency lever while that revert is reviewed and merged:
+
+```bash
+az containerapp update -n nbhd-django-westus2 -g rg-nbhd-prod --set-env-vars PII_DETECTOR_ENGINE=deberta
+```
+
+The next deploy reapplies the workflow's engine value, so the emergency lever
+is temporary and does not replace the revert PR.
+
+First hour after cutover (the flip PR is the canary; no multi-revision canary):
+
+- [ ] Readiness log contains `pii_detector_server ready engine=liquid`.
+- [ ] Force one Telegram, one HTTP/iOS, and one LINE redaction.
+- [ ] Client `outcome != ok` is below 1%; `queue_full` + `expired` is zero.
+- [ ] Client p99 is below half of the configured `PII_SHARED_DEADLINE_S`.
+- [ ] Sidecar, worker, and container restart counts are all zero.
+- [ ] Gunicorn, poller, and sidecar `/proc/*/smaps_rollup` Rss/Pss plus cgroup
+  peak leave at least 800 MiB of headroom under the 4 GiB limit.
+- [ ] Run `PII_DETECTOR_ENGINE=deberta python -m apps.pii.golden_check` in the
+  deployed image and require 54/54.
+- [ ] Send a known neural-only PII string through each channel; require a
+  confirmed receipt and placeholder, with no cleartext reaching the model.
+
+```kql
+let Client = ContainerAppConsoleLogs_CL
+| where ContainerAppName_s == "nbhd-django-westus2" and TimeGenerated > ago(1h)
+| where Log_s has "pii_detector_client"
+| parse Log_s with * "outcome=" outcome:string " latency_ms=" latency_ms:real " len_bucket=" *;
+Client
+| summarize calls=count(), non_ok=countif(outcome != "ok"),
+    queue_full_expired=countif(outcome in ("queue_full", "expired")),
+    p99_ms=percentile(latency_ms, 99)
+| extend non_ok_pct=round(100.0 * non_ok / calls, 3)
+```
+
+```kql
+ContainerAppConsoleLogs_CL
+| where ContainerAppName_s == "nbhd-django-westus2" and TimeGenerated > ago(1h)
+| where Log_s has_any ("pii_detector_server ready", "[startup] PII detector exited")
+| project TimeGenerated, Log_s
+```
+
+Stop and revert if any D10 condition holds: Liquid leaves less than about 800
+MiB cgroup headroom; the one-thread queue breaks p95 badly enough that replicas
+erase the memory saving; soak has no plateau and recycling does not fix it; the
+span manifest differs across platforms; clients load local models; or warm-up
+causes user-visible message loss. Also stop if step 1's summed PSS is not
+materially lower than the former local-model deployment.
