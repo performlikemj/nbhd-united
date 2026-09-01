@@ -1,0 +1,42 @@
+# Portfolio harness declaration (~/Projects/harness). Only `gate` is required.
+# Every field below is evidenced in this repo; absent tooling is declared, not implied (Law 6).
+# Verified against origin/main @ 3564dedd on 2026-09-01. Line numbers are that commit's.
+stack: [django-drf]
+gate: make integrate-gate
+forbidden:
+  - cmd: git add -A
+    why: blocked by ~/.claude/hooks/git_guard.sh — broad staging risks committing .env/models/build artifacts (docs/agents/workflow.md)
+  - cmd: git push --no-verify
+    why: the pre-commit secret scanner is the last line before a public repo (docs/agents/workflow.md)
+  - cmd: pip-compile
+    why: on macOS it strips Linux CUDA/triton torch pins — hand-edit requirements.txt (docs/agents/workflow.md)
+  - cmd: az containerapp exec
+    why: leaves wedged exec sessions on tenant containers; read logs/probes instead (memory feedback_no_containerapp_exec)
+absent:
+  - what: toolchain pin files (.nvmrc/.python-version)
+    why: >-
+      never adopted. .github/workflows/ci-cd.yml pins versions inline: node 22 for frontend-test (:85)
+      and openclaw-config-smoke (:252) but node 20 for deploy-frontend (:901); python 3.12 at :124 and
+      :247. Law 9 open item — `checks/toolchain-pins.sh` and `checks/ci-parity.sh` stay RED until pin
+      files exist and CI reads them via node-version-file/python-version-file. Aligning deploy-frontend
+      onto node 22 changes a deploy path and needs its own verified change; not done here.
+  - what: fake-clock seam
+    why: no freezegun or TEST_FAKE_TODAY wiring in config/settings; date-sensitive tests freeze explicit instants via unittest.mock instead
+verification:
+  can:
+    - make docker-gate (CI-parity backend + frontend legs, scripts/docker-gate.sh)
+    - targeted Django tests (python manage.py test apps.<app>)
+    - Playwright against the static frontend export
+  cannot:
+    - per-tenant OpenClaw container behaviour before deploy — there is no staging; verify from production logs/probes after merge
+    - iOS client flows — those live in the nbhd-ios repo
+isolation:
+  test_db_var: DJANGO_TEST_DB_NAME
+parity:
+  workflows: .github/workflows/
+  compose: docker-compose.yml
+  docker_gate: scripts/docker-gate.sh
+  # Known gap (Law 3, honest red): scripts/docker-gate.sh re-implements integrate-gate's command set
+  # (ruff check :120, ruff format --check :123, makemigrations --check :153, manage.py test apps/ :156,
+  # npm ci/lint/build :216-222) instead of invoking `make integrate-gate`, so the two lists can silently
+  # diverge. ci-parity.sh reports this until the gate script calls the Makefile target.
