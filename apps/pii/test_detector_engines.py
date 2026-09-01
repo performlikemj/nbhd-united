@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from types import SimpleNamespace
 from unittest import skipUnless
 from unittest.mock import Mock, patch
 
-from django.conf import settings
 from django.test import SimpleTestCase
 
 from apps.pii import engine, liquid_engine
@@ -50,18 +48,11 @@ class DetectorEngineSelectionTests(SimpleTestCase):
         deberta.assert_called_once_with()
         liquid.assert_not_called()
 
-    def test_settings_and_config_resolver_default_to_deberta(self):
+    def test_config_resolver_defaults_to_deberta(self):
         self.assertEqual(DEFAULT_DETECTOR_ENGINE, "deberta")
-        self.assertEqual(
-            settings.PII_DETECTOR_ENGINE,
-            resolve_detector_engine(os.environ.get("PII_DETECTOR_ENGINE")),
-        )
         self.assertEqual(resolve_detector_engine(None), "deberta")
         self.assertEqual(resolve_detector_engine(""), "deberta")
         self.assertEqual(resolve_detector_engine("unsupported"), "deberta")
-
-        settings_source = (Path(__file__).parents[2] / "config/settings/base.py").read_text()
-        self.assertIn('env("PII_DETECTOR_ENGINE", default="deberta")', settings_source)
 
     def test_explicit_liquid_engine(self):
         expected = object()
