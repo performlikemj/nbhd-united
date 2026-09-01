@@ -2453,14 +2453,29 @@ def _is_validated_presidio_span(result: DetectedEntity) -> bool:
     return result.source == "presidio" and result.entity_type in _PRESIDIO_STRUCTURED_TYPES
 
 
+def _apply_structured_precedence(structured: DetectedEntity, other: DetectedEntity) -> DetectedEntity:
+    """Keep structured provenance, unioning a same-type neural span's extent."""
+    if other.source == "neural" and other.entity_type == structured.entity_type:
+        return DetectedEntity(
+            entity_type=structured.entity_type,
+            start=min(structured.start, other.start),
+            end=max(structured.end, other.end),
+            score=structured.score,
+            source=structured.source,
+        )
+    return structured
+
+
 def _deduplicate_overlapping(results: list) -> list:
     """Remove overlapping entity spans, keeping the best match.
 
     A validated structured Presidio result always beats an overlapping neural
     result, so score-less Liquid spans cannot outrank an email, phone, card, or
-    IBAN merely because the adapter emits ``score=1.0``. For spans from the same
-    source class, keep the higher confidence score; on ties, prefer the more
-    specific (shorter) span.
+    IBAN merely because the adapter emits ``score=1.0``. When both spans have the
+    same entity type, keep the structured provenance but union their boundaries
+    so precedence cannot expose a neural-only prefix or suffix. For spans from
+    the same source class, keep the higher confidence score; on ties, prefer the
+    more specific (shorter) span.
     """
     if not results:
         return results
@@ -2481,7 +2496,9 @@ def _deduplicate_overlapping(results: list) -> list:
             result_is_structured = _is_validated_presidio_span(result)
             if prev_is_structured != result_is_structured:
                 if result_is_structured:
-                    deduplicated[-1] = result
+                    deduplicated[-1] = _apply_structured_precedence(result, prev)
+                else:
+                    deduplicated[-1] = _apply_structured_precedence(prev, result)
                 continue
             # Keep the higher-scoring one; on tie, prefer shorter (more specific)
             if result.score > prev.score or (

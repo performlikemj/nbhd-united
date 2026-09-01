@@ -19,7 +19,13 @@ from apps.pii.config import (
     TIER_POLICIES,
     resolve_detector_engine,
 )
-from apps.pii.redactor import _detect_pii, _filter_results, redact_text
+from apps.pii.redactor import (
+    DetectedEntity,
+    _deduplicate_overlapping,
+    _detect_pii,
+    _filter_results,
+    redact_text,
+)
 
 
 class DetectorEngineSelectionTests(SimpleTestCase):
@@ -176,6 +182,45 @@ class EngineIndependentPresidioTests(SimpleTestCase):
         empty_neural_pipeline.assert_called_once_with(text)
         self.assertNotIn("taro@example.jp", result)
         self.assertEqual(result, "明日は田中さんと[EMAIL_ADDRESS_1]に連絡")
+
+    def test_narrower_presidio_phone_unions_same_type_neural_boundaries(self):
+        results = _deduplicate_overlapping(
+            [
+                DetectedEntity("PHONE_NUMBER", 0, 16, 1.0),
+                DetectedEntity("PHONE_NUMBER", 4, 16, 0.85, source="presidio"),
+            ]
+        )
+
+        self.assertEqual(
+            results,
+            [DetectedEntity("PHONE_NUMBER", 0, 16, 0.85, source="presidio")],
+        )
+
+    def test_narrower_presidio_email_unions_same_type_neural_boundaries(self):
+        results = _deduplicate_overlapping(
+            [
+                DetectedEntity("EMAIL_ADDRESS", 0, 21, 1.0),
+                DetectedEntity("EMAIL_ADDRESS", 6, 21, 0.6, source="presidio"),
+            ]
+        )
+
+        self.assertEqual(
+            results,
+            [DetectedEntity("EMAIL_ADDRESS", 0, 21, 0.6, source="presidio")],
+        )
+
+    def test_different_type_presidio_email_keeps_its_own_boundaries(self):
+        results = _deduplicate_overlapping(
+            [
+                DetectedEntity("PERSON", 0, 25, 1.0),
+                DetectedEntity("EMAIL_ADDRESS", 6, 21, 0.6, source="presidio"),
+            ]
+        )
+
+        self.assertEqual(
+            results,
+            [DetectedEntity("EMAIL_ADDRESS", 6, 21, 0.6, source="presidio")],
+        )
 
     def _assert_structured_presidio_beats_liquid_person(self, *, text, entity_type, span):
         start = text.index(span)
