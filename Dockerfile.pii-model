@@ -3,10 +3,10 @@
 # transient 429s that otherwise kill the build + deploy with it).
 #
 # The Django Dockerfile consumes this via `COPY --from=<registry>/pii-model:<tag>`.
-# The default output is DeBERTa-only. The dormant Liquid bundle remains
-# reproducible via `--build-arg INCLUDE_LIQUID=true`; mint it under a NEW tag and
-# switch the runtime engine in the same coordinated rollout. Never reuse a tag
-# across those two shapes.
+# `INCLUDE_LIQUID=true` produces the dual-model serving artifact. Its immutable
+# tag names the shape plus the first 16 hex characters of both pinned revisions;
+# never reuse a tag across recipe shapes or revision changes. The default remains
+# false so an unqualified local build cannot silently change artifact shape.
 #
 # Models:
 # - lakshyakh93/deberta_finetuned_pii @ a038061af92047b0afbbd5ca07d7aa0521789379

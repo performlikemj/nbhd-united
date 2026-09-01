@@ -50,7 +50,6 @@ env:
   ACR_NAME: ${{ vars.ACR_NAME }}
   ACA_APP: ${{ vars.ACA_APP }}
   SWA_NAME: nbhd-united-frontend
-  PII_DETECTOR_ENGINE: deberta
 
 # Serialize the pipeline so concurrent merges can never race the production
 # deploy. The app runs in single-revision mode (Telegram poller 409 avoidance),
@@ -427,6 +426,8 @@ jobs:
       SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
       SENTRY_ORG: by-way-of-mj
       SENTRY_PROJECT: python-django
+      # Deploy-only pins belong here, not workflow-global env (which also affects tests).
+      PII_DETECTOR_ENGINE: deberta
       PII_DETECTOR_TRANSPORT: shared
       PII_PROVISIONAL_TENANT_IDS: ${{ vars.PII_PROVISIONAL_TENANT_IDS }}
     steps:
@@ -466,27 +467,26 @@ jobs:
         if: steps.freshness.outputs.superseded != 'true'
         run: az acr login --name ${{ env.ACR_NAME }}
 
-      # This content tag names the pinned DeBERTa revision and the default
-      # DeBERTa-only recipe shape. The old v2 alias was briefly overwritten by
-      # the dual-model lane, so it is not a safe rollback target. Bump this tag
-      # and the COPY line in Dockerfile together when the pinned content changes.
-      - name: Ensure pinned DeBERTa-only PII model image
+      # Deterministic immutable tag: bundle shape, then the first 16 hex chars of
+      # the pinned DeBERTa and Liquid revisions in artifact order. Bump this tag
+      # and the COPY line in Dockerfile together when either content pin changes.
+      - name: Ensure pinned dual-model PII image
         if: steps.freshness.outputs.superseded != 'true'
         run: |
           # Keep this consumer tag matched to the Django Dockerfile (two-place rule).
-          PII_MODEL_TAG=deberta-only-a038061af92047b0
+          PII_MODEL_TAG=deberta-liquid-a038061af92047b0-b8c9cf3d2d6ae525
           if ! az acr repository show \
               --name ${{ env.ACR_NAME }} \
               --image pii-model:${PII_MODEL_TAG} >/dev/null 2>&1; then
-            echo "pii-model:${PII_MODEL_TAG} missing — building the pinned DeBERTa-only artifact"
+            echo "pii-model:${PII_MODEL_TAG} missing — building the pinned dual-model artifact"
             docker build --platform linux/amd64 \
-              --build-arg INCLUDE_LIQUID=false \
+              --build-arg INCLUDE_LIQUID=true \
               -f Dockerfile.pii-model \
               -t ${{ env.ACR_NAME }}.azurecr.io/pii-model:${PII_MODEL_TAG} \
               .
             docker push ${{ env.ACR_NAME }}.azurecr.io/pii-model:${PII_MODEL_TAG}
           fi
-          echo "Pinned DeBERTa-only pii-model:${PII_MODEL_TAG} is available in ACR."
+          echo "Pinned dual-model pii-model:${PII_MODEL_TAG} is available in ACR."
 
       - name: Build and push Django image
         if: steps.freshness.outputs.superseded != 'true'
@@ -502,11 +502,11 @@ jobs:
         if: steps.freshness.outputs.superseded != 'true'
         run: |
           # Guards three regressions that have shipped before: (1) torch
-          # reinstalled as the CUDA wheel; (2) a weightless model layer; (3) the
-          # shelved Liquid bundle leaking back into the serving Django image.
+          # reinstalled as the CUDA wheel; (2) a weightless DeBERTa layer; (3) a
+          # missing or weightless Liquid bundle in the serving Django image.
           docker run --rm --entrypoint python \
             ${{ env.ACR_NAME }}.azurecr.io/django:${{ github.sha }} \
-            -c "import os, torch; assert '+cpu' in torch.__version__, f'torch is not the CPU build: {torch.__version__}'; from transformers import AutoModelForTokenClassification; files = os.listdir('/app/pii-model'); assert any(f.endswith(('.bin', '.safetensors')) for f in files), f'no model weights in /app/pii-model: {files}'; assert not os.path.exists('/app/pii-model/liquid'), 'shelved Liquid bundle present in serving image'; print('PII smoke OK:', torch.__version__, '| weights:', [f for f in files if f.endswith(('.bin', '.safetensors'))])"
+            -c "import os, torch; assert '+cpu' in torch.__version__, f'torch is not the CPU build: {torch.__version__}'; from transformers import AutoModelForTokenClassification; files = os.listdir('/app/pii-model'); assert any(f.endswith(('.bin', '.safetensors')) for f in files), f'no DeBERTa weights in /app/pii-model: {files}'; liquid_files = os.listdir('/app/pii-model/liquid'); assert any(f.endswith(('.bin', '.safetensors')) for f in liquid_files), f'no Liquid weights in /app/pii-model/liquid: {liquid_files}'; print('PII smoke OK:', torch.__version__, '| DeBERTa and Liquid weights present')"
 
           # Golden-set regression guard: run the REAL detect+filter chain over
           # apps/pii/golden_set.json against the model baked into the image.

@@ -125,33 +125,36 @@ class NeuralUnavailableOutcomeTest(TestCase):
     def test_checked_api_preserves_presidio_text_but_is_unconfirmed_for_both_transports(self):
         text = "Email private@example.com today"
         for transport in ("local", "shared"):
-            with self.subTest(transport=transport), tempfile.TemporaryDirectory() as directory:
-                self.tenant.pii_entity_map = {}
-                self.tenant.pii_type_counters = {}
-                self.tenant.save(update_fields=["pii_entity_map", "pii_type_counters"])
-                environment = {
-                    "PII_DETECTOR_TRANSPORT": transport,
-                    "PII_DETECTOR_ENGINE": "deberta",
-                    "PII_SHARED_SOCKET": str(Path(directory) / "missing.sock"),
-                }
-                with patch.dict(os.environ, environment):
-                    if transport == "local":
-                        model = patch(
-                            "apps.pii.engine.get_deberta_pii_pipeline",
-                            side_effect=RuntimeError("synthetic unavailable"),
-                        )
-                    else:
-                        model = patch("apps.pii.engine.get_deberta_pii_pipeline")
-                    with model as local_loader:
-                        outcome = redact_user_message_checked(text, self.tenant)
-                        legacy_text = redact_user_message(text, self.tenant)
+            for engine in ("deberta", "liquid"):
+                with self.subTest(transport=transport, engine=engine), tempfile.TemporaryDirectory() as directory:
+                    self.tenant.pii_entity_map = {}
+                    self.tenant.pii_type_counters = {}
+                    self.tenant.save(update_fields=["pii_entity_map", "pii_type_counters"])
+                    environment = {
+                        "PII_DETECTOR_TRANSPORT": transport,
+                        "PII_DETECTOR_ENGINE": engine,
+                        "PII_SHARED_SOCKET": str(Path(directory) / "missing.sock"),
+                    }
+                    loader_path = (
+                        "apps.pii.liquid_engine.get_liquid_pii_pipeline"
+                        if engine == "liquid"
+                        else "apps.pii.engine.get_deberta_pii_pipeline"
+                    )
+                    with patch.dict(os.environ, environment):
+                        if transport == "local":
+                            model = patch(loader_path, side_effect=RuntimeError("synthetic unavailable"))
+                        else:
+                            model = patch(loader_path)
+                        with model as local_loader:
+                            outcome = redact_user_message_checked(text, self.tenant)
+                            legacy_text = redact_user_message(text, self.tenant)
 
-                self.assertEqual(outcome.text, "Email [EMAIL_ADDRESS_1] today")
-                self.assertEqual(legacy_text, outcome.text)
-                self.assertFalse(outcome.confirmed)
-                self.assertEqual(outcome.reason, "neural-unavailable")
-                if transport == "shared":
-                    local_loader.assert_not_called()
+                    self.assertEqual(outcome.text, "Email [EMAIL_ADDRESS_1] today")
+                    self.assertEqual(legacy_text, outcome.text)
+                    self.assertFalse(outcome.confirmed)
+                    self.assertEqual(outcome.reason, "neural-unavailable")
+                    if transport == "shared":
+                        local_loader.assert_not_called()
 
     def test_successful_neural_call_keeps_confirmed_receipt(self):
         with (
