@@ -107,6 +107,16 @@ def _installation_id(value) -> str:
     return value
 
 
+def _locked_tenant(tenant) -> Tenant:
+    """Row-lock the tenant for this transaction.
+
+    NO KEY UPDATE: excludes other writers but never blocks the deferred
+    FOR KEY SHARE that FK inserts take at COMMIT — that block was one half
+    of the calendars/sync-open deadlock (2026-08-25 … 09-01).
+    """
+    return Tenant.objects.select_for_update(no_key=True).get(pk=tenant.pk)
+
+
 def _locked_active_gateway(tenant) -> DatebookGateway:
     gateway = (
         DatebookGateway.objects.select_for_update().filter(tenant=tenant, status=DatebookGateway.Status.ACTIVE).first()
@@ -248,7 +258,7 @@ def register_gateway(
     now = timezone.now()
 
     with suppress_refresh(), transaction.atomic():
-        locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
+        locked_tenant = _locked_tenant(tenant)
         if locked_tenant.status == Tenant.Status.SUSPENDED:
             raise ProtocolError("suspended", 403)
         if not locked_tenant.datebook_enabled:
@@ -434,7 +444,7 @@ def replace_calendar_contexts(
     normalized = _calendar_context_set(calendars)
 
     with suppress_refresh(), transaction.atomic():
-        locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
+        locked_tenant = _locked_tenant(tenant)
         gateway = _locked_active_gateway(locked_tenant)
         _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
         _assert_calendar_context_consents(locked_tenant, normalized)
@@ -503,7 +513,7 @@ def get_calendar_contexts(tenant, *, installation_id, gateway_epoch) -> list[Cal
     installation_id = _installation_id(installation_id)
     gateway_epoch = _positive_epoch(gateway_epoch)
     with transaction.atomic():
-        locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
+        locked_tenant = _locked_tenant(tenant)
         gateway = _locked_active_gateway(locked_tenant)
         _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
         return list(
@@ -521,7 +531,7 @@ def disable_datebook(tenant, *, purge: bool) -> None:
         raise ValueError("purge must be a boolean")
     now = timezone.now()
     with transaction.atomic():
-        locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
+        locked_tenant = _locked_tenant(tenant)
         locked_tenant.datebook_enabled = False
         locked_tenant.save(update_fields=["datebook_enabled", "updated_at"])
         locked_tenant.bump_pending_config()
@@ -590,7 +600,8 @@ def open_sync_run(
     now = timezone.now().astimezone(UTC).replace(microsecond=0)
 
     with transaction.atomic():
-        gateway = _locked_active_gateway(tenant)
+        locked_tenant = _locked_tenant(tenant)
+        gateway = _locked_active_gateway(locked_tenant)
         _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
         existing = SyncRun.objects.filter(tenant=tenant, client_run_id=client_run_id).first()
         if existing is not None:
@@ -804,7 +815,7 @@ def stage_sync_page(
     event_clean, event_errors = _clean_page_items(events, clean_event_item)
     reminder_clean, reminder_errors = _clean_page_items(reminders, clean_reminder_item)
     with suppress_refresh(), transaction.atomic():
-        locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
+        locked_tenant = _locked_tenant(tenant)
         gateway = _locked_active_gateway(locked_tenant)
         _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
         try:
@@ -1086,7 +1097,7 @@ def commit_sync_run(
     # _CommitStopped is suppressed inside atomic so deliberate abort/cleanup
     # commits before the typed protocol error is raised outside the block.
     with suppress_refresh(), transaction.atomic(), suppress(_CommitStopped):
-        locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
+        locked_tenant = _locked_tenant(tenant)
         gateway = _locked_active_gateway(locked_tenant)
         _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
         try:
@@ -1577,7 +1588,7 @@ def create_device_command(
     day_end = datetime.combine(local_day + timedelta(days=1), time.min, tzinfo=tz).astimezone(UTC)
 
     with transaction.atomic():
-        locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
+        locked_tenant = _locked_tenant(tenant)
         if not datebook_delivery_ready(locked_tenant):
             raise ProtocolError("datebook_disabled", 409)
         existing = DeviceCommand.objects.filter(tenant=locked_tenant, request_id=request_id).first()
@@ -1717,7 +1728,8 @@ def claim_device_command(tenant, *, installation_id, gateway_epoch) -> DeviceCom
     now = timezone.now()
     token = uuid.uuid4()
     with transaction.atomic():
-        gateway = _locked_active_gateway(tenant)
+        locked_tenant = _locked_tenant(tenant)
+        gateway = _locked_active_gateway(locked_tenant)
         _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
         candidate_id = (
             DeviceCommand.objects.filter(
@@ -1768,7 +1780,8 @@ def start_device_command(
     deferred_error = None
     result = None
     with transaction.atomic():
-        gateway = _locked_active_gateway(tenant)
+        locked_tenant = _locked_tenant(tenant)
+        gateway = _locked_active_gateway(locked_tenant)
         _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
         try:
             command = DeviceCommand.objects.select_for_update().get(id=command_id, tenant=tenant)
@@ -1908,7 +1921,7 @@ def finish_device_command(
     )
     now = timezone.now()
     with transaction.atomic():
-        locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
+        locked_tenant = _locked_tenant(tenant)
         try:
             command = DeviceCommand.objects.select_for_update().get(id=command_id, tenant=locked_tenant)
         except (DeviceCommand.DoesNotExist, ValueError, TypeError) as exc:
