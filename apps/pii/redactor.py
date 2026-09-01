@@ -2214,6 +2214,7 @@ def _merge_adjacent_spans(results: list[DetectedEntity], text: str = "") -> list
                 start=prev.start,
                 end=current.end,
                 score=min(prev.score, current.score),
+                # This merge precedes Presidio append, so sources are homogeneous; reordering it would mislabel provenance.
                 source=prev.source,
             )
         else:
