@@ -427,8 +427,9 @@ jobs:
       SENTRY_ORG: by-way-of-mj
       SENTRY_PROJECT: python-django
       # Deploy-only pins belong here, not workflow-global env (which also affects tests).
-      PII_DETECTOR_ENGINE: deberta
+      PII_DETECTOR_ENGINE: liquid
       PII_DETECTOR_TRANSPORT: shared
+      PII_GOLDEN_EXPECTED_MISSES: fuel-catalog-control-002,fuel-catalog-control-004,control-018
       PII_PROVISIONAL_TENANT_IDS: ${{ vars.PII_PROVISIONAL_TENANT_IDS }}
     steps:
       - uses: actions/checkout@v4
@@ -508,16 +509,28 @@ jobs:
             ${{ env.ACR_NAME }}.azurecr.io/django:${{ github.sha }} \
             -c "import os, torch; assert '+cpu' in torch.__version__, f'torch is not the CPU build: {torch.__version__}'; from transformers import AutoModelForTokenClassification; files = os.listdir('/app/pii-model'); assert any(f.endswith(('.bin', '.safetensors')) for f in files), f'no DeBERTa weights in /app/pii-model: {files}'; liquid_files = os.listdir('/app/pii-model/liquid'); assert any(f.endswith(('.bin', '.safetensors')) for f in liquid_files), f'no Liquid weights in /app/pii-model/liquid: {liquid_files}'; print('PII smoke OK:', torch.__version__, '| DeBERTa and Liquid weights present')"
 
-          # Golden-set regression guard: run the REAL detect+filter chain over
-          # apps/pii/golden_set.json against the model baked into the image.
-          # Every control span must redact and every clean phrase must stay
-          # untouched — catches a detection/guard regression before deploy.
+          # Golden-set regression guards: run the REAL detect+filter chain over
+          # apps/pii/golden_set.json against both models baked into the image.
+          # DeBERTa must remain a clean rollback target; Liquid must match its
+          # reviewed miss set exactly, with improvements and regressions loud.
           docker run --rm --entrypoint python \
             -e DJANGO_SETTINGS_MODULE=config.settings.development \
             -e SECRET_KEY=ci-golden-check \
             -e DEBUG=False \
             -e ALLOWED_HOSTS='*' \
             -e DATABASE_URL=postgres://u:p@localhost:5432/db \
+            -e PII_DETECTOR_ENGINE=deberta \
+            ${{ env.ACR_NAME }}.azurecr.io/django:${{ github.sha }} \
+            -m apps.pii.golden_check
+
+          docker run --rm --entrypoint python \
+            -e DJANGO_SETTINGS_MODULE=config.settings.development \
+            -e SECRET_KEY=ci-golden-check \
+            -e DEBUG=False \
+            -e ALLOWED_HOSTS='*' \
+            -e DATABASE_URL=postgres://u:p@localhost:5432/db \
+            -e PII_DETECTOR_ENGINE=liquid \
+            -e PII_GOLDEN_EXPECTED_MISSES=${{ env.PII_GOLDEN_EXPECTED_MISSES }} \
             ${{ env.ACR_NAME }}.azurecr.io/django:${{ github.sha }} \
             -m apps.pii.golden_check
 
