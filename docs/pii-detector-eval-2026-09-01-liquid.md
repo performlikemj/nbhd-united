@@ -32,22 +32,26 @@ re-run through the real Liquid pipeline, `_detect_pii`, and `_filter_results`.
 Precision counts every unmatched final span as a false positive; recall uses a
 type-aware overlap with the one labeled span in each case.
 
-| Slice | 2026-08-15 raw Liquid | 2026-09-01 Liquid + Presidio + L0 |
-|---|---:|---:|
-| EN precision | not measured | 50 TP / 2 FP = **96.2%** |
-| EN recall | 50 / 50 = 100.0% | 50 / 50 = **100.0%** |
-| JA precision | not measured | 39 TP / 1 FP = **97.5%** |
-| JA recall | 30 / 50 = 60.0% | 39 / 50 = **78.0%** |
-| Overall precision | not measured | 89 TP / 3 FP = **96.7%** |
-| Overall recall | 80 / 100 = 80.0% | 89 / 100 = **89.0%** |
-| Email recall | 11 / 20 = 55.0% | 20 / 20 = **100.0%** |
-| Phone recall | 20 / 20 = 100.0% | 20 / 20 = **100.0%** |
+| Slice | 2026-08-15 raw Liquid | 2026-09-01 Liquid + Presidio + L0 | 2026-09-01 DeBERTa + Presidio + L0 |
+|---|---:|---:|---:|
+| EN precision | not measured | 50 TP / 2 FP = **96.2%** | 50 TP / 13 FP = **79.4%** |
+| EN recall | 50 / 50 = 100.0% | 50 / 50 = **100.0%** | 50 / 50 = **100.0%** |
+| JA precision | not measured | 39 TP / 1 FP = **97.5%** | 21 TP / 0 FP = **100.0%** |
+| JA recall | 30 / 50 = 60.0% | 39 / 50 = **78.0%** | 21 / 50 = **42.0%** |
+| Overall precision | not measured | 89 TP / 3 FP = **96.7%** | 71 TP / 13 FP = **84.5%** |
+| Overall recall | 80 / 100 = 80.0% | 89 / 100 = **89.0%** | 71 / 100 = **71.0%** |
+| Email recall | 11 / 20 = 55.0% | 20 / 20 = **100.0%** | 20 / 20 = **100.0%** |
+| Phone recall | 20 / 20 = 100.0% | 20 / 20 = **100.0%** | 20 / 20 = **100.0%** |
 
 All 20 matched email spans and all 20 matched phone spans had
 `source=presidio` after overlap deduplication. The remaining 11 misses are the
 known raw-model gaps: one Japanese name and ten Japanese dates of birth. The
 nine-point JA improvement is the Presidio email backstop recovering Liquid's
 no-space Japanese email misses.
+
+At the flip, users gain substantially higher Japanese and overall recall with
+fewer false positives on this suite, but lose the three DeBERTa detections
+listed below until Liquid model quality closes those gaps.
 
 ## D7 parity and golden behavior
 
@@ -56,11 +60,13 @@ Local and shared Liquid produced identical raw spans and identical
 passed for DeBERTa. Client/server engine mismatch validation remained enabled.
 
 DeBERTa remained 54/54 on the golden set. Liquid was 51/54; its three misses
-were already model-quality differences, not transport differences:
+are **recall regressions versus today's DeBERTa** and each leaves PII in
+cleartext for the downstream model. They are model-quality regressions, not
+transport regressions:
 
-- `Copenhagen` in “Flight to Copenhagen Airport” (`LOCATION`)
-- `Alice` in “Run with Alice” (`PERSON`)
-- `4821` in “My locker PIN is 4821” (`PASSWORD`)
+- the city `Copenhagen` in “Flight to Copenhagen Airport” (`LOCATION`)
+- the first name `Alice` in “Run with Alice” (`PERSON`)
+- the PIN `4821` in “My locker PIN is 4821” (`PASSWORD`)
 
 ## D7 latency
 
@@ -141,7 +147,8 @@ cases. No score was rounded or normalized to conceal that distinction.
 - PASS: validated structured precedence restores email and phone recall to 100%.
 - PASS: Liquid soak growth is below 5%.
 - PASS: Liquid host versus `linux/amd64` manifest is byte-identical.
-- EXPECTED DIFFERENCE: Liquid golden result is 51/54 versus DeBERTa 54/54.
+- RECALL REGRESSION: Liquid golden result is 51/54 versus DeBERTa 54/54;
+  the three misses are cleartext leaks to the model.
 - DEFERRED: Azure sidecar PSS, 4 GiB cgroup headroom, and revision pull time are
   flip-PR rollout measurements; they cannot be established from this PR's
   macOS host without touching production.
