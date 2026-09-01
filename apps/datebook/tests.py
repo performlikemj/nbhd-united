@@ -1402,6 +1402,8 @@ class DatebookConcurrencyTests(TransactionTestCase):
         a_holds_tenant = threading.Event()
         release_a = threading.Event()
         b_done = threading.Event()
+        b_pid: list[int] = []
+        b_ready = threading.Event()
         errors = []
         original_gateway_lock = services._locked_active_gateway
 
@@ -1410,7 +1412,8 @@ class DatebookConcurrencyTests(TransactionTestCase):
             # exact window production hits while PUT calendars authors PII.
             if threading.current_thread().name == "put-calendars":
                 a_holds_tenant.set()
-                assert release_a.wait(timeout=15)
+                if not release_a.wait(timeout=15):
+                    raise RuntimeError("release_a was never set — the main thread never observed the wait")
             return original_gateway_lock(tenant)
 
         def put_calendars():
@@ -1440,6 +1443,10 @@ class DatebookConcurrencyTests(TransactionTestCase):
         def sync_open():
             close_old_connections()
             try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    b_pid.append(cursor.fetchone()[0])
+                b_ready.set()
                 services.open_sync_run(
                     Tenant.objects.get(id=self.tenant.id),
                     installation_id="install-a",
@@ -1454,27 +1461,33 @@ class DatebookConcurrencyTests(TransactionTestCase):
                 b_done.set()
                 close_old_connections()
 
-        def another_backend_waits_on_a_lock() -> bool:
+        def sync_open_is_lock_blocked() -> bool:
+            if not b_pid:
+                return False
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT count(*) FROM pg_stat_activity "
-                    "WHERE datname = current_database() AND pid <> pg_backend_pid() "
-                    "AND wait_event_type = 'Lock'"
+                    "SELECT count(*) FROM pg_stat_activity WHERE pid = %s AND wait_event_type = 'Lock'",
+                    [b_pid[0]],
                 )
                 return cursor.fetchone()[0] > 0
 
         with patch.object(services, "_locked_active_gateway", gated_gateway_lock):
             thread_a = threading.Thread(target=put_calendars, name="put-calendars")
             thread_b = threading.Thread(target=sync_open, name="sync-open")
-            thread_a.start()
-            self.assertTrue(a_holds_tenant.wait(timeout=15))
-            thread_b.start()
-            deadline = monotonic() + 10
-            while not b_done.is_set() and not another_backend_waits_on_a_lock() and monotonic() < deadline:
-                sleep(0.05)
-            release_a.set()
-            thread_a.join(timeout=30)
-            thread_b.join(timeout=30)
+            try:
+                thread_a.start()
+                self.assertTrue(a_holds_tenant.wait(timeout=15))
+                thread_b.start()
+                self.assertTrue(b_ready.wait(timeout=15))
+                deadline = monotonic() + 10
+                while not b_done.is_set() and not sync_open_is_lock_blocked() and monotonic() < deadline:
+                    sleep(0.05)
+            finally:
+                release_a.set()
+                thread_a.join(timeout=30)
+                thread_b.join(timeout=30)
+        self.assertFalse(thread_a.is_alive(), "put-calendars thread did not terminate")
+        self.assertFalse(thread_b.is_alive(), "sync-open thread did not terminate")
         self.assertEqual(errors, [])
         self.assertEqual(SyncRun.objects.filter(tenant=self.tenant).count(), 1)
         self.assertEqual(CalendarContext.objects.filter(tenant=self.tenant).count(), 1)

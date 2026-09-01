@@ -595,14 +595,17 @@ def open_sync_run(
         raise ProtocolError("invalid_client_run_id")
     client_run_id = client_run_id.strip()
 
-    event_scope = _scope_declaration(events, consented=tenant.datebook_events_consent_at is not None)
-    reminder_scope = _scope_declaration(reminders, consented=tenant.datebook_reminders_consent_at is not None)
-    now = timezone.now().astimezone(UTC).replace(microsecond=0)
-
     with transaction.atomic():
         locked_tenant = _locked_tenant(tenant)
         gateway = _locked_active_gateway(locked_tenant)
         _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
+        # Consent must be read from the LOCKED row: a revocation can commit while
+        # this transaction waits for the tenant lock.
+        event_scope = _scope_declaration(events, consented=locked_tenant.datebook_events_consent_at is not None)
+        reminder_scope = _scope_declaration(
+            reminders, consented=locked_tenant.datebook_reminders_consent_at is not None
+        )
+        now = timezone.now().astimezone(UTC).replace(microsecond=0)
         existing = SyncRun.objects.filter(tenant=tenant, client_run_id=client_run_id).first()
         if existing is not None:
             if existing.gateway_id != gateway.id or existing.gateway_epoch != gateway.gateway_epoch:
@@ -1725,12 +1728,12 @@ def claim_device_command(tenant, *, installation_id, gateway_epoch) -> DeviceCom
     installation_id = _installation_id(installation_id)
     gateway_epoch = _positive_epoch(gateway_epoch)
     sweep_device_commands(tenant=tenant)
-    now = timezone.now()
     token = uuid.uuid4()
     with transaction.atomic():
         locked_tenant = _locked_tenant(tenant)
         gateway = _locked_active_gateway(locked_tenant)
         _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
+        now = timezone.now()
         candidate_id = (
             DeviceCommand.objects.filter(
                 tenant=tenant,
@@ -1776,13 +1779,13 @@ def start_device_command(
         lease_token = uuid.UUID(str(lease_token))
     except (TypeError, ValueError, AttributeError) as exc:
         raise ProtocolError("invalid_lease_token", 409) from exc
-    now = timezone.now()
     deferred_error = None
     result = None
     with transaction.atomic():
         locked_tenant = _locked_tenant(tenant)
         gateway = _locked_active_gateway(locked_tenant)
         _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
+        now = timezone.now()
         try:
             command = DeviceCommand.objects.select_for_update().get(id=command_id, tenant=tenant)
         except (DeviceCommand.DoesNotExist, ValueError, TypeError) as exc:
