@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from apps.pii.config import TIER_POLICIES
+from apps.pii.config import DEFAULT_DETECTOR_ENGINE, TIER_POLICIES, resolve_detector_engine
 from apps.pii.eval_corpus import CASES
 from apps.pii.shared_client import SharedPiiError, SharedPiiPipeline
 
@@ -62,13 +62,15 @@ class _ServerProcess:
         queue_max: int = 64,
         warm_s: float = 0.0,
         delay_s: float = 0.0,
+        engine: str | None = None,
     ):
+        self.engine = resolve_detector_engine(engine or os.environ.get("PII_DETECTOR_ENGINE", DEFAULT_DETECTOR_ENGINE))
         self.socket_path = str(Path(directory) / "pii.sock")
         self.stats_path = str(Path(directory) / "stats.json")
         env = os.environ.copy()
         env.update(
             {
-                "PII_DETECTOR_ENGINE": "deberta",
+                "PII_DETECTOR_ENGINE": self.engine,
                 "PII_DETECTOR_TRANSPORT": "shared",
                 "PII_SHARED_SOCKET": self.socket_path,
                 "PII_SHARED_QUEUE_MAX": str(queue_max),
@@ -141,7 +143,14 @@ class _ServerProcess:
 
 
 @contextmanager
-def _server(*, fake: bool = True, queue_max: int = 64, warm_s: float = 0.0, delay_s: float = 0.0):
+def _server(
+    *,
+    fake: bool = True,
+    queue_max: int = 64,
+    warm_s: float = 0.0,
+    delay_s: float = 0.0,
+    engine: str | None = None,
+):
     with tempfile.TemporaryDirectory() as directory:
         server = _ServerProcess(
             directory,
@@ -149,6 +158,7 @@ def _server(*, fake: bool = True, queue_max: int = 64, warm_s: float = 0.0, dela
             queue_max=queue_max,
             warm_s=warm_s,
             delay_s=delay_s,
+            engine=engine,
         )
         try:
             yield server
@@ -220,7 +230,7 @@ class SharedDetectorSubprocessIntegrationTests(SimpleTestCase):
             def active():
                 active_result["response"] = _raw_request(
                     server.socket_path,
-                    {"v": 1, "engine": "deberta", "text": "Alice active", "ttl_ms": 2000},
+                    {"v": 1, "engine": server.engine, "text": "Alice active", "ttl_ms": 2000},
                 )
 
             thread = threading.Thread(target=active, daemon=True)
@@ -228,7 +238,7 @@ class SharedDetectorSubprocessIntegrationTests(SimpleTestCase):
             _wait_for_stat(server, "active", 1)
             expired = _raw_request(
                 server.socket_path,
-                {"v": 1, "engine": "deberta", "text": "Alice expired", "ttl_ms": 30},
+                {"v": 1, "engine": server.engine, "text": "Alice expired", "ttl_ms": 30},
             )
             thread.join(2)
             stats = _wait_for_stat(server, "expired", 1)
@@ -244,7 +254,7 @@ class SharedDetectorSubprocessIntegrationTests(SimpleTestCase):
                 target=_raw_request,
                 args=(
                     server.socket_path,
-                    {"v": 1, "engine": "deberta", "text": "Alice active", "ttl_ms": 2000},
+                    {"v": 1, "engine": server.engine, "text": "Alice active", "ttl_ms": 2000},
                 ),
                 daemon=True,
             )
@@ -252,7 +262,7 @@ class SharedDetectorSubprocessIntegrationTests(SimpleTestCase):
             _wait_for_stat(server, "active", 1)
             disconnected = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             disconnected.connect(server.socket_path)
-            disconnected.sendall(_frame({"v": 1, "engine": "deberta", "text": "Alice cancelled", "ttl_ms": 2000}))
+            disconnected.sendall(_frame({"v": 1, "engine": server.engine, "text": "Alice cancelled", "ttl_ms": 2000}))
             disconnected.close()
             active.join(2)
             stats = _wait_for_stat(server, "cancelled", 1)
@@ -299,7 +309,6 @@ class SharedDetectorRealModelTests(SimpleTestCase):
         import torch
 
         from apps.pii import golden_check
-        from apps.pii.engine import get_deberta_pii_pipeline
         from apps.pii.redactor import _detect_pii
 
         torch.set_num_threads(1)
@@ -308,24 +317,34 @@ class SharedDetectorRealModelTests(SimpleTestCase):
         except RuntimeError:
             pass
         torch.use_deterministic_algorithms(True)
-        model_source = os.environ.get(
-            "PII_MODEL_PATH",
-            "lakshyakh93/deberta_finetuned_pii@a038061af92047b0afbbd5ca07d7aa0521789379",
-        )
+        engine = resolve_detector_engine(os.environ.get("PII_DETECTOR_ENGINE", DEFAULT_DETECTOR_ENGINE))
+        if engine == "liquid":
+            from apps.pii.liquid_engine import (
+                LIQUID_MODEL_REPO,
+                LIQUID_MODEL_REVISION,
+                get_liquid_pii_pipeline,
+            )
+
+            local = get_liquid_pii_pipeline()
+            default_model_source = f"{LIQUID_MODEL_REPO}@{LIQUID_MODEL_REVISION}"
+        else:
+            from apps.pii.engine import get_deberta_pii_pipeline
+
+            local = get_deberta_pii_pipeline()
+            default_model_source = "lakshyakh93/deberta_finetuned_pii@a038061af92047b0afbbd5ca07d7aa0521789379"
+        model_source = os.environ.get("PII_MODEL_PATH", default_model_source)
         print(
             f"D7 PLATFORM platform={platform.platform()} machine={platform.machine()} "
             f"cpu_count={os.cpu_count()} python={platform.python_version()} "
-            f"torch={torch.__version__} model={model_source}"
+            f"torch={torch.__version__} engine={engine} model={model_source}"
         )
 
         golden_rows = json.loads(Path(golden_check.GOLDEN_PATH).read_text())
         corpus = [row["text"] for row in golden_rows] + [case.text for case in CASES]
         policy = TIER_POLICIES["starter"]
-        local = get_deberta_pii_pipeline()
-
-        with _server(fake=False) as server:
+        with _server(fake=False, engine=engine) as server:
             server.wait_ready()
-            shared = SharedPiiPipeline(socket_path=server.socket_path, deadline_s=300)
+            shared = SharedPiiPipeline(socket_path=server.socket_path, engine=engine, deadline_s=300)
 
             def canonical(spans):
                 return [
@@ -367,6 +386,7 @@ class SharedDetectorRealModelTests(SimpleTestCase):
                 os.environ,
                 {
                     "PII_DETECTOR_TRANSPORT": "shared",
+                    "PII_DETECTOR_ENGINE": engine,
                     "PII_SHARED_SOCKET": server.socket_path,
                     "PII_SHARED_DEADLINE_S": "300",
                 },
