@@ -209,8 +209,12 @@ class SignupView(APIView):
         email = (request.data.get("email") or "").strip().lower()
         password = request.data.get("password")
         display_name = request.data.get("display_name", "Friend")
+        source = request.data.get("source")
+        if source not in ("web", "ios_handoff"):
+            source = "web"
 
         if not email or not password:
+            logger.info("auth.signup.invalid reason=missing_fields source=%s", source)
             return Response(
                 {"detail": "Email and password are required."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -220,12 +224,14 @@ class SignupView(APIView):
         if required_code:
             invite_code = request.data.get("invite_code", "")
             if invite_code != required_code:
+                logger.info("auth.signup.invalid reason=invite_code source=%s", source)
                 return Response(
                     {"detail": "A valid invite code is required to create an account."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
         if User.objects.filter(email__iexact=email).exists():
+            logger.info("auth.signup.invalid reason=duplicate_email source=%s", source)
             return Response(
                 {"detail": "A user with this email already exists."},
                 status=status.HTTP_409_CONFLICT,
@@ -234,30 +240,39 @@ class SignupView(APIView):
         try:
             validate_password(password)
         except DjangoValidationError as exc:
+            logger.info("auth.signup.invalid reason=weak_password source=%s", source)
             return Response(
                 {"detail": " ".join(exc.messages)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user = User.objects.create_user(
-            username=email,
-            email=email,
-            password=password,
-            display_name=display_name,
-        )
+        try:
+            user = User.objects.create_user(
+                username=email,
+                email=email,
+                password=password,
+                display_name=display_name,
+            )
 
-        # Mint via the serializer's ``get_token`` so the token carries the
-        # ``pw_iat`` claim. ``create_user`` → the overridden ``set_password``
-        # stamps ``password_last_changed_at``, and ``RefreshToken.for_user``
-        # omits ``pw_iat``, so JWTAuthenticationWithRLS would otherwise reject
-        # the brand-new signup token on its very first authenticated request
-        # ("issued before the last password change"). Same fix as
-        # PasswordResetConfirmView and the OAuth exchange.
-        refresh = EmailTokenObtainPairSerializer.get_token(user)
+            # Mint via the serializer's ``get_token`` so the token carries the
+            # ``pw_iat`` claim. ``create_user`` → the overridden ``set_password``
+            # stamps ``password_last_changed_at``, and ``RefreshToken.for_user``
+            # omits ``pw_iat``, so JWTAuthenticationWithRLS would otherwise reject
+            # the brand-new signup token on its very first authenticated request
+            # ("issued before the last password change"). Same fix as
+            # PasswordResetConfirmView and the OAuth exchange.
+            refresh = EmailTokenObtainPairSerializer.get_token(user)
+            access_token = str(refresh.access_token)
+            refresh_token = str(refresh)
+        except Exception:
+            logger.exception("auth.signup.failed reason=unexpected source=%s", source)
+            raise
+
+        logger.info("auth.signup.success user_id=%s source=%s", user.id, source)
         return Response(
             {
-                "access": str(refresh.access_token),
-                "refresh": str(refresh),
+                "access": access_token,
+                "refresh": refresh_token,
             },
             status=status.HTTP_201_CREATED,
         )
