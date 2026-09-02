@@ -71,13 +71,17 @@ class AuthorizeBeginView(APIView):
             or not _B64URL_RE.match(code_challenge)
             or redirect_uri not in dj.AUTH_ALLOWED_REDIRECT_URIS
         ):
+            logger.info(
+                "auth.authorize.invalid reason=invalid_request user_id=%s",
+                request.user.id,
+            )
             return Response(
                 {"error": "invalid_request"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         raw, code_hash = generate_authorization_code()
-        OAuthAuthorizationCode.objects.create(
+        authorization = OAuthAuthorizationCode.objects.create(
             user=request.user,
             code_hash=code_hash,
             code_challenge=code_challenge,
@@ -85,6 +89,12 @@ class AuthorizeBeginView(APIView):
             redirect_uri=redirect_uri,
             client=(request.data.get("client") or "ios"),
             expires_at=timezone.now() + timedelta(seconds=dj.AUTH_EXCHANGE_CODE_TTL_SECONDS),
+        )
+        client = authorization.client if authorization.client in ("ios", "web") else "other"
+        logger.info(
+            "auth.authorize.success user_id=%s client=%s",
+            request.user.id,
+            client,
         )
         return Response({"code": raw}, status=status.HTTP_200_OK)
 
