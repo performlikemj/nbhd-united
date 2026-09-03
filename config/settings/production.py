@@ -119,10 +119,11 @@ DEFAULT_FROM_EMAIL = env(
 # to restore legacy per-run failure and reaper emails without a deploy.
 EVAL_EMAIL_ALERTS_ENABLED = env.bool("EVAL_EMAIL_ALERTS_ENABLED", default=False)
 
-# Steward Phase 1. These names intentionally mirror the Azure Container App
-# env vars verbatim (invariant §10). Empty ingest secret is fail-closed at the
-# endpoint; empty delivery/dead-man values safely disable that optional channel.
+# Steward smoke detector. These names intentionally mirror the Azure Container
+# App env vars verbatim (invariant §10). Empty ingest secret is fail-closed at
+# the endpoints; empty alert-email/dead-man values disable those optional paths.
 STEWARD_INGEST_SECRET = env("STEWARD_INGEST_SECRET", default="")
+# Legacy rollout settings; Steward no longer reads these Telegram values.
 STEWARD_TELEGRAM_BOT_TOKEN = env("STEWARD_TELEGRAM_BOT_TOKEN", default="")
 STEWARD_TELEGRAM_CHAT_ID = env("STEWARD_TELEGRAM_CHAT_ID", default="")
 STEWARD_ALERT_EMAIL = env("STEWARD_ALERT_EMAIL", default="")

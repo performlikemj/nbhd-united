@@ -1,348 +1,121 @@
 from __future__ import annotations
 
-import logging
-import math
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from django.db import transaction
-from django.db.models import Count, Q
 from django.utils import timezone
 
-from apps.evals.models import EvalResult, EvalRun
-from apps.evals.suites.slo_snapshot import SUITE as SLO_SUITE
-from apps.evals.suites.slo_snapshot import _metric_series
 from apps.steward.collectors.evals import collect_eval_evidence
-from apps.steward.collectors.openrouter import NULL_RATE_THRESHOLD_PCT
-from apps.steward.models import (
-    AlertState,
-    CollectorStatus,
-    DigestRecord,
-    EvidenceEvent,
-    EvidenceSource,
-    Expectation,
-    ReleaseTrain,
-    RepoPullRequest,
-    TrackedItem,
-)
-from apps.steward.notify import send_digest
+from apps.steward.facts import compose_steward_facts
+from apps.steward.models import DigestRecord
 from apps.steward.sanitize import safe_text as _safe_text
-from apps.steward.trains import (
-    TERMINAL_PHASES,
-    TRAIN_EXPECTATION_OWNER,
-    next_phase_for,
-    train_subject,
-)
-
-logger = logging.getLogger(__name__)
 
 MAX_DIGEST_CHARS = 3500
 MAX_SECTION_LINES = 10
 MAX_RENDERED_SUBJECT_CHARS = 80
 CLOSING_HINT = "Reply on Telegram or run: python manage.py steward_ack <expectation_id> / steward_decide"
-_SWEEP_LIVENESS_FINGERPRINT = "steward-sweep:liveness"
 
 
-def _age_days(now: datetime, then: datetime) -> int:
-    return max(0, (now - then).days)
-
-
-def _age_label(now: datetime, then: datetime | None) -> str:
-    if then is None:
+def _age_label(age_seconds: int | None) -> str:
+    if age_seconds is None:
         return "unknown"
-    seconds = max(0, int((now - then).total_seconds()))
-    if seconds < 3600:
-        return f"{seconds // 60}m ago"
-    if seconds < 86400:
-        return f"{seconds // 3600}h ago"
-    return f"{seconds // 86400}d ago"
+    age_seconds = max(0, age_seconds)
+    if age_seconds < 3600:
+        return f"{age_seconds // 60}m ago"
+    if age_seconds < 86400:
+        return f"{age_seconds // 3600}h ago"
+    return f"{age_seconds // 86400}d ago"
 
 
-def _next_nag_days(age_days: int) -> int:
-    if age_days < 2:
-        return 2 - age_days
-    if age_days < 5:
-        return 5 - age_days
-    if age_days < 10:
-        return 10 - age_days
-    next_day = 10 + (math.floor((age_days - 10) / 7) + 1) * 7
-    return next_day - age_days
-
-
-def _nag_today(age_days: int) -> bool:
-    return age_days in {2, 5, 10} or (age_days > 10 and (age_days - 10) % 7 == 0)
-
-
-def _needs_you(now: datetime) -> tuple[list[str], int]:
-    items = list(
-        TrackedItem.objects.filter(
-            Q(status=TrackedItem.Status.BLOCKED)
-            | Q(
-                kind=TrackedItem.Kind.BLOCKED_ON_MJ,
-                status=TrackedItem.Status.ACTIVE,
-            )
-        ).order_by("status_changed_at", "id")
-    )
-    reminders: list[str] = []
-    waiting: list[tuple[TrackedItem, int]] = []
-    for item in items:
-        age = _age_days(now, item.status_changed_at)
-        if _nag_today(age):
-            context = _safe_text(item.context, 240)
-            detail = f" — {context}" if context else ""
-            reminders.append(f"- {_safe_text(item.title, 200)} — {age}d waiting{detail}")
+def _needs_you_lines(facts: dict[str, Any]) -> list[str]:
+    lines = []
+    waiting = []
+    for item in facts["needs_you"]:
+        if item["remind_today"]:
+            detail = f" — {item['context']}" if item["context"] else ""
+            lines.append(f"- {item['title']} — {item['waiting_days']}d waiting{detail}")
         else:
-            waiting.append((item, age))
+            waiting.append(item)
     if waiting:
-        oldest_age = max(age for _, age in waiting)
-        reminders.append(
-            f"- {len(waiting)} items waiting (next reminder for oldest in {_next_nag_days(oldest_age)} days)"
+        oldest = max(waiting, key=lambda item: item["waiting_days"])
+        lines.append(
+            f"- {len(waiting)} items waiting (next reminder for oldest in {oldest['next_reminder_days']} days)"
         )
-    return reminders, len(items)
+    return lines
 
 
-def _effective_due(expectation: Expectation) -> datetime | None:
-    if expectation.kind == Expectation.Kind.DEADLINE:
-        return expectation.due_at
-    if expectation.last_satisfied_at is None or not expectation.interval_s:
-        return None
-    return expectation.last_satisfied_at + timedelta(seconds=expectation.interval_s)
-
-
-def _stalled(now: datetime) -> tuple[list[str], int]:
-    expectations = list(Expectation.objects.filter(state=Expectation.State.MISSED).order_by("id"))
-    lines: list[str] = []
-    for expectation in expectations:
-        due = _effective_due(expectation)
-        overdue = _age_label(now, due).removesuffix(" ago")
+def _stalled_lines(facts: dict[str, Any]) -> list[str]:
+    lines = []
+    for item in facts["stalled"]:
+        overdue = _age_label(item["overdue_seconds"]).removesuffix(" ago")
         alerted = ""
-        if expectation.on_miss == Expectation.OnMiss.URGENT and expectation.last_alerted_at is not None:
-            alerted = f"; alerted {_age_label(now, expectation.last_alerted_at)}"
+        if item["already_alerted"]:
+            alerted = f"; alerted {_age_label(item['alert_age_seconds'])}"
         lines.append(
-            f"- {_safe_text(expectation.subject, MAX_RENDERED_SUBJECT_CHARS)} — "
-            f"{overdue} overdue{alerted} — close, re-date, or restore evidence"
-        )
-    return lines, len(expectations)
-
-
-def _trains(now: datetime) -> tuple[list[str], int]:
-    today = now.astimezone(UTC).date()
-    trains = list(
-        ReleaseTrain.objects.filter(
-            Q(phase__in=TERMINAL_PHASES, phase_changed_at__date=today) | ~Q(phase__in=TERMINAL_PHASES)
-        ).order_by("product", "version_string", "id")
-    )
-    lines: list[str] = []
-    for train in trains:
-        age = _age_days(now, train.phase_changed_at)
-        if train.phase in TERMINAL_PHASES:
-            lines.append(f"- {train.product} {train.version_string}: {train.phase} ({age}d)")
-            continue
-        expectation = (
-            Expectation.objects.filter(
-                subject=train_subject(train),
-                owner=TRAIN_EXPECTATION_OWNER,
-                state=Expectation.State.ARMED,
-            )
-            .order_by("-due_at", "-id")
-            .first()
-        )
-        upcoming = next_phase_for(train)
-        next_phase = upcoming if upcoming is not None else "unknown"
-        due = expectation.due_at.strftime("%Y-%m-%d") if expectation and expectation.due_at else "unknown"
-        lines.append(f"- {train.product} {train.version_string}: {train.phase} ({age}d) — next: {next_phase} due {due}")
-    return lines, len(trains)
-
-
-def _latest_unhealthy_suites(now: datetime) -> list[str]:
-    runs = (
-        EvalRun.objects.filter(
-            status__in=[
-                EvalRun.Status.PASS,
-                EvalRun.Status.DEGRADED,
-                EvalRun.Status.FAIL,
-                EvalRun.Status.ERROR,
-            ],
-            finished_at__isnull=False,
-        )
-        .order_by("suite", "-finished_at", "-id")
-        .distinct("suite")
-    )
-    lines: list[str] = []
-    for run in runs:
-        if run.status == EvalRun.Status.FAIL:
-            state = "failing"
-        elif run.status == EvalRun.Status.ERROR:
-            state = "errored"
-        else:
-            continue
-        lines.append(
-            f"- EVAL {_safe_text(run.suite, MAX_RENDERED_SUBJECT_CHARS)}: "
-            f"{state} since {_age_label(now, run.finished_at)} (run {run.id}) "
-            "— open the run, fix, or park"
+            f"- {_safe_text(item['subject'], MAX_RENDERED_SUBJECT_CHARS)} — {overdue} overdue{alerted} — {item['hint']}"
         )
     return lines
 
 
-def _latest_slo_breaches(now: datetime) -> list[str]:
-    latest = (
-        EvalRun.objects.filter(
-            suite=SLO_SUITE,
-            finished_at__isnull=False,
-        )
-        .order_by("-finished_at", "-id")
-        .first()
-    )
-    if latest is None:
-        return []
-    _, _, series = _metric_series(now)
+def _train_lines(facts: dict[str, Any]) -> list[str]:
     lines = []
-    for result in latest.results.filter(
-        kind=EvalResult.Kind.SLO,
-        passed=False,
-        score__isnull=False,
-    ).order_by("case_id"):
-        breach_days = series.get(result.case_id, {}).get("breach_days", 0)
+    for item in facts["trains"]:
+        age_days = item["phase_age_seconds"] // 86400
+        base = f"- {item['product']} {item['version_string']}: {item['phase']} ({age_days}d)"
+        lines.append(f"{base} — {item['hint']}" if item["hint"] else base)
+    return lines
+
+
+def _slo_eval_lines(facts: dict[str, Any]) -> list[str]:
+    lines = []
+    for item in facts["failing_evals"]:
+        state = "failing" if item["status"] == "fail" else "errored"
         lines.append(
-            f"- SLO {_safe_text(result.case_id, MAX_RENDERED_SUBJECT_CHARS)}: "
-            f"{result.score} vs {result.threshold} ({breach_days} breach days) "
-            "— inspect latest slo_snapshot run"
+            f"- EVAL {_safe_text(item['suite'], MAX_RENDERED_SUBJECT_CHARS)}: "
+            f"{state} since {_age_label(item['age_seconds'])} (run {item['run_id']}) "
+            f"— {item['hint']}"
+        )
+    for item in facts["slo_breaches"]:
+        lines.append(
+            f"- SLO {_safe_text(item['case_id'], MAX_RENDERED_SUBJECT_CHARS)}: "
+            f"{item['score']} vs {item['threshold']} ({item['breach_days']} breach days) "
+            f"— {item['hint']}"
         )
     return lines
 
 
-def _trusted_changes_since(since: datetime):
-    return EvidenceEvent.objects.filter(
-        received_at__gt=since,
-    ).exclude(trust=EvidenceEvent.Trust.UNTRUSTED_TEXT)
-
-
-def _slo_and_evals(now: datetime) -> tuple[list[str], int]:
-    lines = [*_latest_unhealthy_suites(now), *_latest_slo_breaches(now)]
-    return lines, len(lines)
-
-
-def _openrouter_health(since: datetime) -> tuple[list[str], int]:
-    lines: list[str] = []
-    events = (
-        _trusted_changes_since(since)
-        .filter(source=EvidenceSource.OPENROUTER_MODEL_HEALTH)
-        .order_by("received_at", "id")
-    )
-    for event in events:
-        payload = event.payload
-        if not isinstance(payload, dict):
-            continue
-        kind = payload.get("kind")
-        scope = payload.get("scope")
-        baseline_days = payload.get("baseline_days")
-        severe = payload.get("severe")
-        if (
-            scope not in {"account", "canary", "provider"}
-            or not isinstance(baseline_days, int)
-            or isinstance(baseline_days, bool)
-            or baseline_days < 3
-            or not isinstance(severe, bool)
-        ):
-            continue
-        if severe and kind == "null_rate":
-            model = payload.get("model")
-            current_pct = payload.get("current_pct")
-            if (
-                not isinstance(model, str)
-                or not model
-                or isinstance(current_pct, bool)
-                or not isinstance(current_pct, (int, float))
-                or not math.isfinite(current_pct)
-            ):
-                continue
-            lines.append(
-                f"- {scope} {_safe_text(model, MAX_RENDERED_SUBJECT_CHARS)}: "
-                f"null finish_reason {current_pct:.2f}% "
-                f"(> {NULL_RATE_THRESHOLD_PCT:.2f}%) "
-                "— switch model/provider route or set a fallback"
-            )
-        elif severe and kind == "tool_calls_share_drop":
-            model = payload.get("model")
-            current_pct = payload.get("current_pct")
-            baseline_pct = payload.get("baseline_pct")
-            drop_pts = payload.get("drop_pts")
-            if (
-                not isinstance(model, str)
-                or not model
-                or any(
-                    isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
-                    for value in (current_pct, baseline_pct, drop_pts)
-                )
-            ):
-                continue
-            lines.append(
-                f"- {scope} {_safe_text(model, MAX_RENDERED_SUBJECT_CHARS)}: "
-                f"tool_calls {current_pct:.2f}% vs {baseline_pct:.2f}% "
-                f"({drop_pts:.2f} pts drop) "
-                "— model stopped using tools; check the model/provider change"
-            )
-    return lines, len(lines)
-
-
-def _repos(now: datetime) -> tuple[list[str], int]:
-    stale_before = now - timedelta(days=7)
-    lines: list[str] = []
-    stale_human_pull_requests = RepoPullRequest.objects.filter(
-        state=RepoPullRequest.State.OPEN,
-        is_dependabot=False,
-        last_activity_at__lt=stale_before,
-    ).order_by("repo", "last_activity_at", "number")
-    for pull_request in stale_human_pull_requests:
-        quiet_days = _age_days(now, pull_request.last_activity_at)
-        lines.append(
-            f"- {pull_request.repo} #{pull_request.number} — "
-            f"{_safe_text(pull_request.title, 60)} — {quiet_days}d quiet "
-            "— review, rebase, or close"
-        )
-    return lines, len(lines)
-
-
-def _integrity(now: datetime) -> tuple[list[str], int]:
-    items = TrackedItem.objects.filter(status__in=[TrackedItem.Status.ACTIVE, TrackedItem.Status.PARKED]).annotate(
-        armed_expectations=Count(
-            "expectations",
-            filter=Q(expectations__state=Expectation.State.ARMED),
-            distinct=True,
-        )
-    )
+def _openrouter_lines(facts: dict[str, Any]) -> list[str]:
     lines = []
-    for item in items.filter(armed_expectations=0).order_by("product", "title", "id"):
-        if item.status == TrackedItem.Status.ACTIVE:
-            issue = "active with zero armed expectations"
+    for item in facts["openrouter_severe"]:
+        prefix = f"- {item['scope']} {_safe_text(item['model'], MAX_RENDERED_SUBJECT_CHARS)}: "
+        if item["kind"] == "null_rate":
+            detail = f"null finish_reason {item['current_pct']:.2f}% (> {item['threshold_pct']:.2f}%)"
         else:
-            issue = "parked with no revisit expectation"
-        lines.append(f"- {_safe_text(item.title, 200)} — {issue}")
-    intervals = {
-        CollectorStatus.Collector.GITHUB: timedelta(minutes=30),
-        CollectorStatus.Collector.ASC: timedelta(hours=1),
-        CollectorStatus.Collector.OPENROUTER: timedelta(days=1),
-    }
-    statuses = {status.collector: status for status in CollectorStatus.objects.filter(collector__in=intervals)}
-    for collector, interval in intervals.items():
-        status = statuses.get(collector)
-        if status is None:
-            lines.append(f"- collector {collector}: never succeeded")
-            continue
-        if status.last_error_class == "not_configured":
-            lines.append(f"- collector {collector}: not_configured")
-            continue
-        if status.last_success_at is None:
-            lines.append(f"- collector {collector}: never succeeded")
-            continue
-        if status.last_success_at <= now - 3 * interval:
-            lines.append(f"- collector {collector}: stale; last success {_age_label(now, status.last_success_at)}")
-            continue
-        if status.consecutive_failures:
-            lines.append(
-                f"- collector {collector}: {status.last_error_class or 'failed'} "
-                f"({status.consecutive_failures} consecutive)"
+            detail = (
+                f"tool_calls {item['current_pct']:.2f}% vs {item['baseline_pct']:.2f}% "
+                f"({item['drop_pts']:.2f} pts drop)"
             )
-    return lines, len(lines)
+        lines.append(f"{prefix}{detail} — {item['hint']}")
+    return lines
+
+
+def _repo_lines(facts: dict[str, Any]) -> list[str]:
+    return [
+        f"- {item['repo']} #{item['number']} — {_safe_text(item['title'], 60)} — "
+        f"{item['quiet_seconds'] // 86400}d quiet — {item['hint']}"
+        for item in facts["stale_prs"]
+    ]
+
+
+def _integrity_lines(facts: dict[str, Any]) -> list[str]:
+    lines = []
+    for item in facts["integrity"]:
+        if item["id"].startswith("collector:"):
+            lines.append(f"- collector {item['collector']}: {item['issue']}")
+        else:
+            lines.append(f"- {item['title']} — {item['issue']}")
+    return lines
 
 
 def _omission_marker(omitted: int) -> str:
@@ -396,83 +169,69 @@ def _render_budgeted_sections(
     for index, (title, lines, count) in enumerate(sections):
         remaining_minimum = sum(len(_minimum_section_block(*section)) for section in sections[index + 1 :])
         section_budget = MAX_DIGEST_CHARS - len(rendered) - remaining_minimum - len(footer_block)
-        rendered += _render_section_block(
-            title,
-            lines,
-            count,
-            budget=section_budget,
-        )
+        rendered += _render_section_block(title, lines, count, budget=section_budget)
     return rendered + footer_block
+
+
+def _latest_watermark(now: datetime) -> datetime:
+    record = (
+        DigestRecord.objects.filter(
+            delivery__in=[
+                DigestRecord.Delivery.DELIVERED,
+                DigestRecord.Delivery.RECORDED,
+            ]
+        )
+        .order_by("-sent_at", "-id")
+        .first()
+    )
+    return record.sent_at if record else now - timedelta(hours=24)
 
 
 def render_steward_daily_digest(
     *,
     now: datetime | None = None,
+    facts: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, int]]:
-    now = now or timezone.now()
-    last_delivered = (
-        DigestRecord.objects.filter(delivery=DigestRecord.Delivery.DELIVERED).order_by("-sent_at", "-id").first()
-    )
-    since = last_delivered.sent_at if last_delivered else now - timedelta(hours=24)
-    slo_evals, slo_evals_count = _slo_and_evals(now)
-    needs_you = _needs_you(now)
-    trains = _trains(now)
-    stalled = _stalled(now)
-    repos = _repos(now)
-    openrouter_health = _openrouter_health(since)
-    integrity = _integrity(now)
+    if facts is None:
+        now = (now or timezone.now()).astimezone(UTC)
+        facts = compose_steward_facts(now, _latest_watermark(now))
 
+    generated_date = facts["generated_at"][:10]
+    stats = dict(facts["stats"])
     sections = [
-        ("NEEDS YOU", *needs_you),
-        ("STALLED", *stalled),
-        ("TRAINS", *trains),
-        ("SLO / EVALS", slo_evals, slo_evals_count),
-        ("OPENROUTER", *openrouter_health),
-        ("REPOS", *repos),
-        ("INTEGRITY", *integrity),
+        ("NEEDS YOU", _needs_you_lines(facts), stats["needs_you"]),
+        ("STALLED", _stalled_lines(facts), stats["stalled"]),
+        ("TRAINS", _train_lines(facts), stats["trains"]),
+        ("SLO / EVALS", _slo_eval_lines(facts), stats["slo_evals"]),
+        ("OPENROUTER", _openrouter_lines(facts), stats["openrouter"]),
+        ("REPOS", _repo_lines(facts), stats["repos"]),
+        ("INTEGRITY", _integrity_lines(facts), stats["integrity"]),
     ]
-    stats = {
-        "needs_you": needs_you[1],
-        "trains": trains[1],
-        "stalled": stalled[1],
-        "slo_evals": slo_evals_count,
-        "openrouter": openrouter_health[1],
-        "repos": repos[1],
-        "integrity": integrity[1],
-    }
-
-    header = "\n".join(["STEWARD DAILY FACTS", now.strftime("%Y-%m-%d UTC")])
+    header = "\n".join(["STEWARD DAILY FACTS", f"{generated_date} UTC"])
     nonempty_sections = [section for section in sections if section[1]]
     if nonempty_sections:
-        rendered = _render_budgeted_sections(
-            header,
-            nonempty_sections,
-            footer=CLOSING_HINT,
-        )
+        rendered = _render_budgeted_sections(header, nonempty_sections, footer=CLOSING_HINT)
     else:
-        armed = Expectation.objects.filter(state=Expectation.State.ARMED).count()
-        sweep_state = AlertState.objects.filter(fingerprint=_SWEEP_LIVENESS_FINGERPRINT).first()
-        sweep_age = _age_label(
-            now,
-            sweep_state.last_sent_at if sweep_state else None,
-        )
+        liveness = facts["liveness"]
+        sweep_age = _age_label(liveness["last_sweep_age_seconds"])
         rendered = "\n".join(
             [
                 header,
                 "",
                 "ALL QUIET",
-                f"All quiet — {armed} expectations armed, last sweep {sweep_age}.",
+                f"All quiet — {liveness['armed_expectations']} expectations armed, last sweep {sweep_age}.",
             ]
         )
     return rendered, stats
 
 
 def run_steward_daily_digest() -> dict[str, object]:
-    """Collect fresh eval facts, render, deliver, and record the daily digest."""
-    rendered_at = timezone.now()
-    period_date = rendered_at.astimezone(UTC).date()
+    """Collect fresh facts, render them, and record the snapshot without delivery."""
+    rendered_at = timezone.now().astimezone(UTC)
+    period_date = rendered_at.date()
     collect_eval_evidence()
-    text, stats = render_steward_daily_digest(now=rendered_at)
+    facts = compose_steward_facts(rendered_at, _latest_watermark(rendered_at))
+    text, stats = render_steward_daily_digest(facts=facts)
 
     with transaction.atomic():
         record, _ = DigestRecord.objects.get_or_create(
@@ -487,7 +246,14 @@ def run_steward_daily_digest() -> dict[str, object]:
 
     with transaction.atomic():
         record = DigestRecord.objects.select_for_update().get(pk=record.pk)
-        if record.delivery == DigestRecord.Delivery.DELIVERED or record.body:
+        if (
+            record.delivery
+            in {
+                DigestRecord.Delivery.DELIVERED,
+                DigestRecord.Delivery.RECORDED,
+            }
+            or record.body
+        ):
             return {
                 "delivery": record.delivery,
                 "digest_id": record.id,
@@ -496,24 +262,14 @@ def run_steward_daily_digest() -> dict[str, object]:
                 "skipped": True,
             }
 
-        try:
-            delivery = send_digest(text)
-        except Exception as exc:
-            logger.error(
-                "Steward digest notifier raised error_class=%s",
-                type(exc).__name__,
-            )
-            delivery = DigestRecord.Delivery.TRANSIENT
-        if delivery not in DigestRecord.Delivery.values:
-            delivery = DigestRecord.Delivery.TRANSIENT
         record.sent_at = timezone.now()
-        record.delivery = delivery
+        record.delivery = DigestRecord.Delivery.RECORDED
         record.body = text
-        record.stats = stats
+        record.stats = {**stats, "facts": facts}
         record.full_clean()
         record.save(update_fields=["sent_at", "delivery", "body", "stats"])
     return {
-        "delivery": delivery,
+        "delivery": DigestRecord.Delivery.RECORDED,
         "digest_id": record.id,
         "chars": len(text),
         "stats": stats,

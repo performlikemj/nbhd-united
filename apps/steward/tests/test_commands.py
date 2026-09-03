@@ -3,10 +3,44 @@ from io import StringIO
 from django.core.management import call_command
 from django.test import TestCase
 
-from apps.steward.models import Decision, EvidenceEvent, Expectation, TrackedItem
+from apps.steward.models import Decision, EvidenceEvent, EvidenceSource, Expectation, TrackedItem
 
 
 class StewardCommandTests(TestCase):
+    def test_expect_heartbeat_is_idempotent_and_preserves_baseline(self):
+        arguments = (
+            "steward_expect_heartbeat",
+            "--subject",
+            "basecamp-pm",
+            "--interval",
+            "1800",
+            "--grace",
+            "900",
+            "--title",
+            "Basecamp PM flow",
+        )
+        call_command(*arguments, stdout=StringIO())
+        expectation = Expectation.objects.get(subject="basecamp-pm")
+        baseline = expectation.last_satisfied_at
+
+        call_command(*arguments, stdout=StringIO())
+
+        self.assertEqual(TrackedItem.objects.count(), 1)
+        self.assertEqual(Expectation.objects.count(), 1)
+        item = TrackedItem.objects.get()
+        expectation.refresh_from_db()
+        self.assertEqual(item.product, TrackedItem.Product.PORTFOLIO)
+        self.assertEqual(item.kind, TrackedItem.Kind.INFRA_WATCH)
+        self.assertEqual(item.title, "Basecamp PM flow")
+        self.assertEqual(item.status, TrackedItem.Status.ACTIVE)
+        self.assertEqual(expectation.kind, Expectation.Kind.HEARTBEAT)
+        self.assertEqual(expectation.interval_s, 1800)
+        self.assertEqual(expectation.grace_s, 900)
+        self.assertEqual(expectation.evidence_source, EvidenceSource.GATEWAY_HEARTBEAT)
+        self.assertEqual(expectation.on_miss, Expectation.OnMiss.URGENT)
+        self.assertEqual(expectation.subject_item_id, item.pk)
+        self.assertEqual(expectation.last_satisfied_at, baseline)
+
     def test_seed_is_idempotent_and_preserves_operational_state(self):
         call_command("steward_seed_phase1", stdout=StringIO())
         heartbeat = Expectation.objects.get(

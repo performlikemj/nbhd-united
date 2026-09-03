@@ -379,6 +379,7 @@ class AlertState(models.Model):
 class DigestRecord(models.Model):
     class Delivery(models.TextChoices):
         DELIVERED = "delivered", "Delivered"
+        RECORDED = "recorded", "Recorded"
         TIMEOUT = "timeout", "Timeout"
         TRANSIENT = "transient", "Transient"
         UNDELIVERABLE = "undeliverable", "Undeliverable"

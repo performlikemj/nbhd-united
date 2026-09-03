@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -9,9 +10,12 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
+from rest_framework.permissions import AllowAny
+from rest_framework.throttling import AnonRateThrottle
+from rest_framework.views import APIView
 
 from apps.steward.auth import StewardAuthError, validate_steward_hmac
-from apps.steward.models import EvidenceEvent, EvidenceSource
+from apps.steward.models import DigestRecord, EvidenceEvent, EvidenceSource
 from apps.steward.notify import send_urgent
 from apps.steward.services import (
     MAX_EVIDENCE_FINGERPRINT_LENGTH,
@@ -36,6 +40,41 @@ _INTERNAL_EVIDENCE_SOURCES = frozenset(
         EvidenceSource.EVAL_SLO,
     }
 )
+
+
+class StewardFactsThrottle(AnonRateThrottle):
+    scope = "steward_facts"
+    rate = "10/min"
+
+
+class StewardFactsView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [StewardFactsThrottle]
+    throttle_scope = "steward_facts"
+
+    def get(self, request):
+        try:
+            validate_steward_hmac(request._request, body=b"")
+        except StewardAuthError as exc:
+            return JsonResponse({"error": str(exc)}, status=401)
+
+        record = (
+            DigestRecord.objects.filter(
+                delivery=DigestRecord.Delivery.RECORDED,
+            )
+            .order_by("-sent_at", "-id")
+            .first()
+        )
+        snapshot = record.stats.get("facts") if record and isinstance(record.stats, dict) else None
+        if snapshot is None:
+            return JsonResponse({"error": "no_snapshot"}, status=404)
+
+        canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        response = JsonResponse(snapshot)
+        response["ETag"] = f'"{hashlib.sha256(canonical).hexdigest()}"'
+        response["Cache-Control"] = "private, max-age=60"
+        return response
 
 
 def _auth_error_response(exc: StewardAuthError) -> JsonResponse:
