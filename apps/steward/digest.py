@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import logging
 import math
-from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from django.db import transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Q
 from django.utils import timezone
 
 from apps.evals.models import EvalResult, EvalRun
 from apps.evals.suites.slo_snapshot import SUITE as SLO_SUITE
 from apps.evals.suites.slo_snapshot import _metric_series
 from apps.steward.collectors.evals import collect_eval_evidence
+from apps.steward.collectors.openrouter import NULL_RATE_THRESHOLD_PCT
 from apps.steward.models import (
     AlertState,
     CollectorStatus,
@@ -38,16 +38,8 @@ logger = logging.getLogger(__name__)
 MAX_DIGEST_CHARS = 3500
 MAX_SECTION_LINES = 10
 MAX_RENDERED_SUBJECT_CHARS = 80
-MAX_SUPPRESSED_COUNT = 999
+CLOSING_HINT = "Reply on Telegram or run: python manage.py steward_ack <expectation_id> / steward_decide"
 _SWEEP_LIVENESS_FINGERPRINT = "steward-sweep:liveness"
-_TERMINAL_EVAL_STATUSES = frozenset(
-    {
-        EvalRun.Status.PASS,
-        EvalRun.Status.DEGRADED,
-        EvalRun.Status.FAIL,
-        EvalRun.Status.ERROR,
-    }
-)
 
 
 def _age_days(now: datetime, then: datetime) -> int:
@@ -125,7 +117,10 @@ def _stalled(now: datetime) -> tuple[list[str], int]:
         alerted = ""
         if expectation.on_miss == Expectation.OnMiss.URGENT and expectation.last_alerted_at is not None:
             alerted = f"; alerted {_age_label(now, expectation.last_alerted_at)}"
-        lines.append(f"- {_safe_text(expectation.subject, MAX_RENDERED_SUBJECT_CHARS)} — {overdue} overdue{alerted}")
+        lines.append(
+            f"- {_safe_text(expectation.subject, MAX_RENDERED_SUBJECT_CHARS)} — "
+            f"{overdue} overdue{alerted} — close, re-date, or restore evidence"
+        )
     return lines, len(expectations)
 
 
@@ -172,14 +167,20 @@ def _latest_unhealthy_suites(now: datetime) -> list[str]:
         .order_by("suite", "-finished_at", "-id")
         .distinct("suite")
     )
-    return [
-        (
+    lines: list[str] = []
+    for run in runs:
+        if run.status == EvalRun.Status.FAIL:
+            state = "failing"
+        elif run.status == EvalRun.Status.ERROR:
+            state = "errored"
+        else:
+            continue
+        lines.append(
             f"- EVAL {_safe_text(run.suite, MAX_RENDERED_SUBJECT_CHARS)}: "
-            f"current {run.status}; {_age_label(now, run.finished_at)}; run {run.id}"
+            f"{state} since {_age_label(now, run.finished_at)} (run {run.id}) "
+            "— open the run, fix, or park"
         )
-        for run in runs
-        if run.status != EvalRun.Status.PASS
-    ]
+    return lines
 
 
 def _latest_slo_breaches(now: datetime) -> list[str]:
@@ -203,7 +204,8 @@ def _latest_slo_breaches(now: datetime) -> list[str]:
         breach_days = series.get(result.case_id, {}).get("breach_days", 0)
         lines.append(
             f"- SLO {_safe_text(result.case_id, MAX_RENDERED_SUBJECT_CHARS)}: "
-            f"score {result.score} vs threshold {result.threshold}; breach_days {breach_days}"
+            f"{result.score} vs {result.threshold} ({breach_days} breach days) "
+            "— inspect latest slo_snapshot run"
         )
     return lines
 
@@ -214,70 +216,9 @@ def _trusted_changes_since(since: datetime):
     ).exclude(trust=EvidenceEvent.Trust.UNTRUSTED_TEXT)
 
 
-def _validated_eval_run_fact(event: EvidenceEvent) -> tuple[int, str] | None:
-    if event.source != EvidenceSource.EVAL_RUN or not event.subject.startswith("eval:"):
-        return None
-    run_id = event.payload.get("run_id")
-    status = event.payload.get("status")
-    previous = event.payload.get("prev_status_at_collection")
-    passed = event.payload.get("passed")
-    total = event.payload.get("total")
-    git_sha = event.payload.get("git_sha")
-    if (
-        not isinstance(run_id, int)
-        or run_id < 1
-        or status not in _TERMINAL_EVAL_STATUSES
-        or previous not in _TERMINAL_EVAL_STATUSES
-        or not isinstance(passed, int)
-        or isinstance(passed, bool)
-        or not isinstance(total, int)
-        or isinstance(total, bool)
-        or not 0 <= passed <= total
-        or not isinstance(git_sha, str)
-    ):
-        return None
-    return run_id, status
-
-
-def _cooldown_suppressions(last_delivered: DigestRecord | None) -> tuple[list[str], int]:
-    total = (
-        AlertState.objects.filter(fingerprint__startswith="eval-email:").aggregate(total=Sum("suppressed_count"))[
-            "total"
-        ]
-        or 0
-    )
-    previous_total = 0
-    if last_delivered is not None:
-        recorded_total = last_delivered.stats.get("cooldown_suppressed_total", 0)
-        if isinstance(recorded_total, int) and recorded_total >= 0:
-            previous_total = recorded_total
-    since_last = max(0, total - previous_total)
-    if not since_last:
-        return [], total
-    rendered_count = min(since_last, MAX_SUPPRESSED_COUNT)
-    suffix = "+" if since_last > MAX_SUPPRESSED_COUNT else ""
-    return [f"- EMAIL cooldown: {rendered_count}{suffix} eval run(s) suppressed since last delivered digest"], total
-
-
-def _slo_and_evals(
-    now: datetime,
-    since: datetime,
-    last_delivered: DigestRecord | None,
-) -> tuple[list[str], int, int]:
+def _slo_and_evals(now: datetime) -> tuple[list[str], int]:
     lines = [*_latest_unhealthy_suites(now), *_latest_slo_breaches(now)]
-    for event in _trusted_changes_since(since).filter(source=EvidenceSource.EVAL_RUN).order_by("received_at", "id"):
-        fact = _validated_eval_run_fact(event)
-        if fact is None:
-            continue
-        run_id, status = fact
-        suite = _safe_text(
-            event.subject.removeprefix("eval:"),
-            MAX_RENDERED_SUBJECT_CHARS,
-        )
-        lines.append(f"- EVAL {suite}: run {run_id} finished {status}")
-    suppression_lines, suppression_total = _cooldown_suppressions(last_delivered)
-    lines.extend(suppression_lines)
-    return lines, len(lines), suppression_total
+    return lines, len(lines)
 
 
 def _openrouter_health(since: datetime) -> tuple[list[str], int]:
@@ -303,8 +244,24 @@ def _openrouter_health(since: datetime) -> tuple[list[str], int]:
             or not isinstance(severe, bool)
         ):
             continue
-        severity = " [severe]" if severe else ""
-        if kind == "tool_calls_share_drop":
+        if severe and kind == "null_rate":
+            model = payload.get("model")
+            current_pct = payload.get("current_pct")
+            if (
+                not isinstance(model, str)
+                or not model
+                or isinstance(current_pct, bool)
+                or not isinstance(current_pct, (int, float))
+                or not math.isfinite(current_pct)
+            ):
+                continue
+            lines.append(
+                f"- {scope} {_safe_text(model, MAX_RENDERED_SUBJECT_CHARS)}: "
+                f"null finish_reason {current_pct:.2f}% "
+                f"(> {NULL_RATE_THRESHOLD_PCT:.2f}%) "
+                "— switch model/provider route or set a fallback"
+            )
+        elif severe and kind == "tool_calls_share_drop":
             model = payload.get("model")
             current_pct = payload.get("current_pct")
             baseline_pct = payload.get("baseline_pct")
@@ -321,92 +278,28 @@ def _openrouter_health(since: datetime) -> tuple[list[str], int]:
             lines.append(
                 f"- {scope} {_safe_text(model, MAX_RENDERED_SUBJECT_CHARS)}: "
                 f"tool_calls {current_pct:.2f}% vs {baseline_pct:.2f}% "
-                f"{baseline_days}d baseline (drop {drop_pts:.2f}pts){severity}"
-            )
-        elif kind == "null_rate":
-            model = payload.get("model")
-            current_pct = payload.get("current_pct")
-            if (
-                not isinstance(model, str)
-                or not model
-                or isinstance(current_pct, bool)
-                or not isinstance(current_pct, (int, float))
-                or not math.isfinite(current_pct)
-            ):
-                continue
-            lines.append(
-                f"- {scope} {_safe_text(model, MAX_RENDERED_SUBJECT_CHARS)}: "
-                f"null finish_reason {current_pct:.2f}% (>0.50%){severity}"
-            )
-        elif kind == "new_provider":
-            provider = payload.get("provider")
-            if not isinstance(provider, str) or not provider:
-                continue
-            lines.append(
-                f"- account provider mix: new provider "
-                f"{_safe_text(provider, MAX_RENDERED_SUBJECT_CHARS)} vs {baseline_days}d baseline"
+                f"({drop_pts:.2f} pts drop) "
+                "— model stopped using tools; check the model/provider change"
             )
     return lines, len(lines)
 
 
 def _repos(now: datetime) -> tuple[list[str], int]:
-    repos = list(RepoPullRequest.objects.order_by("repo").values_list("repo", flat=True).distinct())
     stale_before = now - timedelta(days=7)
     lines: list[str] = []
-    for repo in repos:
-        open_prs = RepoPullRequest.objects.filter(
-            repo=repo,
-            state=RepoPullRequest.State.OPEN,
+    stale_human_pull_requests = RepoPullRequest.objects.filter(
+        state=RepoPullRequest.State.OPEN,
+        is_dependabot=False,
+        last_activity_at__lt=stale_before,
+    ).order_by("repo", "last_activity_at", "number")
+    for pull_request in stale_human_pull_requests:
+        quiet_days = _age_days(now, pull_request.last_activity_at)
+        lines.append(
+            f"- {pull_request.repo} #{pull_request.number} — "
+            f"{_safe_text(pull_request.title, 60)} — {quiet_days}d quiet "
+            "— review, rebase, or close"
         )
-        stale = open_prs.filter(last_activity_at__lt=stale_before)
-        stale_count = stale.count()
-        draft_count = stale.filter(draft=True).count()
-        dependabot_count = open_prs.filter(is_dependabot=True).count()
-        summary = (
-            f"- {repo}: {open_prs.count()} open PRs "
-            f"({stale_count} stale>7d, {draft_count} drafts>7d), "
-            f"dependabot: {dependabot_count}"
-        )
-        latest_ci = (
-            EvidenceEvent.objects.filter(
-                source=EvidenceSource.CI_RUN,
-                subject=f"{repo}-main-ci",
-            )
-            .order_by("-occurred_at", "-id")
-            .first()
-        )
-        if latest_ci is not None:
-            conclusion = latest_ci.payload.get("conclusion")
-            if isinstance(conclusion, str) and conclusion != "success":
-                summary += f", main CI: {_safe_text(conclusion, 32)}"
-        lines.append(summary)
-        for pull_request in stale.filter(is_dependabot=False).order_by(
-            "last_activity_at",
-            "number",
-        )[:3]:
-            quiet_days = _age_days(now, pull_request.last_activity_at)
-            lines.append(f"  - #{pull_request.number} — {quiet_days}d quiet")
-    return lines, len(repos)
-
-
-def _changes(since: datetime) -> tuple[list[str], int]:
-    events = list(_trusted_changes_since(since).order_by("received_at", "id"))
-    counts = Counter(event.source for event in events)
-    lines = [f"- {source}: {counts[source]}" for source in sorted(counts)]
-
-    for source in sorted(counts):
-        if not EvidenceEvent.objects.filter(
-            source=source,
-            received_at__lte=since,
-        ).exists():
-            lines.append(f"- new source: {source}")
-
-    for event in events:
-        fact = _validated_eval_run_fact(event)
-        if fact is None or fact[1] != EvalRun.Status.PASS:
-            continue
-        lines.append(f"- recovery: {_safe_text(event.subject, MAX_RENDERED_SUBJECT_CHARS)}")
-    return lines, len(events)
+    return lines, len(lines)
 
 
 def _integrity(now: datetime) -> tuple[list[str], int]:
@@ -495,18 +388,21 @@ def _render_section_block(
 def _render_budgeted_sections(
     header: str,
     sections: list[tuple[str, list[str], int]],
+    *,
+    footer: str = "",
 ) -> str:
     rendered = header
+    footer_block = f"\n\n{footer}" if footer else ""
     for index, (title, lines, count) in enumerate(sections):
         remaining_minimum = sum(len(_minimum_section_block(*section)) for section in sections[index + 1 :])
-        section_budget = MAX_DIGEST_CHARS - len(rendered) - remaining_minimum
+        section_budget = MAX_DIGEST_CHARS - len(rendered) - remaining_minimum - len(footer_block)
         rendered += _render_section_block(
             title,
             lines,
             count,
             budget=section_budget,
         )
-    return rendered
+    return rendered + footer_block
 
 
 def render_steward_daily_digest(
@@ -518,17 +414,12 @@ def render_steward_daily_digest(
         DigestRecord.objects.filter(delivery=DigestRecord.Delivery.DELIVERED).order_by("-sent_at", "-id").first()
     )
     since = last_delivered.sent_at if last_delivered else now - timedelta(hours=24)
-    slo_evals, slo_evals_count, suppression_total = _slo_and_evals(
-        now,
-        since,
-        last_delivered,
-    )
+    slo_evals, slo_evals_count = _slo_and_evals(now)
     needs_you = _needs_you(now)
     trains = _trains(now)
     stalled = _stalled(now)
     repos = _repos(now)
     openrouter_health = _openrouter_health(since)
-    changes = _changes(since)
     integrity = _integrity(now)
 
     sections = [
@@ -538,7 +429,6 @@ def render_steward_daily_digest(
         ("SLO / EVALS", slo_evals, slo_evals_count),
         ("OPENROUTER", *openrouter_health),
         ("REPOS", *repos),
-        ("CHANGES (24h)", *changes),
         ("INTEGRITY", *integrity),
     ]
     stats = {
@@ -548,15 +438,17 @@ def render_steward_daily_digest(
         "slo_evals": slo_evals_count,
         "openrouter": openrouter_health[1],
         "repos": repos[1],
-        "changes": changes[1],
         "integrity": integrity[1],
-        "cooldown_suppressed_total": suppression_total,
     }
 
     header = "\n".join(["STEWARD DAILY FACTS", now.strftime("%Y-%m-%d UTC")])
     nonempty_sections = [section for section in sections if section[1]]
     if nonempty_sections:
-        rendered = _render_budgeted_sections(header, nonempty_sections)
+        rendered = _render_budgeted_sections(
+            header,
+            nonempty_sections,
+            footer=CLOSING_HINT,
+        )
     else:
         armed = Expectation.objects.filter(state=Expectation.State.ARMED).count()
         sweep_state = AlertState.objects.filter(fingerprint=_SWEEP_LIVENESS_FINGERPRINT).first()
