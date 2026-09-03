@@ -15,7 +15,6 @@ from apps.steward.digest import (
     run_steward_daily_digest,
 )
 from apps.steward.models import (
-    AlertState,
     CollectorStatus,
     DigestRecord,
     EvidenceEvent,
@@ -80,7 +79,7 @@ class StewardDigestTests(TestCase):
         )
         return run
 
-    def test_renders_every_facts_section_and_no_payload_or_details(self):
+    def test_renders_actionable_sections_without_changes_or_run_history(self):
         now = timezone.now()
         self._item(
             "Needs decision",
@@ -115,19 +114,24 @@ class StewardDigestTests(TestCase):
             "NEEDS YOU",
             "STALLED",
             "SLO / EVALS",
-            "CHANGES (24h)",
             "INTEGRITY",
         ):
             self.assertIn(heading, text)
         self.assertIn("Needs decision", text)
         self.assertIn("deadline-one", text)
         self.assertIn("reply_latency_p50_ms", text)
-        self.assertIn("journey: run 123 finished pass", text)
+        self.assertIn("40.000 vs 15.000 (1 breach days) — inspect latest slo_snapshot run", text)
+        self.assertNotIn("journey: run 123 finished pass", text)
+        self.assertNotIn("CHANGES (24h)", text)
+        self.assertIn("— close, re-date, or restore evidence", text)
+        self.assertTrue(
+            text.endswith("Reply on Telegram or run: python manage.py steward_ack <expectation_id> / steward_decide")
+        )
         self.assertNotIn("->", text)
         self.assertIn("No expectation", text)
         self.assertNotIn("NEVER_RENDER_PAYLOAD", text)
         self.assertNotIn("NEVER_RENDER_DETAILS", text)
-        self.assertGreater(stats["changes"], 0)
+        self.assertNotIn("changes", stats)
 
     def test_nag_decay_days_and_absorption(self):
         for age in (2, 5, 10, 17, 24):
@@ -184,23 +188,6 @@ class StewardDigestTests(TestCase):
                 finished_at=now,
             )
             EvalRun.objects.filter(pk=run.pk).update(started_at=now)
-            EvidenceEvent.objects.create(
-                source=EvidenceSource.EVAL_RUN,
-                subject=f"eval:recovery-{index}",
-                occurred_at=now,
-                received_at=now,
-                payload={
-                    "run_id": index + 1,
-                    "status": EvalRun.Status.PASS,
-                    "prev_status_at_collection": EvalRun.Status.FAIL,
-                    "passed": 1,
-                    "total": 1,
-                    "git_sha": "abc123",
-                },
-                fingerprint=f"budget-transition-{index}",
-                trust=EvidenceEvent.Trust.AUTHENTICATED_API,
-                provenance=EvidenceEvent.Provenance.COLLECTOR,
-            )
 
         text, _ = render_steward_daily_digest(now=now + timedelta(minutes=1))
 
@@ -209,7 +196,6 @@ class StewardDigestTests(TestCase):
             "NEEDS YOU",
             "STALLED",
             "SLO / EVALS",
-            "CHANGES (24h)",
             "INTEGRITY",
         )
         for index, heading in enumerate(headings):
@@ -235,6 +221,7 @@ class StewardDigestTests(TestCase):
         text, stats = render_steward_daily_digest(now=now)
         self.assertIn("ALL QUIET", text)
         self.assertIn("All quiet — 0 expectations armed, last sweep unknown.", text)
+        self.assertNotIn("Reply on Telegram", text)
         self.assertEqual(sum(stats.values()), 0)
 
     def test_latest_unhealthy_suite_is_rendered_without_a_transition(self):
@@ -262,7 +249,7 @@ class StewardDigestTests(TestCase):
         text, _ = render_steward_daily_digest(now=now)
 
         self.assertIn(
-            f"EVAL stuck-suite: current fail; 1h ago; run {latest.id}",
+            f"EVAL stuck-suite: failing since 1h ago (run {latest.id}) — open the run, fix, or park",
             text,
         )
         self.assertNotIn(f"run {older.id}", text)
@@ -284,7 +271,7 @@ class StewardDigestTests(TestCase):
         text, _ = render_steward_daily_digest(now=now)
 
         self.assertIn(
-            f"EVAL historical-suite: current fail; 31d ago; run {old.id}",
+            f"EVAL historical-suite: failing since 31d ago (run {old.id}) — open the run, fix, or park",
             text,
         )
         self.assertNotIn("ALL QUIET", text)
@@ -304,12 +291,12 @@ class StewardDigestTests(TestCase):
         text, _ = render_steward_daily_digest(now=now)
 
         self.assertIn(
-            f"EVAL long-running-suite: current fail; 1h ago; run {run.id}",
+            f"EVAL long-running-suite: failing since 1h ago (run {run.id}) — open the run, fix, or park",
             text,
         )
         self.assertNotIn("ALL QUIET", text)
 
-    def test_all_skipped_slo_run_still_renders_current_degraded_state(self):
+    def test_passing_metric_and_nonfailing_evals_are_omitted(self):
         now = timezone.now()
         run = EvalRun.objects.create(
             suite="slo_snapshot",
@@ -327,23 +314,53 @@ class StewardDigestTests(TestCase):
             threshold=Decimal("15.000"),
             details={"skipped": True},
         )
+        healthy = EvalRun.objects.create(
+            suite="healthy-suite",
+            trigger=EvalRun.Trigger.SCHEDULED,
+            status=EvalRun.Status.PASS,
+            finished_at=now,
+        )
+        EvalRun.objects.filter(pk=healthy.pk).update(started_at=now)
+
+        text, _ = render_steward_daily_digest(now=now)
+
+        self.assertNotIn("SLO / EVALS", text)
+        self.assertNotIn("reply_latency_p50_ms", text)
+        self.assertNotIn("slo_snapshot", text)
+        self.assertNotIn("healthy-suite", text)
+
+    def test_error_eval_renders_while_degraded_eval_stays_hidden(self):
+        now = timezone.now()
+        errored = EvalRun.objects.create(
+            suite="crashed-suite",
+            trigger=EvalRun.Trigger.SCHEDULED,
+            status=EvalRun.Status.ERROR,
+            finished_at=now - timedelta(hours=2),
+        )
+        degraded = EvalRun.objects.create(
+            suite="degraded-suite",
+            trigger=EvalRun.Trigger.SCHEDULED,
+            status=EvalRun.Status.DEGRADED,
+            finished_at=now - timedelta(hours=1),
+        )
+        EvalRun.objects.filter(pk__in=[errored.pk, degraded.pk]).update(started_at=now - timedelta(hours=3))
 
         text, _ = render_steward_daily_digest(now=now)
 
         self.assertIn(
-            f"EVAL slo_snapshot: current degraded; 0m ago; run {run.id}",
+            f"EVAL crashed-suite: errored since 2h ago (run {errored.id}) — open the run, fix, or park",
             text,
         )
-        self.assertNotIn("ALL QUIET", text)
+        self.assertNotIn("degraded-suite", text)
 
-    def test_changes_use_received_time_for_late_ingested_evidence(self):
+    def test_changes_never_render_for_trusted_evidence(self):
         now = timezone.now()
-        DigestRecord.objects.create(
-            sent_at=now - timedelta(hours=1),
-            delivery=DigestRecord.Delivery.DELIVERED,
-            body="delivered",
-            stats={},
-        )
+        for collector in CollectorStatus.Collector.values:
+            CollectorStatus.objects.create(
+                collector=collector,
+                last_success_at=now,
+                last_attempt_at=now,
+            )
         EvidenceEvent.objects.create(
             source=EvidenceSource.CI_RUN,
             subject="late-ci",
@@ -355,93 +372,31 @@ class StewardDigestTests(TestCase):
             provenance=EvidenceEvent.Provenance.COLLECTOR,
         )
 
-        text, stats = render_steward_daily_digest(now=now)
+        text, _ = render_steward_daily_digest(now=now)
 
-        self.assertIn("- ci_run: 1", text)
-        self.assertEqual(stats["changes"], 1)
-
-    def test_failed_digest_does_not_advance_delivered_change_cutoff(self):
-        now = timezone.now()
-        delivered_at = now - timedelta(hours=3)
-        DigestRecord.objects.create(
-            sent_at=delivered_at,
-            delivery=DigestRecord.Delivery.DELIVERED,
-            body="delivered",
-            stats={},
-        )
-        EvidenceEvent.objects.create(
-            source=EvidenceSource.CI_RUN,
-            subject="between-attempts",
-            occurred_at=delivered_at,
-            received_at=now - timedelta(hours=2),
-            payload={},
-            fingerprint="between-attempts",
-            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
-            provenance=EvidenceEvent.Provenance.COLLECTOR,
-        )
-        DigestRecord.objects.create(
-            sent_at=now - timedelta(hours=1),
-            delivery=DigestRecord.Delivery.TRANSIENT,
-            body="failed",
-            stats={},
-        )
-
-        text, stats = render_steward_daily_digest(now=now)
-
-        self.assertIn("- ci_run: 1", text)
-        self.assertEqual(stats["changes"], 1)
-
-    def test_cooldown_suppression_count_is_since_delivered_and_bounded(self):
-        now = timezone.now()
-        DigestRecord.objects.create(
-            sent_at=now - timedelta(hours=1),
-            delivery=DigestRecord.Delivery.DELIVERED,
-            body="delivered",
-            stats={"cooldown_suppressed_total": 2},
-        )
-        AlertState.objects.create(
-            fingerprint="eval-email:journey:fail",
-            suppressed_count=1002,
-        )
-
-        text, stats = render_steward_daily_digest(now=now)
-
-        self.assertIn(
-            "EMAIL cooldown: 999+ eval run(s) suppressed since last delivered digest",
-            text,
-        )
-        self.assertEqual(stats["cooldown_suppressed_total"], 1002)
+        self.assertNotIn("CHANGES (24h)", text)
+        self.assertNotIn("ci_run", text)
+        self.assertIn("ALL QUIET", text)
 
     def test_subjects_strip_controls_and_cap_rendered_length(self):
         now = timezone.now()
-        dangerous = "safe\u0007\u0085\u202e" + ("x" * 100) + "TAIL"
+        dangerous = "safe\u0007\u0085\u202e" + ("x" * 50)
         self._missed(dangerous)
-        EvidenceEvent.objects.create(
-            source=EvidenceSource.EVAL_RUN,
-            subject=f"eval:{dangerous}",
-            occurred_at=now,
-            received_at=now,
-            payload={
-                "run_id": 456,
-                "status": EvalRun.Status.PASS,
-                "prev_status_at_collection": EvalRun.Status.FAIL,
-                "passed": 1,
-                "total": 1,
-                "git_sha": "abc123",
-            },
-            fingerprint="dangerous-subject",
-            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
-            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        run = EvalRun.objects.create(
+            suite=dangerous,
+            trigger=EvalRun.Trigger.SCHEDULED,
+            status=EvalRun.Status.FAIL,
+            finished_at=now,
         )
+        EvalRun.objects.filter(pk=run.pk).update(started_at=now)
 
         text, _ = render_steward_daily_digest(now=now + timedelta(minutes=1))
 
         for control in ("\u0007", "\u0085", "\u202e"):
             self.assertNotIn(control, text)
-        self.assertNotIn("TAIL", text)
         transition_line = next(line for line in text.splitlines() if line.startswith("- EVAL safe"))
         rendered_suite = transition_line.removeprefix("- EVAL ").split(":", 1)[0]
-        self.assertLessEqual(len(rendered_suite), 80)
+        self.assertLessEqual(len(rendered_suite), 64)
 
     @patch(
         "apps.steward.digest.send_digest",
@@ -528,54 +483,6 @@ class StewardDigestTests(TestCase):
         burned.refresh_from_db()
         self.assertEqual(burned.delivery, DigestRecord.Delivery.DELIVERED)
         self.assertTrue(burned.body)
-
-    def test_collected_event_repeats_after_sent_at_watermark(self):
-        first_started = timezone.now()
-        collected_at = first_started + timedelta(minutes=1)
-        first_delivered = first_started + timedelta(minutes=2)
-        tomorrow_started = first_started + timedelta(days=1)
-        tomorrow_delivered = tomorrow_started + timedelta(minutes=1)
-        collection_count = 0
-
-        def collect():
-            nonlocal collection_count
-            collection_count += 1
-            if collection_count == 1:
-                EvidenceEvent.objects.create(
-                    source=EvidenceSource.CI_RUN,
-                    subject="collected-mid-digest",
-                    occurred_at=collected_at,
-                    received_at=collected_at,
-                    payload={},
-                    fingerprint="collected-mid-digest",
-                    trust=EvidenceEvent.Trust.AUTHENTICATED_API,
-                    provenance=EvidenceEvent.Provenance.COLLECTOR,
-                )
-            return {"created": int(collection_count == 1)}
-
-        with (
-            patch("apps.steward.digest.collect_eval_evidence", side_effect=collect),
-            patch(
-                "apps.steward.digest.send_digest",
-                return_value=DigestRecord.Delivery.DELIVERED,
-            ),
-        ):
-            with patch(
-                "apps.steward.digest.timezone.now",
-                side_effect=[first_started, first_delivered],
-            ):
-                first = run_steward_daily_digest()
-            with patch(
-                "apps.steward.digest.timezone.now",
-                side_effect=[tomorrow_started, tomorrow_delivered],
-            ):
-                second = run_steward_daily_digest()
-
-        first_record = DigestRecord.objects.get(pk=first["digest_id"])
-        second_record = DigestRecord.objects.get(pk=second["digest_id"])
-        self.assertIn("- ci_run: 1", first_record.body)
-        self.assertEqual(first_record.sent_at, first_delivered)
-        self.assertNotIn("- ci_run: 1", second_record.body)
 
     def test_integrity_flags_are_soft_and_linked_armed_expectation_clears_flag(self):
         active = self._item("Active orphan")
