@@ -1986,7 +1986,7 @@ def _redact_tool_value(
     """Recursively redact string values in a JSON structure."""
     from apps.pii.store_registry import is_cardio_machine_path
 
-    if is_cardio_machine_path(path):
+    if is_cardio_machine_path(path, value):
         return value
     if isinstance(value, str):
         if not value.strip():
@@ -2012,7 +2012,7 @@ def _annotate_model_value(value: Any, entity_map: dict[str, Any], skip_keys: fro
     """Recursively annotate already-redacted tool data at its model boundary."""
     from apps.pii.store_registry import is_cardio_machine_path
 
-    if is_cardio_machine_path(path):
+    if is_cardio_machine_path(path, value):
         return value
     if isinstance(value, str):
         return annotate_model_context(value, entity_map)

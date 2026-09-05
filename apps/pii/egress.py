@@ -211,7 +211,7 @@ def redact_known_value_fields(
         from apps.pii.store_registry import is_cardio_machine_path
 
         def walk(value: Any, redact_strings: bool = False, path: tuple = ()) -> Any:
-            if is_cardio_machine_path(path):
+            if is_cardio_machine_path(path, value):
                 return value
             if isinstance(value, str):
                 return _redact_known_values(tenant, value) if redact_strings else value

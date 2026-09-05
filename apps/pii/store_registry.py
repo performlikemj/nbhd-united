@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache, cached_property
 from typing import Any
 
 from django.apps import apps
+
+from apps.common.llm_lookups import (
+    CARDIO_EFFORTS,
+    CARDIO_KINDS,
+    CARDIO_PACE_REGEX,
+    CARDIO_RECOVERY_EFFORTS,
+    CARDIO_TERRAINS,
+)
 
 
 @dataclass(frozen=True)
@@ -42,10 +53,15 @@ class PlaceholderStore:
         """Parsed path suffixes registered below one top-level JSONField."""
         return tuple(parts[1:] for path in self.json_paths if (parts := json_path_parts(path)) and parts[0] == field)
 
+    @cached_property
+    def _compiled_exclusions(self):
+        parsed = tuple(json_path_parts(path) for path in self.json_exclude_paths)
+        return {
+            field: tuple(parts[1:] for parts in parsed if parts and parts[0] == field) for field in self.json_fields
+        }
+
     def nested_json_exclusions(self, field: str) -> tuple[tuple[str, ...], ...]:
-        return tuple(
-            parts[1:] for path in self.json_exclude_paths if (parts := json_path_parts(path)) and parts[0] == field
-        )
+        return self._compiled_exclusions.get(field, ())
 
 
 CARDIO_MACHINE_PATHS = (
@@ -54,7 +70,6 @@ CARDIO_MACHINE_PATHS = (
     "segments[].target_pace",
     "segments[].recovery.effort",
     "terrain",
-    "planned.*",
 )
 
 
@@ -64,16 +79,23 @@ def _path_matches(path, pattern):
     )
 
 
-def is_cardio_machine_path(path):
-    """Exact detail leaf paths; future free text inside segments stays authorable."""
-    for index, key in enumerate(path):
-        if key == "detail_json":
-            suffix = path[index + 1 :]
-            if any(_path_matches(suffix, json_path_parts(pattern)) for pattern in CARDIO_MACHINE_PATHS):
-                return True
-    return False
+def _valid_cardio_scalar(path, value):
+    if not isinstance(value, str) or not path:
+        return False
+    key = path[-1]
+    if key == "target_pace":
+        return _CARDIO_PACE.fullmatch(value) is not None
+    return value in _CARDIO_VALUES.get(key, ())
 
 
+def is_cardio_machine_path(path, value):
+    """Only recognized Fuel response locations and valid machine scalars skip PII."""
+    if not _valid_cardio_scalar(path, value):
+        return False
+    return any(_path_matches(path, pattern) for pattern in _CARDIO_RESPONSE_PATHS)
+
+
+@cache
 def json_path_parts(path: str) -> tuple[str, ...]:
     """Parse dotted paths; ``[]`` and ``[*]`` are aliases for ``*``.
 
@@ -85,6 +107,44 @@ def json_path_parts(path: str) -> tuple[str, ...]:
     return tuple(part for part in normalized.split(".") if part)
 
 
+_CARDIO_PACE = re.compile(CARDIO_PACE_REGEX)
+_CARDIO_VALUES = {
+    "kind": frozenset(CARDIO_KINDS),
+    "effort": frozenset((*CARDIO_EFFORTS, *CARDIO_RECOVERY_EFFORTS)),
+    "terrain": frozenset(CARDIO_TERRAINS),
+}
+_CARDIO_RESPONSE_PATHS = tuple(
+    json_path_parts(".".join(part for part in (wrapper, location, leaf) if part))
+    for wrapper in (
+        "",
+        "workout",
+        "workouts.*",
+        "plan",
+        "plans.*",
+        "template",
+        "templates.*",
+        "data",
+        "data.workout",
+        "data.plan",
+    )
+    for location in ("detail_json", "schedule_json.*.detail_json", "week_overrides.*.*.detail_json")
+    for leaf in CARDIO_MACHINE_PATHS
+)
+# Include value rules as well as paths: either can change visited-string numbering.
+CARDIO_TRAVERSAL_VERSION = hashlib.sha256(
+    repr(
+        (
+            _CARDIO_RESPONSE_PATHS,
+            CARDIO_KINDS,
+            CARDIO_EFFORTS,
+            CARDIO_RECOVERY_EFFORTS,
+            CARDIO_TERRAINS,
+            CARDIO_PACE_REGEX,
+        )
+    ).encode()
+).hexdigest()[:16]
+
+
 def rewrite_json_path(
     value: Any,
     parts: tuple[str, ...],
@@ -94,7 +154,7 @@ def rewrite_json_path(
     _path: tuple = (),
 ) -> tuple[Any, bool]:
     """Copy-on-write transform of string leaves selected by one parsed path."""
-    if any(_path_matches(_path, pattern) for pattern in exclude_paths):
+    if _valid_cardio_scalar(_path, value) and any(_path_matches(_path, pattern) for pattern in exclude_paths):
         return value, False
     if not parts:
         if not isinstance(value, str):
@@ -471,3 +531,9 @@ def registered_store(model_label: str) -> PlaceholderStore:
         if store.model_label == model_label:
             return store
     raise LookupError(f"placeholder store is not registered: {model_label}")
+
+
+# Parse registered exclusions once, before any authoring traversal.
+for _store in _STORES:
+    for _field in _store.json_fields:
+        _store.nested_json_exclusions(_field)

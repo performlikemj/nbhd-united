@@ -15,7 +15,7 @@ def detail():
     value["segments"][1]["target_pace"] = "6:00"
     value["segments"][1]["notes"] = "Run with Alice"
     value["notes"] = "Alice is joining"
-    value["planned"] = {"duration_s": 2700, "future_machine_value": "easy"}
+    value["planned"] = {"duration_s": 2700}
     return value
 
 
@@ -77,6 +77,70 @@ class CardioPathTests(SimpleTestCase):
             self.assertEqual(value["planned"], original["workout"]["detail_json"]["planned"])
             self.assertEqual(value["notes"], "ALICE IS JOINING")
             self.assertEqual(value["segments"][1]["notes"], "RUN WITH ALICE")
+
+    def test_invalid_machine_values_and_planned_prose_are_authored(self):
+        from apps.pii.redactor import _redact_tool_value
+        from apps.pii.store_registry import is_cardio_machine_path
+
+        value = {
+            "terrain": "Alice backyard",
+            "planned": {"notes": {"text": "Alice"}},
+            "segments": [{"kind": {"text": "Alice"}, "effort": "Alice", "target_pace": "Alice"}],
+        }
+        store = registered_store("fuel.Workout")
+        result, _ = rewrite_json_path(
+            value,
+            ("**",),
+            lambda text: text.replace("Alice", "[PERSON_1]"),
+            exclude_paths=store.nested_json_exclusions("detail_json"),
+        )
+        self.assertNotIn("Alice", str(result))
+        with patch(
+            "apps.pii.redactor.redact_user_message",
+            side_effect=lambda text, *a, **k: text.replace("Alice", "[PERSON_1]"),
+        ):
+            response = _redact_tool_value({"detail_json": value}, SimpleNamespace(), {}, frozenset())
+        self.assertEqual(response["detail_json"], result)
+        self.assertFalse(is_cardio_machine_path(("notes_thread", 0, "detail_json", "terrain"), "flat"))
+        self.assertTrue(is_cardio_machine_path(("workout", "detail_json", "terrain"), "flat"))
+
+    def test_pre_change_repair_cursor_restarts_before_notes(self):
+        from apps.pii.repair_sweep import (
+            _author_json_chunk,
+            _DetectorWorkBudget,
+            _json_digest,
+            _json_progress,
+            _partial_json_receipt,
+        )
+
+        value = {"terrain": "flat", "notes": "Alice"}
+        old_receipt = {
+            "reason": "repair-batch-partial",
+            "repair_progress": {"cursor": 1, "source_digest": _json_digest(value), "aggregate": {"state": "checked"}},
+        }
+        cursor, aggregate = _json_progress(old_receipt, value)
+        self.assertEqual((cursor, aggregate), (0, None))
+        with patch(
+            "apps.pii.repair_sweep.author_text",
+            return_value=SimpleNamespace(text="[PERSON_1]", receipt={"state": "checked"}),
+        ) as author:
+            chunk = _author_json_chunk(
+                SimpleNamespace(),
+                value,
+                paths=(("**",),),
+                seam="test",
+                field="detail_json",
+                model_label="fuel.Workout",
+                cursor=cursor,
+                budget=_DetectorWorkBudget(10),
+            )
+        self.assertEqual(chunk.value, {"terrain": "flat", "notes": "[PERSON_1]"})
+        self.assertTrue(chunk.complete)
+        self.assertEqual(author.call_args.args[1], "Alice")
+        current = _partial_json_receipt({}, {"state": "checked"}, cursor=1, value=chunk.value)
+        self.assertEqual(_json_progress(current, chunk.value)[0], 1)
+        with patch("apps.pii.repair_sweep.CARDIO_TRAVERSAL_VERSION", "next-version"):
+            self.assertEqual(_json_progress(current, chunk.value), (0, None))
 
     def test_runtime_response_guard_preserves_machine_values(self):
         from apps.pii.egress import redact_known_value_fields
