@@ -554,7 +554,7 @@ class SharedGoalMembership(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="mission_memberships")
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="+")
     role = models.CharField(max_length=8, default="member")  # owner | member
-    status = models.CharField(max_length=8, default="active")  # invited | active | left
+    status = models.CharField(max_length=8, default="active")  # invited | active | left | declined
     commitment = models.CharField(max_length=200, blank=True)  # "what I'll do"
     # Idempotency for the weekly digest — compare-and-set per (member, iso-week).
     last_digest_window = models.CharField(max_length=24, blank=True)

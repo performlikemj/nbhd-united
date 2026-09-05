@@ -22,6 +22,7 @@ from .views import (
     InviteClaimView,
     InviteCreateView,
     InviteDetailView,
+    MissionDeclineView,
     MissionDetailView,
     MissionJoinView,
     MissionLeaveView,
@@ -30,6 +31,7 @@ from .views import (
     MissionUpdatesView,
     NeighborhoodHomeView,
     NeighborhoodView,
+    NetworkCapabilitiesView,
     PendingSharesView,
     ProfileView,
     ReportView,
@@ -52,6 +54,7 @@ from .views import (
 
 urlpatterns = [
     path("", NeighborhoodView.as_view(), name="friends-neighborhood"),
+    path("network/", NetworkCapabilitiesView.as_view(), name="friends-network-capabilities"),
     path("home/", NeighborhoodHomeView.as_view(), name="friends-home"),
     path("blocked/", BlockedListView.as_view(), name="friends-blocked"),
     path("consent/", ConsentView.as_view(), name="friends-consent"),
@@ -88,6 +91,7 @@ urlpatterns = [
     path("missions/", MissionsView.as_view(), name="friends-missions"),
     path("missions/<uuid:mission_id>/", MissionDetailView.as_view(), name="friends-mission-detail"),
     path("missions/<uuid:mission_id>/join/", MissionJoinView.as_view(), name="friends-mission-join"),
+    path("missions/<uuid:mission_id>/decline/", MissionDeclineView.as_view(), name="friends-mission-decline"),
     path("missions/<uuid:mission_id>/leave/", MissionLeaveView.as_view(), name="friends-mission-leave"),
     path("missions/<uuid:mission_id>/updates/", MissionUpdatesView.as_view(), name="friends-mission-updates"),
     path("missions/<uuid:mission_id>/tasks/", MissionTasksView.as_view(), name="friends-mission-tasks"),

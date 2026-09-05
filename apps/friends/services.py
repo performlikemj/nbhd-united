@@ -1595,44 +1595,104 @@ def create_mission(tenant, user, friendship_id, *, title, description="", pillar
     return mission
 
 
-def list_missions(tenant) -> list[dict]:
-    out: list[dict] = []
-    for mission in access.missions_for(tenant):
-        membership = SharedGoalMembership.objects.filter(shared_goal=mission, tenant=tenant, status="active").first()
-        out.append(
-            {
-                "mission_id": str(mission.id),
-                "title": mission.title,
-                "status": mission.status,
-                "target": mission.target,
-                "target_date": mission.target_date,
-                "my_commitment": membership.commitment if membership else "",
-                "version": mission.version,
-            }
-        )
-    return out
+def list_missions(tenant, *, include_invited=False) -> list[dict]:
+    missions = list(access.missions_for(tenant, include_invited=include_invited))
+    memberships = {
+        m.shared_goal_id: m for m in SharedGoalMembership.objects.filter(shared_goal__in=missions, tenant=tenant)
+    }
+    return [
+        {
+            "mission_id": str(mission.id),
+            "title": mission.title,
+            "status": mission.status,
+            "target": mission.target,
+            "target_date": mission.target_date,
+            "version": mission.version,
+            "my_commitment": memberships[mission.id].commitment,
+            "my_status": memberships[mission.id].status,
+            "my_role": memberships[mission.id].role,
+        }
+        for mission in missions
+        if mission.id in memberships
+        and memberships[mission.id].status in ({"active", "invited"} if include_invited else {"active"})
+    ]
 
 
 def get_mission_detail(tenant, mission_id) -> dict:
     from . import projection
 
-    mission, membership = _assert_mission_member(tenant, mission_id)
-    data = projection.build_mission_status(mission)
-    data["description"] = mission.description
-    data["version"] = mission.version
-    data["my_commitment"] = membership.commitment
-    data["my_role"] = membership.role
+    mission = access.get_mission(mission_id)
+    membership = (
+        SharedGoalMembership.objects.filter(
+            shared_goal=mission, tenant=tenant, status__in=["active", "invited"]
+        ).first()
+        if mission
+        else None
+    )
+    if membership is None:
+        raise NotFound("No such mission.")
+    if membership.status == "invited":
+        access.assert_neighbors(tenant, mission.friendship_id)
+        # Consent preview only: shared activity stays behind active membership.
+        data = {
+            "mission_id": str(mission.id),
+            "title": mission.title,
+            "status": mission.status,
+            "target": mission.target,
+            "members": [],
+            "updates": [],
+        }
+    else:
+        data = projection.build_mission_status(mission)
+        updates = list(SharedGoalUpdate.objects.filter(shared_goal=mission).order_by("-created_at", "-id")[:50])
+        profiles = {
+            p.tenant_id: p for p in NeighborProfile.objects.filter(tenant_id__in={u.tenant_id for u in updates})
+        }
+        data["updates"] = [
+            {
+                "id": str(u.id),
+                "kind": u.kind,
+                "text": u.text,
+                "created_at": u.created_at.isoformat(),
+                "author_name": profiles[u.tenant_id].display_name if u.tenant_id in profiles else "Neighbor",
+            }
+            for u in updates
+        ]
+    data.update(
+        description=mission.description,
+        version=mission.version,
+        my_commitment=membership.commitment,
+        my_role=membership.role,
+        my_status=membership.status,
+    )
     return data
 
 
+@transaction.atomic
+def decline_mission(tenant, mission_id) -> dict:
+    mission = access.get_mission(mission_id)
+    membership = (
+        SharedGoalMembership.objects.select_for_update().filter(shared_goal=mission, tenant=tenant).first()
+        if mission
+        else None
+    )
+    if membership is None or membership.status not in {"invited", "declined"}:
+        raise NotFound("No such invitation.")
+    membership.status = "declined"
+    membership.save(update_fields=["status"])
+    return {"mission_id": str(mission.id), "status": "declined"}
+
+
+@transaction.atomic
 def join_mission(tenant, user, mission_id, commitment="") -> dict:
     mission = access.get_mission(mission_id)
     if mission is None:
         raise NotFound("No such mission.")
-    membership = SharedGoalMembership.objects.filter(shared_goal=mission, tenant=tenant).first()
-    if membership is None:
+    membership = SharedGoalMembership.objects.select_for_update().filter(shared_goal=mission, tenant=tenant).first()
+    if membership is None or membership.status == "declined":
         raise NotFound("No such mission.")  # only invited members (friendship party) can join
     if membership.status != "active":
+        access.assert_neighbors(tenant, mission.friendship_id)
         membership.status = "active"
         membership.left_at = None
         if commitment:

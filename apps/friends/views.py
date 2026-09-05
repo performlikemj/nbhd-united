@@ -419,7 +419,9 @@ class MissionsView(FriendsView):
 
     def get(self, request):
         tenant = self.get_tenant(request)
-        return Response(services.list_missions(tenant))
+        return Response(
+            services.list_missions(tenant, include_invited=_is_truthy(request.query_params.get("include_invited")))
+        )
 
     def post(self, request):
         tenant = self.get_tenant(request)
@@ -466,6 +468,11 @@ class MissionJoinView(FriendsView):
     def post(self, request, mission_id):
         tenant = self.get_tenant(request)
         return Response(services.join_mission(tenant, request.user, mission_id, request.data.get("commitment", "")))
+
+
+class MissionDeclineView(FriendsView):
+    def post(self, request, mission_id):
+        return Response(services.decline_mission(self.get_tenant(request), mission_id))
 
 
 class MissionLeaveView(FriendsView):
@@ -532,6 +539,27 @@ def _is_truthy(value) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+class NetworkCapabilitiesView(FriendsView):
+    def get(self, request):
+        self.get_tenant(request)
+        return Response(
+            {
+                "version": 1,
+                "circle_authors": True,
+                "project_invitations": True,
+                "project_history": True,
+                "circle_assistant_choice": True,
+            }
+        )
+
+
+def _assistant_choice(request, default=None):
+    value = request.data.get("agent_absorb_enabled", default)
+    if value is not None and not isinstance(value, bool):
+        raise ValidationError("agent_absorb_enabled must be a boolean.")
+    return value
+
+
 class CirclesView(FriendsView):
     """GET /api/v1/friends/circles/ — my circles. POST — create one (I'm admin)."""
 
@@ -547,6 +575,7 @@ class CirclesView(FriendsView):
             name=request.data.get("name", ""),
             description=request.data.get("description", ""),
             hue=request.data.get("hue", 210),
+            agent_absorb_enabled=_assistant_choice(request, True),
         )
         return Response({"circle_id": str(circle.id)}, status=status.HTTP_201_CREATED)
 
@@ -557,7 +586,14 @@ class CircleJoinView(FriendsView):
 
     def post(self, request):
         tenant = self.get_tenant(request)
-        return Response(circles.join_circle(tenant, request.user, request.data.get("invite_code", "")))
+        return Response(
+            circles.join_circle(
+                tenant,
+                request.user,
+                request.data.get("invite_code", ""),
+                agent_absorb_enabled=_assistant_choice(request),
+            )
+        )
 
 
 class CircleDetailView(FriendsView):
