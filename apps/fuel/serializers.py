@@ -288,6 +288,11 @@ class WorkoutSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
         # Phase 1 (#593) — same deterministic registry correction the
         # runtime path applies, for frontend-origin create/edit. Local
         # import keeps the lint-autofix from reaping it between edits.
+        category_changed = (
+            self.instance is not None and "category" in attrs and attrs["category"] != self.instance.category
+        )
+        if self.instance is not None and (category_changed or "duration_minutes" in attrs):
+            attrs.setdefault("detail_json", self.instance.detail_json)
         if "detail_json" in attrs:
             from .set_contract import normalize_detail, split_detail_errors, validate_detail
 
@@ -304,15 +309,25 @@ class WorkoutSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
             # subsequent save — including a bundled status→"done" — 400s
             # (45 PATCH 400s in 30 days, 21 of them one user retrying a
             # single poisoned workout for 3 hours).
-            if self.instance is not None and incoming == stored:
+            if (
+                self.instance is not None
+                and incoming == stored
+                and not category_changed
+                and "duration_minutes" not in attrs
+                and not (isinstance(incoming, dict) and ("segments" in incoming or "planned" in incoming))
+            ):
                 return attrs
 
-            nd, ncat = normalize_detail(incoming, base_cat, activity=base_act)[:2]
+            nd, ncat = normalize_detail(
+                incoming, base_cat, activity=base_act, explicit_duration_minutes=attrs.get("duration_minutes")
+            )[:2]
             coerced, verr = validate_detail(nd, ncat)
             if verr is None:
                 attrs["detail_json"] = coerced
             else:
-                new_details, legacy_details = split_detail_errors(verr.details, incoming, stored)
+                new_details, legacy_details = split_detail_errors(
+                    verr.details, incoming, None if category_changed else stored
+                )
                 # One structured line per validation failure so incidents
                 # are attributable from Log Analytics. Field keys and set
                 # indices only — never user-entered values (PII).
@@ -426,6 +441,22 @@ class WorkoutTemplateSerializer(_FuelPiiSerializerMixin, serializers.ModelSerial
             "updated_at",
         ]
         read_only_fields = ["id", "pii_receipts", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        from .set_contract import normalize_detail, validate_detail, validate_flat_detail
+
+        category = attrs.get("category", self.instance.category if self.instance else "other")
+        detail = attrs.get("detail_json", self.instance.detail_json if self.instance else {})
+        detail, category = normalize_detail(detail, category, explicit_duration_minutes=attrs.get("duration_minutes"))[
+            :2
+        ]
+        for validator in (validate_detail, validate_flat_detail):
+            detail, error = validator(detail, category)
+            if error is not None:
+                raise serializers.ValidationError({"detail_json": [e["msg"] for e in error.details]})
+        attrs["detail_json"] = detail
+        attrs["category"] = category
+        return attrs
 
     def create(self, validated_data):
         validated_data["tenant"] = self.context["tenant"]

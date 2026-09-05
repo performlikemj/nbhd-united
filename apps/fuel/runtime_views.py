@@ -539,7 +539,9 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         # the lint-autofix from reaping it between edits.
         from .set_contract import normalize_detail, validate_detail, validate_flat_detail
 
-        detail_json, category = normalize_detail(data.get("detail_json", {}) or {}, category, activity=activity)[:2]
+        detail_json, category = normalize_detail(
+            data.get("detail_json", {}) or {}, category, activity=activity, explicit_duration_minutes=duration
+        )[:2]
         detail_json, verr = validate_detail(detail_json, category)
         if verr is not None:
             return Response(verr.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
@@ -738,6 +740,13 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             workout.activity = str(data["activity"]).strip()
             updated_fields.append("activity")
 
+        if "category" in data and data["category"] != workout.category:
+            from .set_contract import validate_detail
+
+            _, category_error = validate_detail(data.get("detail_json", workout.detail_json), data["category"])
+            if category_error is not None:
+                return Response(category_error.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
+
         if "category" in data:
             val = data["category"]
             if val in WorkoutCategory.values:
@@ -790,7 +799,12 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
         if "detail_json" in data and isinstance(data["detail_json"], dict):
             from .set_contract import normalize_detail, validate_detail, validate_flat_detail
 
-            nd, ncat = normalize_detail(data["detail_json"], workout.category, activity=workout.activity)[:2]
+            nd, ncat = normalize_detail(
+                data["detail_json"],
+                workout.category,
+                activity=workout.activity,
+                explicit_duration_minutes=data.get("duration_minutes"),
+            )[:2]
             nd, verr = validate_detail(nd, ncat)
             if verr is not None:
                 return Response(verr.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
@@ -2195,6 +2209,8 @@ def _validate_normalize_schedule(schedule_json, *, require_detail=True, detail_s
                 duration = int(duration)
             except (TypeError, ValueError):
                 duration = None
+
+        detail = normalize_detail(detail, category, activity=activity, explicit_duration_minutes=duration)[0]
 
         # Shape validation only checks fields that are present. This separate
         # category matrix rejects a planned day that would expand into a title

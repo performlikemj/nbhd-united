@@ -23,9 +23,16 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from apps.common.llm_lookups import (
+    CARDIO_EFFORTS,
+    CARDIO_INTERVAL_KIND,
+    CARDIO_LIMITS,
+    CARDIO_PACE_REGEX,
+    CARDIO_RECOVERY_EFFORTS,
+    CARDIO_STEADY_KINDS,
+    CARDIO_TERRAINS,
     METRIC_BODYWEIGHT_REPS,
     METRIC_HOLD_TIME,
     METRIC_WEIGHTED_REPS,
@@ -53,6 +60,149 @@ __all__ = [
 SET_METRICS = frozenset({METRIC_WEIGHTED_REPS, METRIC_BODYWEIGHT_REPS, METRIC_HOLD_TIME})
 
 
+class _CardioDose(BaseModel):
+    # Extension fields survive on the original dict; strict numbers reject bools/strings.
+    model_config = ConfigDict(extra="allow", strict=True, allow_inf_nan=False)
+    duration_s: int | None = Field(default=None, ge=CARDIO_LIMITS["duration_s_min"], le=CARDIO_LIMITS["duration_s_max"])
+    distance_km: float | None = Field(
+        default=None, ge=CARDIO_LIMITS["distance_km_min"], le=CARDIO_LIMITS["distance_km_max"]
+    )
+
+    @model_validator(mode="after")
+    def one_dose(self):
+        supplied = self.model_fields_set & {"duration_s", "distance_km"}
+        if len(supplied) != 1 or getattr(self, next(iter(supplied))) is None:
+            raise ValueError("exactly one dose is required: duration_s or distance_km")
+        return self
+
+
+class _CardioRecovery(_CardioDose):
+    duration_s: int | None = Field(
+        default=None, ge=CARDIO_LIMITS["recovery_duration_s_min"], le=CARDIO_LIMITS["recovery_duration_s_max"]
+    )
+    distance_km: float | None = Field(
+        default=None, ge=CARDIO_LIMITS["recovery_distance_km_min"], le=CARDIO_LIMITS["recovery_distance_km_max"]
+    )
+    effort: Literal[*CARDIO_RECOVERY_EFFORTS]
+
+
+class _CardioWork(_CardioDose):
+    effort: Literal[*CARDIO_EFFORTS]
+    target_pace: str | None = Field(default=None, pattern=CARDIO_PACE_REGEX)
+
+
+class _CardioSteady(_CardioWork):
+    kind: Literal[*CARDIO_STEADY_KINDS]
+
+    @model_validator(mode="after")
+    def no_interval_fields(self):
+        if {"repeat", "recovery"} & self.model_fields_set:
+            raise ValueError("repeat and recovery are only valid on interval blocks")
+        return self
+
+
+class _CardioInterval(_CardioWork):
+    kind: Literal[CARDIO_INTERVAL_KIND]
+    repeat: int = Field(ge=CARDIO_LIMITS["repeat_min"], le=CARDIO_LIMITS["repeat_max"])
+    recovery: _CardioRecovery | None = None
+
+    @model_validator(mode="after")
+    def between_reps(self):
+        if "recovery" in self.model_fields_set and (self.recovery is None or self.repeat == 1):
+            raise ValueError("recovery requires at least two work reps and a recovery dose")
+        return self
+
+
+_CardioBlock = Annotated[_CardioSteady | _CardioInterval, Field(discriminator="kind")]
+
+
+class _CardioPrescription(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+    segments: list[_CardioBlock] = Field(min_length=1, max_length=CARDIO_LIMITS["blocks_max"])
+    terrain: Literal[*CARDIO_TERRAINS] | None = None
+
+    @model_validator(mode="after")
+    def expansion_limit(self):
+        if (
+            sum(block.repeat if isinstance(block, _CardioInterval) else 1 for block in self.segments)
+            > CARDIO_LIMITS["expanded_reps_max"]
+        ):
+            raise ValueError("segments exceed 200 expanded work reps")
+        return self
+
+
+def _cardio_errors(detail: Any, category: str = "cardio") -> list[dict]:
+    if not isinstance(detail, dict):
+        return []
+    if "segments" in detail and category != "cardio":
+        return [
+            {
+                "loc": ["segments"],
+                "msg": "segments are only valid for cardio category",
+                "type": "cardio_category_invalid",
+            }
+        ]
+    errors = []
+    if "terrain" in detail and detail["terrain"] not in CARDIO_TERRAINS:
+        errors.append(
+            {
+                "loc": ["terrain"],
+                "msg": "terrain must be one of: " + ", ".join(CARDIO_TERRAINS),
+                "type": "cardio_detail_invalid",
+            }
+        )
+    if "segments" in detail:
+        try:
+            _CardioPrescription.model_validate(detail)
+        except ValidationError as exc:
+            for err in exc.errors(include_url=False, include_context=False, include_input=False):
+                if not err["loc"]:
+                    err["loc"] = ("segments",)
+                errors.append(err)
+    return errors
+
+
+def validate_cardio_prescription(detail: Any, category: str = "cardio") -> list[str]:
+    """Validate machine fields without coercing or rewriting the supplied detail."""
+    return [f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in _cardio_errors(detail, category)]
+
+
+def _cardio_error_envelope(detail: Any, category: str):
+    from apps.common.llm_contracts import LLMValidationError
+
+    errors = _cardio_errors(detail, category)
+    if errors:
+        return LLMValidationError(message="Invalid cardio prescription.", details=errors)
+    return None
+
+
+def expand_cardio_reps(segments) -> int:
+    return sum(block.get("repeat", 1) if block["kind"] == CARDIO_INTERVAL_KIND else 1 for block in segments)
+
+
+def derive_planned(segments, explicit_duration_minutes=None) -> dict:
+    """Derive homogeneous totals, counting recovery only between work reps.
+
+    Invalid legacy prescriptions have no derived totals; validation reports errors
+    separately so unrelated edits can still grandfather stored invalid fragments.
+    """
+    if validate_cardio_prescription({"segments": segments}):
+        return {}
+    doses = []
+    for block in segments:
+        repeat = block.get("repeat", 1) if block["kind"] == CARDIO_INTERVAL_KIND else 1
+        doses.append((block, repeat))
+        if block.get("recovery"):
+            doses.append((block["recovery"], repeat - 1))
+    planned = {}
+    for key in ("duration_s", "distance_km"):
+        if all(key in dose for dose, _ in doses):
+            planned[key] = round(sum(dose[key] * count for dose, count in doses), 8)
+    if explicit_duration_minutes is not None:
+        planned["duration_s"] = explicit_duration_minutes * 60
+    return planned
+
+
 def has_prescription(detail: Any, category: str, *, duration_minutes: Any = None) -> bool:
     """Return whether a planned workout has usable category-specific content.
 
@@ -73,8 +223,10 @@ def has_prescription(detail: Any, category: str, *, duration_minutes: Any = None
     if category in ("strength", "calisthenics"):
         return _non_empty_list("exercises") or _non_empty_list("skills")
     if category == "cardio":
-        return duration_minutes is not None or any(
-            detail.get(key) for key in ("distance_km", "pace", "structure", "avg_hr", "elevation", "avg_power")
+        return (
+            _non_empty_list("segments")
+            or duration_minutes is not None
+            or any(detail.get(key) for key in ("distance_km", "pace", "structure", "avg_hr", "elevation", "avg_power"))
         )
     if category == "hiit":
         return (
@@ -161,7 +313,9 @@ def _normalized_sets(sets: Any, *, exercise_name: str, reg_metric: str) -> tuple
     return new_sets, notes
 
 
-def normalize_detail(detail: Any, category: str, *, activity: str | None = None) -> tuple[Any, str, list[dict]]:
+def normalize_detail(
+    detail: Any, category: str, *, activity: str | None = None, explicit_duration_minutes=None
+) -> tuple[Any, str, list[dict]]:
     """Deterministically correct set ``type`` and (only between
     ``strength`` and ``calisthenics``) the workout ``category`` from the
     exercise registry, *before* the LLM's guess is persisted.
@@ -176,6 +330,10 @@ def normalize_detail(detail: Any, category: str, *, activity: str | None = None)
         return detail, category, []
 
     new = dict(detail)
+    if "segments" in new:
+        new["planned"] = derive_planned(new["segments"], explicit_duration_minutes)
+    else:
+        new.pop("planned", None)
     overrides: list[dict] = []
     reg_cats: list[str] = []
 
@@ -324,6 +482,10 @@ def validate_detail(detail: Any, category: str) -> tuple[Any, Any]:
     # used immediately, so the lint-autofix can't reap it.
     from apps.common.llm_contracts import LLMValidationError
 
+    cardio_error = _cardio_error_envelope(detail, category)
+    if cardio_error is not None:
+        return detail, cardio_error
+
     allowed_roles = {"primary", "accessory", "warmup", "mobility"}
     for container in ("exercises", "skills"):
         for index, item in enumerate(detail.get(container, [])):
@@ -415,6 +577,9 @@ def validate_flat_detail(detail: Any, category: str) -> tuple[Any, Any]:
 
     Pure: never raises, never mutates the input.
     """
+    cardio_error = _cardio_error_envelope(detail, category)
+    if cardio_error is not None:
+        return detail, cardio_error
     if not isinstance(detail, dict) or category not in FLAT_DETAIL_CATEGORIES:
         return detail, None
 
@@ -523,6 +688,23 @@ def split_detail_errors(details: list[dict], incoming: Any, stored: Any) -> tupl
     preexisting: list[dict] = []
     for err in details:
         loc = list(err.get("loc") or [])
+        if loc and loc[0] in ("segments", "terrain"):
+            known = False
+            if isinstance(stored, dict) and isinstance(incoming, dict) and err.get("type") != "cardio_category_invalid":
+                key = loc[0]
+                if key == "segments" and len(loc) > 1 and isinstance(loc[1], int):
+                    blocks = incoming.get(key)
+                    old_blocks = stored.get(key)
+                    known = (
+                        isinstance(blocks, list)
+                        and isinstance(old_blocks, list)
+                        and loc[1] < len(blocks)
+                        and blocks[loc[1]] in old_blocks
+                    )
+                else:
+                    known = key in stored and incoming.get(key) == stored[key]
+            (preexisting if known else new_details).append(err)
+            continue
         frag, kind = _error_offender(incoming, loc)
         if kind == "set":
             # Deliberately count-agnostic: a fragment byte-identical to ANY
