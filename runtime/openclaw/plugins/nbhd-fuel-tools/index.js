@@ -62,7 +62,7 @@ const CARDIO_DETAIL_PROPERTIES = {
   terrain: { type: "string", enum: CARDIO_TERRAINS },
 };
 const COMPACT_CARDIO_DETAIL_PROPERTIES = {
-  segments: { type: "array", description: "Cardio blocks — same shape as nbhd_fuel_create_plan detail_json.segments (server-validated)." },
+  segments: { type: "array", items: { type: "object" }, description: "Cardio blocks — same shape as nbhd_fuel_create_plan detail_json.segments (server-validated)." },
   terrain: { type: "string", enum: CARDIO_TERRAINS },
 };
 const COMPACT_PLAN_DETAIL_SCHEMA = { type: "object", properties: COMPACT_CARDIO_DETAIL_PROPERTIES };

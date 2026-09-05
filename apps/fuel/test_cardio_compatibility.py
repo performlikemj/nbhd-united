@@ -6,9 +6,9 @@ from datetime import UTC, date, datetime
 from django.test import SimpleTestCase, TestCase
 
 from apps.fuel.cardio import materialize_prescription
-from apps.fuel.models import Workout, WorkoutTemplate
+from apps.fuel.models import Workout, WorkoutPlan, WorkoutTemplate
 from apps.fuel.serializers import WorkoutSerializer, WorkoutTemplateSerializer
-from apps.fuel.set_contract import normalize_detail, validate_detail, validate_flat_detail
+from apps.fuel.set_contract import normalize_detail, validate_cardio_prescription, validate_detail, validate_flat_detail
 from apps.fuel.test_cardio_segments import EXAMPLES, CardioRuntimeWriteTests
 
 
@@ -59,7 +59,7 @@ class CardioLegacyCompatibilityTests(SimpleTestCase):
 
     def test_legacy_terrain_and_planned_extension_survive(self):
         detail = {"terrain": "grass", "planned": {"notes": {"text": "extension"}}}
-        for category in ("strength", "other"):
+        for category in ("strength", "other", "cardio"):
             for validator in (validate_detail, validate_flat_detail):
                 self.assertIsNone(validator(detail, category)[1])
             self.assertEqual(normalize_detail(detail, category)[0], detail)
@@ -69,6 +69,35 @@ class CardioLegacyCompatibilityTests(SimpleTestCase):
             self.assertTrue(serializer.is_valid(), serializer.errors)
             self.assertEqual(serializer.validated_data["detail_json"], detail)
         self.assertEqual(normalize_detail({"planned": detail["planned"]}, "cardio")[0]["planned"], detail["planned"])
+
+    def test_segment_free_cardio_terrain_survives_template_echo_and_category_correction(self):
+        detail = {"terrain": "grass", "distance_km": 5}
+        self.assertEqual(validate_cardio_prescription(detail), [])
+        template = WorkoutTemplate(category="cardio", detail_json=detail)
+        echo = WorkoutTemplateSerializer(template, data={"detail_json": detail}, partial=True)
+        self.assertTrue(echo.is_valid(), echo.errors)
+        self.assertEqual(echo.validated_data["detail_json"], detail)
+        row = Workout(category="other", detail_json=detail)
+        correction = WorkoutSerializer(row, data={"category": "cardio"}, partial=True)
+        self.assertTrue(correction.is_valid(), correction.errors)
+        self.assertEqual(correction.validated_data, {"category": "cardio"})
+
+    def test_template_category_changes_validate_segments_in_both_directions(self):
+        for old_category, new_category, detail, expected in (
+            ("cardio", "strength", EXAMPLES["easy_run_timed"], False),
+            ("cardio", "other", EXAMPLES["easy_run_timed"], False),
+            ("other", "cardio", EXAMPLES["easy_run_timed"], True),
+            ("other", "cardio", {"segments": []}, False),
+        ):
+            with self.subTest(old=old_category, new=new_category, detail=detail):
+                row = WorkoutTemplate(category=old_category, detail_json=detail)
+                serializer = WorkoutTemplateSerializer(row, data={"category": new_category}, partial=True)
+                self.assertEqual(serializer.is_valid(), expected, serializer.errors)
+                if not expected:
+                    self.assertIn("segments", str(serializer.errors))
+        row = WorkoutTemplate(category="cardio", detail_json=EXAMPLES["easy_run_timed"])
+        removal = WorkoutTemplateSerializer(row, data={"category": "other", "detail_json": {}}, partial=True)
+        self.assertTrue(removal.is_valid(), removal.errors)
 
     def test_grandfathered_terrain_cannot_hide_new_negative_reps(self):
         stored = {
@@ -127,6 +156,76 @@ class CardioRuntimeCompatibilityTests(TestCase):
             self.assertEqual(response.status_code, 200, response.data)
             row.refresh_from_db()
             self.assertEqual(row.detail_json, {"exercises": None})
+
+    def test_segment_free_cardio_terrain_survives_runtime_note_edit(self):
+        detail = {"terrain": "grass", "distance_km": 5}
+        row = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2099, 1, 5),
+            category="cardio",
+            activity="Run",
+            status="planned",
+            detail_json=detail,
+        )
+        response = self.client.patch(
+            self.base + f"workouts/{row.id}/",
+            {"detail_json": {**detail, "notes": "changed"}},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        row.refresh_from_db()
+        self.assertEqual(row.detail_json, {**detail, "notes": "changed"})
+
+    def test_activity_only_plan_edit_preserves_inherited_cardio_terrain(self):
+        from unittest.mock import patch
+
+        detail = {"terrain": "grass", "distance_km": 5}
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Legacy terrain",
+            start_date=date(2099, 1, 5),
+            weeks=1,
+            days_per_week=1,
+            schedule_json={"0": {"category": "cardio", "activity": "Run", "detail_json": detail}},
+        )
+        with patch("apps.fuel.runtime_views._manage_fuel_cron"):
+            response = self.client.patch(
+                self.base + f"plans/{plan.id}/",
+                {"schedule_json": {"monday": {"activity": "Easy run"}}},
+                format="json",
+                **self.headers,
+            )
+        self.assertEqual(response.status_code, 200, response.data)
+        plan.refresh_from_db()
+        self.assertEqual(plan.schedule_json["0"]["detail_json"], detail)
+        self.assertEqual(plan.schedule_json["0"]["activity"], "Easy run")
+
+    def test_owner_weeks_only_regeneration_sanitizes_stored_categories(self):
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=self.tenant.user)
+        for category in ("legacy-run", None):
+            with self.subTest(category=category):
+                detail = {"terrain": "grass", "distance_km": 5}
+                plan = WorkoutPlan.objects.create(
+                    tenant=self.tenant,
+                    name="Legacy category",
+                    start_date=date(2099, 1, 5),
+                    weeks=1,
+                    days_per_week=1,
+                    schedule_json={"0": {"category": category, "activity": "Run", "detail_json": detail}},
+                )
+                response = client.patch(f"/api/v1/fuel/plans/{plan.id}/", {"weeks": 2}, format="json")
+                self.assertEqual(response.status_code, 200, response.data)
+                workouts = list(Workout.objects.filter(plan=plan))
+                self.assertEqual(len(workouts), 2)
+                for workout in workouts:
+                    self.assertEqual(workout.category, "other")
+                    self.assertEqual(workout.detail_json, detail)
+                plan.refresh_from_db()
+                self.assertEqual(plan.schedule_json["0"]["category"], category)
 
     def test_clearing_timed_segments_fails_final_prescription_guard(self):
         row = Workout.objects.create(

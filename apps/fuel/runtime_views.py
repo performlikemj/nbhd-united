@@ -2448,6 +2448,9 @@ def _author_plan_expansion_inputs(
             from .cardio import materialize_prescription
 
             workout_def = materialize_prescription(workout_def)
+            category = workout_def.get("category", category)
+            if category not in WorkoutCategory.values:
+                category = "other"
             authored, receipts = author_store_fields(
                 tenant,
                 {
@@ -2459,7 +2462,7 @@ def _author_plan_expansion_inputs(
                 writer=writer,
                 defer_detection=writer == "runtime",
             )
-            authored["category"] = workout_def.get("category", category)
+            authored["category"] = category
             authored["detail_json"] = reinsert_catalog_refs(
                 authored["detail_json"],
                 workout_def.get("detail_json", {}),
@@ -2558,13 +2561,16 @@ def _expand_plan_workouts(
                 )
 
             authored, receipts = authored_workouts[(week_idx, day_int)]
+            category = authored.get("category", category)
+            if category not in WorkoutCategory.values:
+                category = "other"
             Workout.objects.create(
                 tenant=tenant,
                 plan=plan,
                 slot=slot,
                 date=workout_date,
                 status=WorkoutStatus.PLANNED,
-                category=authored.get("category", category),
+                category=category,
                 activity=authored["activity"],
                 duration_minutes=authored.get("duration_minutes", workout_def.get("duration_minutes")),
                 rpe=workout_def.get("target_rpe"),

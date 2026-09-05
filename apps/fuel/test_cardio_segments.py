@@ -61,7 +61,8 @@ class CardioContractTests(TestCase):
             )
         self.assertTrue(validate_cardio_prescription({"segments": [block] * 41}))
         self.assertTrue(validate_cardio_prescription({"segments": None}))
-        self.assertTrue(validate_cardio_prescription({"terrain": "sand"}))
+        self.assertFalse(validate_cardio_prescription({"terrain": "sand"}))
+        self.assertTrue(validate_cardio_prescription({"segments": [block], "terrain": "sand"}))
 
     def test_server_owned_planned_and_explicit_duration(self):
         detail = {**EXAMPLES["intervals_mixed"], "planned": {"duration_s": 999}}

@@ -620,8 +620,8 @@ test("cardio schemas are present in every write detail and stay open", () => {
     assert.notEqual(detail.additionalProperties, false);
     assert.deepEqual(detail.properties.terrain.enum, fixture.terrains);
     const segments = detail.properties.segments;
-    if (!segments.items) {
-      assert.deepEqual(segments, { type: "array", description: "Cardio blocks — same shape as nbhd_fuel_create_plan detail_json.segments (server-validated)." });
+    if (!segments.items?.oneOf) {
+      assert.deepEqual(segments, { type: "array", items: { type: "object" }, description: "Cardio blocks — same shape as nbhd_fuel_create_plan detail_json.segments (server-validated)." });
       continue;
     }
     const variants = segments.items.oneOf;
@@ -643,7 +643,7 @@ test("cardio schemas are present in every write detail and stay open", () => {
       assert.deepEqual(dose.oneOf, [{ required: ["duration_s"] }, { required: ["distance_km"] }]);
     }
   }
-  assert.equal(details.filter(detail => detail.properties.segments.items).length, 2);
+  assert.equal(details.filter(detail => detail.properties.segments.items?.oneOf).length, 2);
   for (const name of ["log_workout", "update_workout", "create_plan", "update_plan"]) {
     const tool = tools[`nbhd_fuel_${name}`];
     assert.equal((JSON.stringify(tool).match(/Effort is qualitative prescribed intensity/g) || []).length, 1);

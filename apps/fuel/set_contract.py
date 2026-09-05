@@ -152,7 +152,12 @@ def _cardio_errors(detail: Any, category: str = "cardio") -> list[dict]:
             }
         ]
     errors = []
-    if category == "cardio" and "terrain" in detail and detail["terrain"] not in CARDIO_TERRAINS:
+    if (
+        category == "cardio"
+        and "segments" in detail
+        and "terrain" in detail
+        and detail["terrain"] not in CARDIO_TERRAINS
+    ):
         errors.append(
             {
                 "loc": ["terrain"],

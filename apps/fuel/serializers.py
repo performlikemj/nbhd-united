@@ -449,8 +449,8 @@ class WorkoutTemplateSerializer(_FuelPiiSerializerMixin, serializers.ModelSerial
         from .set_contract import validate_cardio_prescription
 
         category = attrs.get("category", self.instance.category if self.instance else "other")
-        category_to_cardio = category == "cardio" and self.instance is not None and self.instance.category != category
-        if "detail_json" in attrs or category_to_cardio:
+        category_changed = self.instance is not None and self.instance.category != category
+        if "detail_json" in attrs or category_changed:
             detail = attrs.get("detail_json", self.instance.detail_json if self.instance else {})
             errors = validate_cardio_prescription(detail, category)
             if errors:
