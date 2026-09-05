@@ -596,3 +596,102 @@ test("nbhd_fuel_update_plan forwards remove_days and replace_schedule", async (t
   });
   assert.deepEqual(result.details.json, { updated: true });
 });
+
+test("cardio schemas are present in every write detail and stay open", () => {
+  const tools = collectTools();
+  const fixture = JSON.parse(readFileSync(new URL("../../../../contracts/fuel_cardio_segments.v1.json", import.meta.url)));
+  const details = [];
+  for (const name of ["log_workout", "update_workout", "create_plan", "update_plan"]) {
+    const tool = tools[`nbhd_fuel_${name}`];
+    assert.match(tool.description, /PLANNED days: write "segments", never "exercises"/);
+    assert.match(tool.description, /Effort is qualitative prescribed intensity/);
+    const props = tool.parameters.properties;
+    if (props.detail_json) details.push(props.detail_json);
+    if (props.schedule_json) {
+      details.push(props.schedule_json.additionalProperties.properties.detail_json);
+      const override = props.week_overrides.additionalProperties.additionalProperties;
+      assert.equal(override.type, undefined);
+      assert.match(override.description, /null makes this a rest day/);
+      details.push(override.properties.detail_json);
+    }
+  }
+  assert.equal(details.length, 6);
+  for (const detail of details) {
+    assert.notEqual(detail.additionalProperties, false);
+    assert.deepEqual(detail.properties.terrain.enum, fixture.terrains);
+    const segments = detail.properties.segments;
+    if (!segments.items?.oneOf) {
+      assert.deepEqual(segments, { type: "array", items: { type: "object" }, description: "Cardio blocks — same shape as nbhd_fuel_create_plan detail_json.segments (server-validated)." });
+      continue;
+    }
+    const variants = segments.items.oneOf;
+    assert.deepEqual(variants.flatMap(v => v.properties.kind.enum).sort(), fixture.kinds.toSorted());
+    assert.deepEqual(variants[1].properties.effort.enum, fixture.efforts);
+    assert.deepEqual(variants[1].properties.recovery.properties.effort.enum, fixture.recovery_efforts);
+    assert.equal(detail.properties.segments.minItems, 1);
+    assert.equal(detail.properties.segments.maxItems, fixture.limits.blocks_max);
+    assert.match(detail.properties.segments.description, /exactly one dose; repeat\/recovery only on interval; recovery needs repeat ≥ 2/);
+    const assertProviderSafe = (node) => {
+      if (!node || typeof node !== "object") return;
+      for (const [key, value] of Object.entries(node)) {
+        assert.ok(!["not", "if", "then"].includes(key), `unsupported cardio schema keyword: ${key}`);
+        assertProviderSafe(value);
+      }
+    };
+    assertProviderSafe(detail.properties.segments);
+    for (const dose of [...variants, variants[1].properties.recovery]) {
+      assert.deepEqual(dose.oneOf, [{ required: ["duration_s"] }, { required: ["distance_km"] }]);
+    }
+  }
+  assert.equal(details.filter(detail => detail.properties.segments.items?.oneOf).length, 2);
+  for (const name of ["log_workout", "update_workout", "create_plan", "update_plan"]) {
+    const tool = tools[`nbhd_fuel_${name}`];
+    assert.equal((JSON.stringify(tool).match(/Effort is qualitative prescribed intensity/g) || []).length, 1);
+    const assertSafeShape = (node) => {
+      if (!node || typeof node !== "object") return;
+      assert.equal(Array.isArray(node.type), false);
+      for (const [key, value] of Object.entries(node)) {
+        assert.ok(!["not", "if", "then", "anyOf"].includes(key), `unsupported keyword ${key}`);
+        assertSafeShape(value);
+      }
+    };
+    assertSafeShape(tool.parameters);
+  }
+  const serializedSize = ["log_workout", "update_workout", "create_plan", "update_plan"]
+    .reduce((size, name) => {
+      const { name: toolName, description, parameters } = tools[`nbhd_fuel_${name}`];
+      return size + JSON.stringify({ name: toolName, description, parameters }).length;
+    }, 0);
+  assert.ok(serializedSize < 29000, `Fuel write metadata grew to ${serializedSize}`);
+  assert.equal(tools.nbhd_fuel_update_plan.parameters.properties.schedule_json.additionalProperties.required, undefined);
+  assert.match(tools.nbhd_fuel_update_plan.description, /Do not target cardio days with accessory_rotations/);
+});
+
+test("create_plan passes cardio segments and extension fields through unchanged", async (t) => {
+  setRuntimeEnv(t);
+  const fixture = JSON.parse(readFileSync(new URL("../../../../contracts/fuel_cardio_segments.v1.json", import.meta.url)));
+  const day = { category: "cardio", activity: "Intervals", detail_json: { ...fixture.examples.find(e => e.name === "intervals_mixed").detail_json, _normalized: [], extension: "kept" } };
+  let body;
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    body = JSON.parse(options.body);
+    return response(201, JSON.stringify({ warnings: ["cardio days use segments, not exercises"] }));
+  });
+  const result = await collectTools({ apiBaseUrl: "https://nbhd.example" }).nbhd_fuel_create_plan.execute("cardio", {
+    name: "Runs", start_date: "2026-09-07", weeks: 2, days_per_week: 1, schedule_json: { monday: day },
+  });
+  assert.deepEqual(body.schedule_json.monday, day);
+  assert.match(result.content[0].text, /cardio days use segments, not exercises/);
+});
+
+test("accessory rotation on a cardio day errors clearly without a write", async (t) => {
+  setRuntimeEnv(t);
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => { calls++; return response(200, "{}"); });
+  const result = await collectTools({ apiBaseUrl: "https://nbhd.example" }).nbhd_fuel_create_plan.execute("cardio-rotation", {
+    name: "Runs", start_date: "2026-09-07", weeks: 2, days_per_week: 1,
+    schedule_json: { monday: { category: "cardio", activity: "Run", detail_json: { segments: [{ kind: "steady", duration_s: 600, effort: "easy" }] } } },
+    accessory_rotations: [{ weekday: "monday", slot: { exercise_index: 0 }, every_weeks: 1, choices: [{ name: "Squat", sets: [] }, { name: "Lunge", sets: [] }] }],
+  });
+  assert.equal(calls, 0);
+  assert.match(result.content[0].text, /has no exercises array/);
+});

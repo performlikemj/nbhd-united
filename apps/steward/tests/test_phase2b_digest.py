@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
+from apps.evals.models import EvalRun
 from apps.steward.digest import MAX_DIGEST_CHARS, render_steward_daily_digest
 from apps.steward.models import (
     CollectorStatus,
@@ -46,7 +47,7 @@ class Phase2bDigestTests(TestCase):
             synced_at=now,
         )
 
-    def test_stalled_then_trains_and_repos_after_slo_evals_without_titles(self):
+    def test_stalled_then_trains_and_actionable_human_repos(self):
         now = timezone.now()
         train = open_train(
             product=TrackedItem.Product.NBHD_IOS,
@@ -67,6 +68,13 @@ class Phase2bDigestTests(TestCase):
             title="Dependency bump must not be named",
             age_days=10,
             dependabot=True,
+            now=now,
+        )
+        self._pull_request(
+            repo="nbhd-ios",
+            number=9,
+            title="Fresh human PR must not be named",
+            age_days=3,
             now=now,
         )
         EvidenceEvent.objects.create(
@@ -103,6 +111,13 @@ class Phase2bDigestTests(TestCase):
             state=Expectation.State.MISSED,
             on_miss=Expectation.OnMiss.DIGEST,
         )
+        eval_run = EvalRun.objects.create(
+            suite="phase2b",
+            trigger=EvalRun.Trigger.SCHEDULED,
+            status=EvalRun.Status.FAIL,
+            finished_at=now,
+        )
+        EvalRun.objects.filter(pk=eval_run.pk).update(started_at=now)
 
         with (
             patch("httpx.Client") as http_client,
@@ -119,16 +134,98 @@ class Phase2bDigestTests(TestCase):
             text,
         )
         self.assertIn(
-            "nbhd-ios: 2 open PRs (2 stale>7d, 1 drafts>7d), dependabot: 1, main CI: failure",
+            "- nbhd-ios #7 — Stalehidden title — 9d quiet — review, rebase, or close",
             text,
         )
-        self.assertIn("#7 — 9d quiet", text)
-        self.assertNotIn("Stalehidden title", text)
         self.assertNotIn("Dependency bump must not be named", text)
+        self.assertNotIn("Fresh human PR must not be named", text)
+        self.assertNotIn("open PRs", text)
+        self.assertNotIn("dependabot:", text)
+        self.assertNotIn("main CI", text)
+        self.assertIn("— close, re-date, or restore evidence", text)
         self.assertNotIn("\u202e", text)
         self.assertNotIn("\x1f", text)
         self.assertEqual(stats["trains"], 1)
         self.assertEqual(stats["repos"], 1)
+
+    def test_openrouter_only_renders_severe_actionable_findings(self):
+        now = timezone.now()
+        common = {
+            "date": now.date().isoformat(),
+            "scope": "account",
+            "model": "provider/model",
+            "baseline_days": 3,
+        }
+        for suffix, payload in (
+            (
+                "nonsevere-null",
+                {
+                    **common,
+                    "kind": "null_rate",
+                    "current_pct": 1.0,
+                    "severe": False,
+                },
+            ),
+            (
+                "severe-tool-share",
+                {
+                    **common,
+                    "kind": "tool_calls_share_drop",
+                    "current_pct": 10.0,
+                    "baseline_pct": 50.0,
+                    "drop_pts": 40.0,
+                    "severe": True,
+                },
+            ),
+            (
+                "severe-null",
+                {
+                    **common,
+                    "scope": "canary",
+                    "model": "fallback/model",
+                    "kind": "null_rate",
+                    "current_pct": 3.25,
+                    "severe": True,
+                },
+            ),
+            (
+                "new-provider",
+                {
+                    "kind": "new_provider",
+                    "date": now.date().isoformat(),
+                    "scope": "provider",
+                    "provider": "new-provider",
+                    "baseline_days": 3,
+                    "severe": False,
+                },
+            ),
+        ):
+            EvidenceEvent.objects.create(
+                source=EvidenceSource.OPENROUTER_MODEL_HEALTH,
+                subject=f"openrouter-health:{suffix}",
+                occurred_at=now,
+                received_at=now,
+                payload=payload,
+                fingerprint=f"openrouter-health:{suffix}",
+                trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+                provenance=EvidenceEvent.Provenance.COLLECTOR,
+            )
+
+        text, stats = render_steward_daily_digest(now=now)
+
+        self.assertIn(
+            "- canary fallback/model: null finish_reason 3.25% (> 0.50%) "
+            "— switch model/provider route or set a fallback",
+            text,
+        )
+        self.assertIn(
+            "- account provider/model: tool_calls 10.00% vs 50.00% (40.00 pts drop) "
+            "— model stopped using tools; check the model/provider change",
+            text,
+        )
+        self.assertNotIn("1.00%", text)
+        self.assertNotIn("new-provider", text)
+        self.assertEqual(stats["openrouter"], 2)
 
     def test_terminal_train_is_shown_only_on_close_day(self):
         now = timezone.now()

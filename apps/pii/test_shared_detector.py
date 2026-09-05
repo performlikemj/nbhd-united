@@ -19,7 +19,7 @@ from unittest.mock import patch
 from django.conf import settings
 from django.test import SimpleTestCase
 
-from apps.pii import engine, shared_client
+from apps.pii import engine, shared_client, shared_server
 from apps.pii.config import resolve_detector_transport
 from apps.pii.redactor import redact_text
 from apps.pii.shared_client import (
@@ -83,10 +83,10 @@ def _scripted_server(path: str, response, *, delay: float = 0.0, raw: bool = Fal
 
 
 @contextmanager
-def _running_server(path: str, pipeline, *, queue_max: int = 64):
+def _running_server(path: str, pipeline, *, queue_max: int = 64, engine: str = "deberta"):
     server = SharedDetectorServer(
         socket_path=path,
-        engine="deberta",
+        engine=engine,
         queue_max=queue_max,
         pipeline_loader=lambda _engine: pipeline,
         configure_runtime=False,
@@ -407,6 +407,36 @@ class SharedPiiClientTests(SimpleTestCase):
 
 
 class SharedPiiServerTests(SimpleTestCase):
+    def test_sidecar_loader_selects_liquid_without_deberta(self):
+        expected = object()
+        with (
+            patch("apps.pii.liquid_engine.get_liquid_pii_pipeline", return_value=expected) as liquid,
+            patch("apps.pii.engine.get_deberta_pii_pipeline") as deberta,
+        ):
+            self.assertIs(shared_server._local_pipeline_loader("liquid"), expected)
+
+        liquid.assert_called_once_with()
+        deberta.assert_not_called()
+
+    def test_liquid_readiness_client_and_server_telemetry_are_engine_scoped(self):
+        synthetic_text = "synthetic-liquid-shape"
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "pii.sock")
+            with (
+                self.assertLogs("apps.pii.shared_server", level="INFO") as server_logs,
+                _running_server(path, lambda _text: [], engine="liquid"),
+                patch.dict(os.environ, {"PII_SHARED_SOCKET": path, "PII_DETECTOR_ENGINE": "liquid"}),
+                self.assertLogs("apps.pii.shared_client", level="INFO") as client_logs,
+            ):
+                self.assertTrue(ping_shared_detector())
+                self.assertEqual(SharedPiiPipeline(socket_path=path, engine="liquid")(synthetic_text), [])
+
+        combined = "\n".join(server_logs.output + client_logs.output)
+        self.assertIn("pii_detector_server ready engine=liquid", combined)
+        self.assertIn("pii_detector_server engine=liquid outcome=ok", combined)
+        self.assertIn("pii_detector_client engine=liquid transport=shared outcome=ok", combined)
+        self.assertNotIn(synthetic_text, combined)
+
     def test_model_load_failure_exits_sidecar_nonzero(self):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "pii.sock")

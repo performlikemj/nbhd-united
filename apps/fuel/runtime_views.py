@@ -27,6 +27,7 @@ from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
 from . import catalog
+from .cardio import add_prescription_feedback, plan_prescription_days
 from .catalog_annotation import IncomingPath, annotate_incoming, incoming_name_paths, reinsert_catalog_refs
 from .models import (
     BodyWeightLog,
@@ -539,7 +540,12 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         # the lint-autofix from reaping it between edits.
         from .set_contract import normalize_detail, validate_detail, validate_flat_detail
 
-        detail_json, category = normalize_detail(data.get("detail_json", {}) or {}, category, activity=activity)[:2]
+        detail_json, category = normalize_detail(
+            data.get("detail_json", {}) or {},
+            category,
+            activity=activity,
+            explicit_duration_minutes=duration if workout_status == WorkoutStatus.PLANNED else None,
+        )[:2]
         detail_json, verr = validate_detail(detail_json, category)
         if verr is not None:
             return Response(verr.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
@@ -606,6 +612,14 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
 
         from apps.pii.store_authoring import author_store_fields
 
+        from .cardio import materialize_prescription
+
+        if workout_status == WorkoutStatus.PLANNED:
+            materialized = materialize_prescription(
+                {"detail_json": detail_json, "duration_minutes": duration}, category=category
+            )
+            detail_json = materialized["detail_json"]
+            duration = materialized.get("duration_minutes", duration)
         authored, receipts = author_store_fields(
             tenant,
             {
@@ -675,6 +689,11 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             searched_before_write=searched_before_write,
         )
         _add_catalog_feedback(payload, catalog_matches, unmatched_exercises)
+        add_prescription_feedback(
+            payload,
+            tenant,
+            [{"category": workout.category, "status": workout.status, "detail_json": workout.detail_json}],
+        )
         return Response(payload, status=status.HTTP_201_CREATED)
 
 
@@ -728,6 +747,8 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
 
         data, searched_before_write = _strip_search_marker(request.data)
         original_date = workout.date
+        stored_detail = workout.detail_json
+        stored_duration = workout.duration_minutes
         updated_fields = []
         catalog_matches: list[dict] = []
         unmatched_exercises: list[str] = []
@@ -737,6 +758,13 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
         if "activity" in data:
             workout.activity = str(data["activity"]).strip()
             updated_fields.append("activity")
+
+        if "category" in data and data["category"] != workout.category:
+            from .set_contract import _cardio_error_envelope
+
+            category_error = _cardio_error_envelope(data.get("detail_json", workout.detail_json), data["category"])
+            if category_error is not None:
+                return Response(category_error.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
 
         if "category" in data:
             val = data["category"]
@@ -790,7 +818,14 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
         if "detail_json" in data and isinstance(data["detail_json"], dict):
             from .set_contract import normalize_detail, validate_detail, validate_flat_detail
 
-            nd, ncat = normalize_detail(data["detail_json"], workout.category, activity=workout.activity)[:2]
+            nd, ncat = normalize_detail(
+                data["detail_json"],
+                workout.category,
+                activity=workout.activity,
+                explicit_duration_minutes=workout.duration_minutes
+                if "duration_minutes" in data and workout.status == WorkoutStatus.PLANNED
+                else None,
+            )[:2]
             nd, verr = validate_detail(nd, ncat)
             if verr is not None:
                 return Response(verr.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
@@ -804,24 +839,6 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                     detail={"category": ncat, "field": str(flat_err.details[0]["loc"][-1])},
                 )
                 return Response(flat_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
-            if workout.status == WorkoutStatus.PLANNED and not _has_prescription(
-                nd,
-                ncat,
-                duration_minutes=workout.duration_minutes,
-            ):
-                _emit_fuel_event(
-                    tenant,
-                    tool_name="runtime-fuel-workout-detail",
-                    outcome="rejected",
-                    reason_code="empty_prescription",
-                    detail={"category": ncat},
-                )
-                pres_err = _missing_prescription_error(
-                    ncat,
-                    loc_prefix=["detail_json"],
-                    subject="planned workouts",
-                )
-                return Response(pres_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
             workout.detail_json = nd
             incoming_catalog_paths = _mapped_detail_paths(
                 data["detail_json"],
@@ -839,6 +856,55 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                 workout.category = ncat
                 if "category" not in updated_fields:
                     updated_fields.append("category")
+
+        if isinstance(data.get("detail_json"), dict) or "duration_minutes" in data:
+            from .cardio import materialize_prescription
+
+            fields = {
+                key: getattr(workout, key)
+                for key in ("detail_json", "duration_minutes")
+                if key in data and (key != "detail_json" or isinstance(data[key], dict))
+            }
+            materialized = materialize_prescription(
+                fields,
+                category=workout.category,
+                stored_detail=stored_detail,
+                stored_duration=stored_duration,
+                status=workout.status,
+            )
+            for key, value in materialized.items():
+                if key == "duration_minutes" and workout.status != WorkoutStatus.PLANNED and key not in data:
+                    continue
+                setattr(workout, key, value)
+                if key not in updated_fields:
+                    updated_fields.append(key)
+            server_owned_detail = workout.detail_json
+
+            if (
+                (
+                    isinstance(data.get("detail_json"), dict)
+                    or (isinstance(stored_detail, dict) and "segments" in stored_detail)
+                )
+                and workout.status == WorkoutStatus.PLANNED
+                and not _has_prescription(
+                    workout.detail_json,
+                    workout.category,
+                    duration_minutes=workout.duration_minutes,
+                )
+            ):
+                _emit_fuel_event(
+                    tenant,
+                    tool_name="runtime-fuel-workout-detail",
+                    outcome="rejected",
+                    reason_code="empty_prescription",
+                    detail={"category": workout.category},
+                )
+                pres_err = _missing_prescription_error(
+                    workout.category,
+                    loc_prefix=["detail_json"],
+                    subject="planned workouts",
+                )
+                return Response(pres_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
 
         if updated_fields:
             from apps.pii.store_authoring import author_store_fields
@@ -904,6 +970,11 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
         )
         if "detail_json" in data:
             _add_catalog_feedback(payload, catalog_matches, unmatched_exercises)
+        add_prescription_feedback(
+            payload,
+            tenant,
+            [{"category": workout.category, "status": workout.status, "detail_json": workout.detail_json}],
+        )
         return Response(payload)
 
     def delete(self, request, tenant_id, workout_id):
@@ -2196,6 +2267,8 @@ def _validate_normalize_schedule(schedule_json, *, require_detail=True, detail_s
             except (TypeError, ValueError):
                 duration = None
 
+        detail = normalize_detail(detail, category, activity=activity, explicit_duration_minutes=duration)[0]
+
         # Shape validation only checks fields that are present. This separate
         # category matrix rejects a planned day that would expand into a title
         # and duration with no usable instructions. Omitted detail on partial
@@ -2372,6 +2445,12 @@ def _author_plan_expansion_inputs(
             category = workout_def.get("category", "other")
             if category not in WorkoutCategory.values:
                 category = "other"
+            from .cardio import materialize_prescription
+
+            workout_def = materialize_prescription(workout_def)
+            category = workout_def.get("category", category)
+            if category not in WorkoutCategory.values:
+                category = "other"
             authored, receipts = author_store_fields(
                 tenant,
                 {
@@ -2383,10 +2462,12 @@ def _author_plan_expansion_inputs(
                 writer=writer,
                 defer_detection=writer == "runtime",
             )
+            authored["category"] = category
             authored["detail_json"] = reinsert_catalog_refs(
                 authored["detail_json"],
                 workout_def.get("detail_json", {}),
             )
+            authored["duration_minutes"] = workout_def.get("duration_minutes")
             authored_workouts[(week_idx, day_int)] = authored, receipts
     return authored_workouts
 
@@ -2480,6 +2561,9 @@ def _expand_plan_workouts(
                 )
 
             authored, receipts = authored_workouts[(week_idx, day_int)]
+            category = authored.get("category", category)
+            if category not in WorkoutCategory.values:
+                category = "other"
             Workout.objects.create(
                 tenant=tenant,
                 plan=plan,
@@ -2488,11 +2572,14 @@ def _expand_plan_workouts(
                 status=WorkoutStatus.PLANNED,
                 category=category,
                 activity=authored["activity"],
-                duration_minutes=workout_def.get("duration_minutes"),
+                duration_minutes=authored.get("duration_minutes", workout_def.get("duration_minutes")),
                 rpe=workout_def.get("target_rpe"),
                 detail_json=authored["detail_json"],
                 pii_receipts=receipts,
             )
+            from .cardio import emit_prescription_shape
+
+            emit_prescription_shape(tenant, category, authored["detail_json"])
             workouts_created += 1
 
     return workouts_created
@@ -2859,6 +2946,9 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
                 total=0,
                 searched_before_write=searched_before_write,
             )
+            add_prescription_feedback(
+                result, tenant, plan_prescription_days(existing.schedule_json, existing.week_overrides)
+            )
             return Response(result, status=status.HTTP_200_OK)
 
         plan_policy, policy_err = _resolve_plan_policy(data)
@@ -2998,6 +3088,7 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
                 detail={"guard_policy": "intentional", "intentional_repeat": True},
             )
         _add_catalog_feedback(result, catalog_matches, unmatched_exercises)
+        add_prescription_feedback(result, tenant, plan_prescription_days(plan.schedule_json, plan.week_overrides))
         return Response(result, status=status.HTTP_201_CREATED)
 
 
@@ -3141,6 +3232,22 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                     if isinstance(incoming_day, dict) and "rpe" in incoming_day and "target_rpe" not in incoming_day:
                         merged_day.pop("target_rpe", None)
                     merged_day.update(incoming_day if isinstance(incoming_day, dict) else {})
+                    # A new prescription cannot inherit an old explicit estimate:
+                    # only duration supplied alongside these segments may win.
+                    if (
+                        isinstance(incoming_day, dict)
+                        and "detail_json" in incoming_day
+                        and "duration_minutes" not in incoming_day
+                    ):
+                        old_detail = (existing_day or {}).get("detail_json") or {}
+                        new_detail = incoming_day.get("detail_json") or {}
+                        if (
+                            isinstance(old_detail, dict)
+                            and isinstance(new_detail, dict)
+                            and ("segments" in old_detail or "segments" in new_detail)
+                            and old_detail.get("segments") != new_detail.get("segments")
+                        ):
+                            merged_day.pop("duration_minutes", None)
 
                     old_category = existing_day.get("category", "other") if isinstance(existing_day, dict) else None
                     new_category = merged_day.get("category", "other")
@@ -3416,6 +3523,8 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                 detail={"guard_policy": "intentional", "intentional_repeat": True},
             )
         _add_catalog_feedback(resp, catalog_matches, unmatched_exercises)
+        if "schedule_json" in data or "week_overrides" in data:
+            add_prescription_feedback(resp, tenant, plan_prescription_days(plan.schedule_json, plan.week_overrides))
         return Response(resp)
 
     def delete(self, request, tenant_id, plan_id):

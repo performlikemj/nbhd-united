@@ -8,6 +8,7 @@
 
 export type AuthIntent = "register" | "signin";
 export type AuthPath = "/signup" | "/login";
+export type AuthBouncePath = `${AuthPath}?from=app`;
 
 /**
  * The next thing the authorize page should do.
@@ -28,6 +29,11 @@ export type AuthorizeStep =
 /** Where an unauthenticated user of this intent belongs. Unknown intent → signup. */
 export function authPathForIntent(intent: string): AuthPath {
   return intent === "signin" ? "/login" : "/signup";
+}
+
+/** Preserve app origin even if the short-lived PKCE stash disappears during auth. */
+export function authBouncePathForIntent(intent: string): AuthBouncePath {
+  return `${authPathForIntent(intent)}?from=app`;
 }
 
 /**

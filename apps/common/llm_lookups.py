@@ -20,6 +20,29 @@ METRIC_HOLD_TIME = "hold_time"
 METRIC_DISTANCE_TIME = "distance_time"
 METRIC_BLOCKS = "blocks"  # mobility — no per-set metric
 
+# Cardio prescription vocabulary shared by validators and tool schema tests.
+CARDIO_KINDS = ("warmup", "steady", "interval", "cooldown")
+CARDIO_STEADY_KINDS = tuple(kind for kind in CARDIO_KINDS if kind != "interval")
+CARDIO_INTERVAL_KIND = CARDIO_KINDS[2]
+CARDIO_EFFORTS = ("easy", "steady", "tempo", "hard", "max")
+CARDIO_RECOVERY_EFFORTS = ("easy", "rest")
+CARDIO_TERRAINS = ("flat", "hills", "trail", "track", "treadmill")
+CARDIO_LIMITS = {
+    "blocks_max": 40,
+    "expanded_reps_max": 200,
+    "repeat_min": 1,
+    "repeat_max": 30,
+    "duration_s_min": 10,
+    "duration_s_max": 14400,
+    "distance_km_min": 0.05,
+    "distance_km_max": 100,
+    "recovery_duration_s_min": 10,
+    "recovery_duration_s_max": 3600,
+    "recovery_distance_km_min": 0.05,
+    "recovery_distance_km_max": 10,
+}
+CARDIO_PACE_REGEX = r"^[0-9]{1,2}:[0-5][0-9]$"
+
 # Lowercase canonical name → (workout category, default per-set metric).
 # Order doesn't matter for exact lookup; longer keys win in substring fallback.
 _EXERCISE_REGISTRY: dict[str, tuple[str, str]] = {

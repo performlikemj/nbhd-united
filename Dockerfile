@@ -30,18 +30,19 @@ RUN TORCH_PIN="$(grep -E '^torch==' requirements.txt)" && \
     "$TORCH_PIN"
 RUN pip install --no-cache-dir -r requirements.txt
 
-# PII detection model (~554 MB, DeBERTa-v3 + ai4privacy, Apache-2.0). Pulled as a
-# frozen layer from our own ACR — NOT from HuggingFace — so deploys never hit HF
-# rate limits (429s used to kill the build). CI builds this content-named tag once
-# from the pinned DeBERTa-only recipe, then reuses it; bump the tag THERE and HERE
-# together when changing the pinned model content.
+# PII detection models (DeBERTa-v3 + Liquid FP32). Pulled as one frozen layer
+# from our own ACR — NOT from HuggingFace — so deploys never hit HF rate limits
+# (429s used to kill the build). The immutable tag is derived as
+# `<shape>-<first 16 chars of DeBERTa revision>-<first 16 chars of Liquid
+# revision>`. CI builds it once, then reuses it; bump the tag THERE and HERE
+# together whenever either pinned model or the bundle shape changes.
 # Placed before `COPY . .` so app-code changes never invalidate this layer.
 # Keep production serving offline: a missing baked model must fail during worker
 # warm-up instead of downloading hundreds of MB inside the readiness window.
 ENV PII_DETECTOR_ENGINE=deberta \
     PII_MODEL_PATH=/app/pii-model \
     HF_HUB_OFFLINE=1
-COPY --from=nbhdunited.azurecr.io/pii-model:deberta-only-a038061af92047b0 /pii-model /app/pii-model
+COPY --from=nbhdunited.azurecr.io/pii-model:deberta-liquid-a038061af92047b0-b8c9cf3d2d6ae525 /pii-model /app/pii-model
 
 COPY . .
 

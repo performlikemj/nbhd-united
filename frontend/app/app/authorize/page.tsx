@@ -17,6 +17,7 @@ import {
 } from "@/lib/app-authorize";
 import {
   AuthorizeStep,
+  authBouncePathForIntent,
   authPathForIntent,
   decideAfterProbe,
   decideInitialStep,
@@ -136,7 +137,7 @@ export default function AppAuthorizePage() {
             ? "Redirecting you to sign in…"
             : "Redirecting you to sign up…",
         );
-        router.replace(target);
+        router.replace(authBouncePathForIntent(currentParams.intent));
         return;
       }
       case "choose-account":

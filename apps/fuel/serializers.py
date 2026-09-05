@@ -288,7 +288,18 @@ class WorkoutSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
         # Phase 1 (#593) — same deterministic registry correction the
         # runtime path applies, for frontend-origin create/edit. Local
         # import keeps the lint-autofix from reaping it between edits.
-        if "detail_json" in attrs:
+        category_changed = (
+            self.instance is not None and "category" in attrs and attrs["category"] != self.instance.category
+        )
+        if category_changed:
+            from .set_contract import validate_cardio_prescription
+
+            errors = validate_cardio_prescription(
+                attrs.get("detail_json", self.instance.detail_json), attrs["category"]
+            )
+            if errors:
+                raise serializers.ValidationError({"detail_json": errors})
+        if "detail_json" in attrs and (self.instance is None or attrs["detail_json"] != self.instance.detail_json):
             from .set_contract import normalize_detail, split_detail_errors, validate_detail
 
             base_cat = attrs.get("category") or (self.instance.category if self.instance else "other")
@@ -296,18 +307,14 @@ class WorkoutSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
             incoming = attrs["detail_json"]
             stored = self.instance.detail_json if self.instance else None
 
-            # A structurally-identical resend of the stored detail is a
-            # no-op on this field — skip the strict contract entirely. The
-            # web editor round-trips stored detail_json on every save, so
-            # without this one legacy-invalid set (assistant- or
-            # HealthKit-authored, pre-#593) poisons the workout: every
-            # subsequent save — including a bundled status→"done" — 400s
-            # (45 PATCH 400s in 30 days, 21 of them one user retrying a
-            # single poisoned workout for 3 hours).
-            if self.instance is not None and incoming == stored:
-                return attrs
-
-            nd, ncat = normalize_detail(incoming, base_cat, activity=base_act)[:2]
+            nd, ncat = normalize_detail(
+                incoming,
+                base_cat,
+                activity=base_act,
+                explicit_duration_minutes=attrs.get("duration_minutes")
+                if attrs.get("status", self.instance.status if self.instance else "done") == "planned"
+                else None,
+            )[:2]
             coerced, verr = validate_detail(nd, ncat)
             if verr is None:
                 attrs["detail_json"] = coerced
@@ -343,6 +350,16 @@ class WorkoutSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
                 attrs["detail_json"] = nd
             if ncat != base_cat:
                 attrs["category"] = ncat
+        from .cardio import materialize_prescription
+
+        materialized = materialize_prescription(
+            attrs,
+            category=attrs.get("category", self.instance.category if self.instance else "other"),
+            stored_detail=self.instance.detail_json if self.instance else None,
+            stored_duration=self.instance.duration_minutes if self.instance else None,
+            status=attrs.get("status", self.instance.status if self.instance else "done"),
+        )
+        attrs = materialized
         return attrs
 
     def create(self, validated_data):
@@ -426,6 +443,24 @@ class WorkoutTemplateSerializer(_FuelPiiSerializerMixin, serializers.ModelSerial
             "updated_at",
         ]
         read_only_fields = ["id", "pii_receipts", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        from .cardio import materialize_prescription
+        from .set_contract import validate_cardio_prescription
+
+        category = attrs.get("category", self.instance.category if self.instance else "other")
+        category_changed = self.instance is not None and self.instance.category != category
+        if "detail_json" in attrs or category_changed:
+            detail = attrs.get("detail_json", self.instance.detail_json if self.instance else {})
+            errors = validate_cardio_prescription(detail, category)
+            if errors:
+                raise serializers.ValidationError({"detail_json": errors})
+        return materialize_prescription(
+            attrs,
+            category=category,
+            stored_detail=self.instance.detail_json if self.instance else None,
+            stored_duration=self.instance.duration_minutes if self.instance else None,
+        )
 
     def create(self, validated_data):
         validated_data["tenant"] = self.context["tenant"]

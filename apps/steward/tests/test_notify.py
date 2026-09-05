@@ -1,85 +1,38 @@
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-from django.test import SimpleTestCase, override_settings
+from django.test import TestCase, override_settings
 
-from apps.steward.notify import send_digest, send_urgent
+from apps.steward.models import AlertState
+from apps.steward.notify import send_urgent
 
 
-class StewardNotifierTests(SimpleTestCase):
-    @override_settings(
-        STEWARD_TELEGRAM_BOT_TOKEN="fake-telegram-token",
-        STEWARD_TELEGRAM_CHAT_ID="fake-chat-id",
-        STEWARD_ALERT_EMAIL="fallback@example.test",
-    )
-    @patch("apps.steward.notify.send_mail")
-    @patch("apps.steward.notify.requests.post")
-    def test_telegram_success(self, post, send_mail):
-        post.return_value = Mock(status_code=200)
-        post.return_value.json.return_value = {"ok": True}
-
-        result = send_urgent("Gateway missed", "Miss count: 1.", "miss:1")
-
-        self.assertEqual(result, "delivered")
-        post.assert_called_once()
-        send_mail.assert_not_called()
-
-    @override_settings(
-        STEWARD_TELEGRAM_BOT_TOKEN="fake-telegram-token",
-        STEWARD_TELEGRAM_CHAT_ID="fake-chat-id",
-        STEWARD_ALERT_EMAIL="fallback@example.test",
-    )
+class StewardNotifierTests(TestCase):
+    @override_settings(STEWARD_ALERT_EMAIL="alerts@example.test")
     @patch("apps.steward.notify.send_mail", return_value=1)
-    @patch("apps.steward.notify.requests.post")
-    def test_telegram_failure_uses_mailgun_fallback(self, post, send_mail):
-        post.return_value = Mock(status_code=503, text="unavailable")
-
-        result = send_urgent("Gateway missed", "Miss count: 1.", "miss:1")
+    def test_email_success_records_confirmed_urgent(self, send_mail):
+        result = send_urgent("Gateway missed", "Miss count: 1.", "steward-miss:7:1")
 
         self.assertEqual(result, "delivered")
-        send_mail.assert_called_once()
+        self.assertEqual(send_mail.call_args.kwargs["subject"], "[Steward] Gateway missed")
+        state = AlertState.objects.get(fingerprint="steward-miss:7:1")
+        self.assertIsNotNone(state.last_sent_at)
+        self.assertEqual(state.sent_count, 1)
 
-    @override_settings(
-        STEWARD_TELEGRAM_BOT_TOKEN="",
-        STEWARD_TELEGRAM_CHAT_ID="",
-        STEWARD_ALERT_EMAIL="",
-    )
+    @override_settings(STEWARD_ALERT_EMAIL="alerts@example.test")
+    @patch("apps.steward.notify.send_mail", side_effect=RuntimeError("mail unavailable"))
+    def test_email_failure_is_transient_and_not_recorded(self, _send_mail):
+        with self.assertLogs("apps.steward.notify", level="ERROR"):
+            result = send_urgent("Gateway missed", "Miss count: 1.", "steward-miss:7:1")
+
+        self.assertEqual(result, "transient")
+        self.assertFalse(AlertState.objects.exists())
+
+    @override_settings(STEWARD_ALERT_EMAIL="")
     @patch("apps.steward.notify.send_mail")
-    @patch("apps.steward.notify.requests.post")
-    def test_nothing_configured_is_undeliverable(self, post, send_mail):
-        result = send_urgent("Gateway missed", "Miss count: 1.", "miss:1")
+    def test_nothing_configured_is_undeliverable(self, send_mail):
+        with self.assertLogs("apps.steward.notify", level="ERROR"):
+            result = send_urgent("Gateway missed", "Miss count: 1.", "steward-miss:7:1")
 
         self.assertEqual(result, "undeliverable")
-        post.assert_not_called()
         send_mail.assert_not_called()
-
-    @override_settings(
-        STEWARD_TELEGRAM_BOT_TOKEN="fake-telegram-token",
-        STEWARD_TELEGRAM_CHAT_ID="fake-chat-id",
-        STEWARD_ALERT_EMAIL="fallback@example.test",
-    )
-    @patch("apps.steward.notify.send_mail")
-    @patch("apps.steward.notify.requests.post")
-    def test_digest_telegram_is_plain_text_without_urgency_framing(
-        self,
-        post,
-        send_mail,
-    ):
-        post.return_value = Mock(status_code=200)
-        post.return_value.json.return_value = {"ok": True}
-
-        self.assertEqual(send_digest("STEWARD DAILY FACTS"), "delivered")
-
-        payload = post.call_args.kwargs["json"]
-        self.assertEqual(payload["text"], "STEWARD DAILY FACTS")
-        self.assertNotIn("parse_mode", payload)
-        send_mail.assert_not_called()
-
-    @override_settings(
-        STEWARD_TELEGRAM_BOT_TOKEN="",
-        STEWARD_TELEGRAM_CHAT_ID="",
-        STEWARD_ALERT_EMAIL="fallback@example.test",
-    )
-    @patch("apps.steward.notify.send_mail", return_value=1)
-    def test_digest_fallback_subject(self, send_mail):
-        self.assertEqual(send_digest("facts"), "delivered")
-        self.assertEqual(send_mail.call_args.kwargs["subject"], "[Steward digest]")
+        self.assertFalse(AlertState.objects.exists())

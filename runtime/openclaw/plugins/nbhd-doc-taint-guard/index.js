@@ -94,6 +94,7 @@ export const WRAP_SOURCE_TOOL_IDS = new Set(["pdf", "image"]);
 // (docs/upload-security-threat-model.md AC-5 / exfiltration surface inventory).
 export const EXFIL_TOOL_IDS = new Set([
   "publish_portfolio_image",
+  "site_publish",
   "nbhd_reddit_post",
   "nbhd_reddit_reply",
   "web_fetch",
@@ -103,6 +104,8 @@ function describeExfilAction(realId) {
   switch (realId) {
     case "publish_portfolio_image":
       return "publish an image";
+    case "site_publish":
+      return "publish website changes";
     case "nbhd_reddit_post":
       return "post to Reddit";
     case "nbhd_reddit_reply":

@@ -871,6 +871,19 @@ class Tenant(models.Model):
             "blobAccount, blobContainer, blobPathPrefix."
         ),
     )
+    site_editor_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable guarded GitHub source editing for the subscriber's own website",
+    )
+    site_editor_config = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Per-tenant nbhd-site-editor config. Keys: owner, repo, branch, "
+            "allowPaths, denyPaths, maxTextBytes, maxImageBytes, maxFiles, "
+            "maxTotalBytes, deployMinutes, authorEmail."
+        ),
+    )
 
     # Neighborhood (Friends) module — cross-tenant sharing, wormholes, chat,
     # Missions. Dark by default; rolled out per-tenant like every other pillar.

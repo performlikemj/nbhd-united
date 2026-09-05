@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { FormEvent, Suspense, useState } from "react";
 
 import {
   AppleSignInButton,
@@ -16,14 +16,49 @@ import {
 } from "@/lib/auth";
 import { hasPendingAppAuthorize } from "@/lib/app-authorize";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
+import { decidePostAuthRoute } from "@/lib/post-auth-route";
 
-export default function LoginPage() {
+function LoginPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const fromApp = searchParams.get("from") === "app";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [appleBusy, setAppleBusy] = useState(false);
+  const [returnToApp, setReturnToApp] = useState<{
+    created: boolean;
+    email: string;
+  } | null>(null);
+
+  const finishWebRouting = async (created: boolean) => {
+    if (created) {
+      const destination = decidePostAuthRoute({
+        hasPendingHandoff: false,
+        fromApp: false,
+        created,
+        needsOnboarding: false,
+      });
+      router.push(destination === "journal" ? "/journal" : "/onboarding");
+      return;
+    }
+
+    let needsOnboarding = true;
+    try {
+      const me = await fetchMe();
+      needsOnboarding = !me.tenant || me.tenant.status !== "active";
+    } catch {
+      // Preserve the existing safe fallback to onboarding.
+    }
+    const destination = decidePostAuthRoute({
+      hasPendingHandoff: false,
+      fromApp: false,
+      created,
+      needsOnboarding,
+    });
+    router.push(destination === "journal" ? "/journal" : "/onboarding");
+  };
 
   const finishAuthentication = async (
     result: Omit<AppleAuthenticationResult, "created"> & { created?: boolean },
@@ -37,23 +72,22 @@ export default function LoginPage() {
       return;
     }
     completeAuthentication(result);
-    // Mid-flight iOS "Create an account" / sign-in handoff: hand control back
-    // to /app/authorize, which mints the one-time code and redirects nbhd://.
-    if (hasPendingAppAuthorize()) {
+    const created = Boolean(result.created);
+    const destination = decidePostAuthRoute({
+      hasPendingHandoff: hasPendingAppAuthorize(),
+      fromApp,
+      created,
+      needsOnboarding: false,
+    });
+    if (destination === "app-authorize") {
       router.replace("/app/authorize");
       return;
     }
-    if (result.created) {
-      router.push("/onboarding");
+    if (destination === "return-to-app") {
+      setReturnToApp({ created, email });
       return;
     }
-    try {
-      const me = await fetchMe();
-      const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active";
-      router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
-    } catch {
-      router.push("/onboarding");
-    }
+    await finishWebRouting(created);
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -80,6 +114,38 @@ export default function LoginPage() {
 
   const inputClass =
     "mt-1 w-full rounded-xl border border-white/10 bg-white/[0.05] px-4 py-3 text-sm text-[#e0e3e8] outline-none placeholder:text-white/25 focus:border-[#5dd9d0]/50 focus:shadow-[0_0_8px_rgba(93,217,208,0.15)] transition";
+
+  if (returnToApp) {
+    return (
+      <OnboardingShell>
+        <div className="w-full max-w-[420px]">
+          <div className="rounded-[24px] border border-white/[0.06] bg-[#12161b]/60 p-7 text-center shadow-[0_20px_60px_rgba(0,0,0,0.4)] backdrop-blur-xl sm:p-8">
+            <h2 className="font-headline text-2xl font-bold tracking-tight text-[#e0e3e8]">
+              Your account is ready
+            </h2>
+            <p className="mt-3 text-sm leading-relaxed text-white/45">
+              Return to the NBHD app and tap &ldquo;Sign in&rdquo; again.{" "}
+              {returnToApp.email ? (
+                <>
+                  You&apos;ll be offered &ldquo;Continue as {returnToApp.email}&rdquo; to
+                  finish signing in.
+                </>
+              ) : (
+                <>You&apos;ll be offered the option to continue with your account.</>
+              )}
+            </p>
+            <button
+              type="button"
+              onClick={() => void finishWebRouting(returnToApp.created)}
+              className="mt-6 min-h-[44px] text-sm font-medium text-white/60 underline transition-colors hover:text-white/80"
+            >
+              Continue on the web instead
+            </button>
+          </div>
+        </div>
+      </OnboardingShell>
+    );
+  }
 
   return (
     <OnboardingShell>
@@ -192,5 +258,13 @@ export default function LoginPage() {
         </p>
       </div>
     </OnboardingShell>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginPageInner />
+    </Suspense>
   );
 }

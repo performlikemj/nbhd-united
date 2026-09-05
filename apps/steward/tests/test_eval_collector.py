@@ -155,8 +155,11 @@ class EvalEvidenceCollectorTests(TestCase):
             EvalRun.Status.PASS,
         )
         text, _ = render_steward_daily_digest(now=now)
-        self.assertIn(f"EVAL journey: run {late.id} finished degraded", text)
-        self.assertIn(f"EVAL journey: run {newer.id} finished fail", text)
+        self.assertNotIn(f"run {late.id}", text)
+        self.assertIn(
+            f"EVAL journey: failing since 1h ago (run {newer.id}) — open the run, fix, or park",
+            text,
+        )
         self.assertNotIn("->", text)
 
     def test_external_fingerprint_squat_cannot_suppress_internal_run_event(self):

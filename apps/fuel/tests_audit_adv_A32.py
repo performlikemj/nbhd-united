@@ -105,19 +105,47 @@ class TombstonePersistenceNoMatchingRowTests(TestCase):
         self.assertIn(external_id, profile.healthkit_tombstones)
 
     def test_tombstone_cap_enforced(self):
-        """The tombstone list must never grow beyond _TOMBSTONE_CAP (200)
-        entries from the ingest path."""
+        """The cap drops the oldest tombstone and keeps insertion order."""
         from apps.fuel.healthkit import _TOMBSTONE_CAP
 
         # Pre-fill with entries up to the cap.
         profile = FuelProfile.objects.get(tenant=self.tenant)
-        profile.healthkit_tombstones = [f"old-{i}" for i in range(_TOMBSTONE_CAP)]
+        old_ids = [f"old-{i}" for i in range(_TOMBSTONE_CAP)]
+        profile.healthkit_tombstones = old_ids
         profile.save(update_fields=["healthkit_tombstones", "updated_at"])
 
         # Adding one more via the never-synced path.
-        resp = self._post({"deleted_external_ids": ["hk-uuid-A32-cap-test"]})
+        new_id = "hk-uuid-A32-cap-test"
+        resp = self._post({"deleted_external_ids": [new_id]})
         self.assertEqual(resp.status_code, 200)
 
         profile.refresh_from_db()
-        self.assertLessEqual(len(profile.healthkit_tombstones), _TOMBSTONE_CAP)
-        self.assertIn("hk-uuid-A32-cap-test", profile.healthkit_tombstones)
+        self.assertEqual(profile.healthkit_tombstones, [*old_ids[1:], new_id])
+        self.assertNotIn("old-0", profile.healthkit_tombstones)
+        self.assertIn(new_id, profile.healthkit_tombstones)
+
+    def test_two_new_tombstones_keep_payload_order(self):
+        profile = FuelProfile.objects.get(tenant=self.tenant)
+        profile.healthkit_tombstones = ["old-0"]
+        profile.save(update_fields=["healthkit_tombstones", "updated_at"])
+
+        new_ids = ["hk-uuid-A32-first", "hk-uuid-A32-second"]
+        resp = self._post({"deleted_external_ids": new_ids})
+        self.assertEqual(resp.status_code, 200)
+
+        profile.refresh_from_db()
+        self.assertEqual(profile.healthkit_tombstones, ["old-0", *new_ids])
+
+    def test_existing_tombstone_is_not_duplicated_or_reordered(self):
+        from apps.fuel.healthkit import _TOMBSTONE_CAP
+
+        profile = FuelProfile.objects.get(tenant=self.tenant)
+        old_ids = [f"old-{i}" for i in range(_TOMBSTONE_CAP)]
+        profile.healthkit_tombstones = old_ids
+        profile.save(update_fields=["healthkit_tombstones", "updated_at"])
+
+        resp = self._post({"deleted_external_ids": ["old-50"]})
+        self.assertEqual(resp.status_code, 200)
+
+        profile.refresh_from_db()
+        self.assertEqual(profile.healthkit_tombstones, old_ids)

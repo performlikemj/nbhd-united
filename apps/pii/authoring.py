@@ -654,9 +654,16 @@ def author_json_paths(
         leaf_receipts.append(authored.receipt)
         return authored.text
 
+    from apps.pii.store_registry import registered_store
+
+    exclusions = (
+        registered_store(model_label).nested_json_exclusions(field)
+        if model_label and model_label.startswith("fuel.")
+        else ()
+    )
     authored_value = value
     for path in paths:
-        authored_value, _changed = rewrite_json_path(authored_value, path, _author_leaf)
+        authored_value, _changed = rewrite_json_path(authored_value, path, _author_leaf, exclude_paths=exclusions)
 
     if not leaf_receipts:
         recursive_payload = any(path and path[-1] == "**" for path in paths)

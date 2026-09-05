@@ -351,7 +351,7 @@ class OpenRouterDriftTests(TestCase):
         self.assertEqual(inputs[0].payload["kind"], "new_provider")
         self.assertEqual(inputs[0].payload["provider"], "New Provider")
 
-    def test_drift_event_renders_as_code_generated_digest_fact(self):
+    def test_nonsevere_drift_event_is_not_rendered_in_digest(self):
         now = datetime(2026, 8, 4, 1, tzinfo=UTC)
         EvidenceEvent.objects.create(
             source=EvidenceSource.OPENROUTER_MODEL_HEALTH,
@@ -377,8 +377,8 @@ class OpenRouterDriftTests(TestCase):
 
         text, stats = render_steward_daily_digest(now=now)
 
-        self.assertIn("OPENROUTER", text)
-        self.assertIn("tool_calls 30.00% vs 50.00%", text)
-        self.assertIn(DYNAMIC_MODEL, text)
+        self.assertNotIn("OPENROUTER (", text)
+        self.assertNotIn("tool_calls 30.00% vs 50.00%", text)
+        self.assertNotIn(DYNAMIC_MODEL, text)
         self.assertNotIn("NEVER_RENDER_THIS", text)
-        self.assertEqual(stats["openrouter"], 1)
+        self.assertEqual(stats["openrouter"], 0)

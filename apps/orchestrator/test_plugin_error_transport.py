@@ -90,6 +90,10 @@ NON_HTTP_PLUGINS = {
     # the model are SDK exception `.message` text (clamped to 300 chars), not
     # a raw parsed HTTP response body — a materially different, much narrower
     # risk than what this guard polices.
+    "nbhd-site-editor": (
+        "GitHub REST/Git Data API only (api.github.com); never forwards an "
+        "NBHD-runtime response body to the model — see nbhd-site-editor/lib.js"
+    ),
     "nbhd-site-publishing": "publishes via Azure SDK clients (not the NBHD runtime); errors are SDK .message text",
     # registerTool present AND calls a real upstream (OpenAI) directly via
     # Node's `https` module — no "fetch(" token, which is exactly why the old

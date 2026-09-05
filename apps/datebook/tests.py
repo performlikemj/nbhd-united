@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import threading
 from datetime import UTC, datetime, time, timedelta
+from time import monotonic, sleep
 from unittest.mock import patch
 
 from django.db import close_old_connections
@@ -17,7 +18,7 @@ from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
 from .hashing import ItemValidationError, content_hash_v1, manifest_digest_v1
-from .models import DatebookGateway, DeviceCommand, MirrorEvent, MirrorReminder, SyncPage, SyncRun
+from .models import CalendarContext, DatebookGateway, DeviceCommand, MirrorEvent, MirrorReminder, SyncPage, SyncRun
 from .readiness import datebook_delivery_ready
 from .services import (
     ProtocolError,
@@ -1392,6 +1393,104 @@ class DatebookConcurrencyTests(TransactionTestCase):
             command_type=DeviceCommand.CommandType.CALENDAR_CREATE,
             payload={"items": [{"title": f"Item {index}"} for index in range(items)]},
         )
+
+    def test_calendar_put_and_sync_open_do_not_deadlock(self):
+        from django.db import connection
+
+        from . import services
+
+        a_holds_tenant = threading.Event()
+        release_a = threading.Event()
+        b_done = threading.Event()
+        b_pid: list[int] = []
+        b_ready = threading.Event()
+        errors = []
+        original_gateway_lock = services._locked_active_gateway
+
+        def gated_gateway_lock(tenant):
+            # Thread A pauses between its tenant lock and its gateway lock — the
+            # exact window production hits while PUT calendars authors PII.
+            if threading.current_thread().name == "put-calendars":
+                a_holds_tenant.set()
+                if not release_a.wait(timeout=15):
+                    raise RuntimeError("release_a was never set — the main thread never observed the wait")
+            return original_gateway_lock(tenant)
+
+        def put_calendars():
+            close_old_connections()
+            try:
+                services.replace_calendar_contexts(
+                    Tenant.objects.get(id=self.tenant.id),
+                    installation_id="install-a",
+                    gateway_epoch=1,
+                    calendars=[
+                        {
+                            "calendar_fingerprint": _source_key("deadlock-calendar"),
+                            "entity_scope": "event",
+                            "included": True,
+                            "container_title": "Family",
+                            "source_title": "iCloud",
+                            "source_type": "icloud",
+                            "context_note": "Shared family calendar",
+                        }
+                    ],
+                )
+            except Exception as exc:  # noqa: BLE001 — the assertion is "no error of any kind"
+                errors.append(("put", repr(exc)))
+            finally:
+                close_old_connections()
+
+        def sync_open():
+            close_old_connections()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    b_pid.append(cursor.fetchone()[0])
+                b_ready.set()
+                services.open_sync_run(
+                    Tenant.objects.get(id=self.tenant.id),
+                    installation_id="install-a",
+                    gateway_epoch=1,
+                    client_run_id="run-deadlock",
+                    events={"authorization": "full_access", "coverage_complete": True},
+                    reminders=None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(("open", repr(exc)))
+            finally:
+                b_done.set()
+                close_old_connections()
+
+        def sync_open_is_lock_blocked() -> bool:
+            if not b_pid:
+                return False
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT count(*) FROM pg_stat_activity WHERE pid = %s AND wait_event_type = 'Lock'",
+                    [b_pid[0]],
+                )
+                return cursor.fetchone()[0] > 0
+
+        with patch.object(services, "_locked_active_gateway", gated_gateway_lock):
+            thread_a = threading.Thread(target=put_calendars, name="put-calendars")
+            thread_b = threading.Thread(target=sync_open, name="sync-open")
+            try:
+                thread_a.start()
+                self.assertTrue(a_holds_tenant.wait(timeout=15))
+                thread_b.start()
+                self.assertTrue(b_ready.wait(timeout=15))
+                deadline = monotonic() + 10
+                while not b_done.is_set() and not sync_open_is_lock_blocked() and monotonic() < deadline:
+                    sleep(0.05)
+            finally:
+                release_a.set()
+                thread_a.join(timeout=30)
+                thread_b.join(timeout=30)
+        self.assertFalse(thread_a.is_alive(), "put-calendars thread did not terminate")
+        self.assertFalse(thread_b.is_alive(), "sync-open thread did not terminate")
+        self.assertEqual(errors, [])
+        self.assertEqual(SyncRun.objects.filter(tenant=self.tenant).count(), 1)
+        self.assertEqual(CalendarContext.objects.filter(tenant=self.tenant).count(), 1)
 
     def test_two_claim_racers_have_one_winner(self):
         command, _ = self._command("race-claim")
