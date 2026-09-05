@@ -1981,8 +1981,13 @@ def _redact_tool_value(
     tenant: Tenant,
     policy: dict,
     skip_keys: frozenset,
+    path: tuple = (),
 ) -> Any:
     """Recursively redact string values in a JSON structure."""
+    from apps.pii.store_registry import is_cardio_machine_path
+
+    if is_cardio_machine_path(path):
+        return value
     if isinstance(value, str):
         if not value.strip():
             return value
@@ -1994,25 +1999,30 @@ def _redact_tool_value(
         return redact_user_message(value, tenant, allow_user_name=False, mint=MINT_VALIDATED)
     elif isinstance(value, dict):
         return {
-            k: (v if k in skip_keys else _redact_tool_value(v, tenant, policy, skip_keys)) for k, v in value.items()
+            k: (v if k in skip_keys else _redact_tool_value(v, tenant, policy, skip_keys, (*path, k)))
+            for k, v in value.items()
         }
     elif isinstance(value, list):
-        return [_redact_tool_value(item, tenant, policy, skip_keys) for item in value]
+        return [_redact_tool_value(item, tenant, policy, skip_keys, (*path, index)) for index, item in enumerate(value)]
     else:
         return value
 
 
-def _annotate_model_value(value: Any, entity_map: dict[str, Any], skip_keys: frozenset) -> Any:
+def _annotate_model_value(value: Any, entity_map: dict[str, Any], skip_keys: frozenset, path: tuple = ()) -> Any:
     """Recursively annotate already-redacted tool data at its model boundary."""
+    from apps.pii.store_registry import is_cardio_machine_path
+
+    if is_cardio_machine_path(path):
+        return value
     if isinstance(value, str):
         return annotate_model_context(value, entity_map)
     if isinstance(value, dict):
         return {
-            key: (item if key in skip_keys else _annotate_model_value(item, entity_map, skip_keys))
+            key: (item if key in skip_keys else _annotate_model_value(item, entity_map, skip_keys, (*path, key)))
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_annotate_model_value(item, entity_map, skip_keys) for item in value]
+        return [_annotate_model_value(item, entity_map, skip_keys, (*path, index)) for index, item in enumerate(value)]
     return value
 
 

@@ -22,6 +22,7 @@ class PlaceholderStore:
     flat_fields: tuple[str, ...]
     json_paths: tuple[str, ...]
     receipts_field: str
+    json_exclude_paths: tuple[str, ...] = ()
 
     @property
     def model(self):
@@ -41,6 +42,37 @@ class PlaceholderStore:
         """Parsed path suffixes registered below one top-level JSONField."""
         return tuple(parts[1:] for path in self.json_paths if (parts := json_path_parts(path)) and parts[0] == field)
 
+    def nested_json_exclusions(self, field: str) -> tuple[tuple[str, ...], ...]:
+        return tuple(
+            parts[1:] for path in self.json_exclude_paths if (parts := json_path_parts(path)) and parts[0] == field
+        )
+
+
+CARDIO_MACHINE_PATHS = (
+    "segments[].kind",
+    "segments[].effort",
+    "segments[].target_pace",
+    "segments[].recovery.effort",
+    "terrain",
+    "planned.*",
+)
+
+
+def _path_matches(path, pattern):
+    return len(path) == len(pattern) and all(
+        expected == "*" or expected == str(actual) for actual, expected in zip(path, pattern)
+    )
+
+
+def is_cardio_machine_path(path):
+    """Exact detail leaf paths; future free text inside segments stays authorable."""
+    for index, key in enumerate(path):
+        if key == "detail_json":
+            suffix = path[index + 1 :]
+            if any(_path_matches(suffix, json_path_parts(pattern)) for pattern in CARDIO_MACHINE_PATHS):
+                return True
+    return False
+
 
 def json_path_parts(path: str) -> tuple[str, ...]:
     """Parse dotted paths; ``[]`` and ``[*]`` are aliases for ``*``.
@@ -57,8 +89,13 @@ def rewrite_json_path(
     value: Any,
     parts: tuple[str, ...],
     transform: Callable[[str], str],
+    *,
+    exclude_paths: tuple[tuple[str, ...], ...] = (),
+    _path: tuple = (),
 ) -> tuple[Any, bool]:
     """Copy-on-write transform of string leaves selected by one parsed path."""
+    if any(_path_matches(_path, pattern) for pattern in exclude_paths):
+        return value, False
     if not parts:
         if not isinstance(value, str):
             return value, False
@@ -77,7 +114,9 @@ def rewrite_json_path(
             next_value = value
             changed = False
             for key, child in value.items():
-                rewritten_child, child_changed = rewrite_json_path(child, ("**",), transform)
+                rewritten_child, child_changed = rewrite_json_path(
+                    child, ("**",), transform, exclude_paths=exclude_paths, _path=(*_path, key)
+                )
                 if child_changed:
                     if not changed:
                         next_value = dict(value)
@@ -88,7 +127,9 @@ def rewrite_json_path(
             next_value = value
             changed = False
             for index, child in enumerate(value):
-                rewritten_child, child_changed = rewrite_json_path(child, ("**",), transform)
+                rewritten_child, child_changed = rewrite_json_path(
+                    child, ("**",), transform, exclude_paths=exclude_paths, _path=(*_path, index)
+                )
                 if child_changed:
                     if not changed:
                         next_value = list(value)
@@ -102,7 +143,9 @@ def rewrite_json_path(
             next_value = value
             changed = False
             for key, child in value.items():
-                rewritten_child, child_changed = rewrite_json_path(child, tail, transform)
+                rewritten_child, child_changed = rewrite_json_path(
+                    child, tail, transform, exclude_paths=exclude_paths, _path=(*_path, key)
+                )
                 if child_changed:
                     if not changed:
                         next_value = dict(value)
@@ -113,7 +156,9 @@ def rewrite_json_path(
             next_value = value
             changed = False
             for index, child in enumerate(value):
-                rewritten_child, child_changed = rewrite_json_path(child, tail, transform)
+                rewritten_child, child_changed = rewrite_json_path(
+                    child, tail, transform, exclude_paths=exclude_paths, _path=(*_path, index)
+                )
                 if child_changed:
                     if not changed:
                         next_value = list(value)
@@ -123,7 +168,9 @@ def rewrite_json_path(
         return value, False
 
     if isinstance(value, dict) and head in value:
-        rewritten_child, changed = rewrite_json_path(value[head], tail, transform)
+        rewritten_child, changed = rewrite_json_path(
+            value[head], tail, transform, exclude_paths=exclude_paths, _path=(*_path, head)
+        )
         if changed:
             next_value = dict(value)
             next_value[head] = rewritten_child
@@ -132,7 +179,9 @@ def rewrite_json_path(
     if isinstance(value, list) and head.isdigit():
         index = int(head)
         if 0 <= index < len(value):
-            rewritten_child, changed = rewrite_json_path(value[index], tail, transform)
+            rewritten_child, changed = rewrite_json_path(
+                value[index], tail, transform, exclude_paths=exclude_paths, _path=(*_path, index)
+            )
             if changed:
                 next_value = list(value)
                 next_value[index] = rewritten_child
@@ -235,12 +284,18 @@ _STORES = (
         flat_fields=("name", "notes", "objective"),
         json_paths=("schedule_json.**", "week_overrides.**"),
         receipts_field="pii_receipts",
+        json_exclude_paths=tuple(
+            f"{prefix}.{path}"
+            for prefix in ("schedule_json.*.detail_json", "week_overrides.*.*.detail_json")
+            for path in CARDIO_MACHINE_PATHS
+        ),
     ),
     PlaceholderStore(
         model_label="fuel.Workout",
         flat_fields=("skip_reason", "activity", "notes"),
         json_paths=("notes_thread[].text", "detail_json.**"),
         receipts_field="pii_receipts",
+        json_exclude_paths=tuple(f"{prefix}.{path}" for prefix in ("detail_json",) for path in CARDIO_MACHINE_PATHS),
     ),
     PlaceholderStore(
         model_label="fuel.FuelProfile",
@@ -253,6 +308,7 @@ _STORES = (
         flat_fields=("name",),
         json_paths=("detail_json.**",),
         receipts_field="pii_receipts",
+        json_exclude_paths=tuple(f"{prefix}.{path}" for prefix in ("detail_json",) for path in CARDIO_MACHINE_PATHS),
     ),
     PlaceholderStore(
         model_label="fuel.SleepLog",

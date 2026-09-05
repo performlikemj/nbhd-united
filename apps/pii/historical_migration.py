@@ -153,7 +153,7 @@ def repair_pending_count(tenant: Tenant, store: PlaceholderStore) -> int:
     )
 
 
-def _json_texts(value: Any, paths: tuple[tuple[str, ...], ...]) -> list[str]:
+def _json_texts(value: Any, paths: tuple[tuple[str, ...], ...], exclusions=()) -> list[str]:
     texts: list[str] = []
 
     def collect(text: str) -> str:
@@ -162,7 +162,7 @@ def _json_texts(value: Any, paths: tuple[tuple[str, ...], ...]) -> list[str]:
 
     walked = value
     for path in paths:
-        walked, _changed = rewrite_json_path(walked, path, collect)
+        walked, _changed = rewrite_json_path(walked, path, collect, exclude_paths=exclusions)
     return texts
 
 
@@ -171,7 +171,7 @@ def json_field_yields_no_registered_leaves(row: Any, store: PlaceholderStore, fi
     paths = store.nested_json_paths(field)
     if not paths or any("**" in path for path in paths):
         return False
-    return not _json_texts(getattr(row, field), paths)
+    return not _json_texts(getattr(row, field), paths, store.nested_json_exclusions(field))
 
 
 def _texts_for_fields(row: Any, store: PlaceholderStore, fields: Iterable[str]) -> list[str]:
@@ -182,7 +182,9 @@ def _texts_for_fields(row: Any, store: PlaceholderStore, fields: Iterable[str]) 
             if isinstance(value, str):
                 texts.append(value)
         else:
-            texts.extend(_json_texts(getattr(row, field), store.nested_json_paths(field)))
+            texts.extend(
+                _json_texts(getattr(row, field), store.nested_json_paths(field), store.nested_json_exclusions(field))
+            )
     return texts
 
 
