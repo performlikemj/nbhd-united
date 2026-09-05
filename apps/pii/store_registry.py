@@ -130,19 +130,6 @@ _CARDIO_RESPONSE_PATHS = tuple(
     for location in ("detail_json", "schedule_json.*.detail_json", "week_overrides.*.*.detail_json")
     for leaf in CARDIO_MACHINE_PATHS
 )
-# Include value rules as well as paths: either can change visited-string numbering.
-CARDIO_TRAVERSAL_VERSION = hashlib.sha256(
-    repr(
-        (
-            _CARDIO_RESPONSE_PATHS,
-            CARDIO_KINDS,
-            CARDIO_EFFORTS,
-            CARDIO_RECOVERY_EFFORTS,
-            CARDIO_TERRAINS,
-            CARDIO_PACE_REGEX,
-        )
-    ).encode()
-).hexdigest()[:16]
 
 
 def rewrite_json_path(
@@ -537,3 +524,17 @@ def registered_store(model_label: str) -> PlaceholderStore:
 for _store in _STORES:
     for _field in _store.json_fields:
         _store.nested_json_exclusions(_field)
+
+# Version the actual registered traversal table and its value predicates.
+CARDIO_TRAVERSAL_VERSION = hashlib.sha256(
+    repr(
+        (
+            tuple((store.model_label, store._compiled_exclusions) for store in _STORES if store.json_exclude_paths),
+            CARDIO_KINDS,
+            CARDIO_EFFORTS,
+            CARDIO_RECOVERY_EFFORTS,
+            CARDIO_TERRAINS,
+            CARDIO_PACE_REGEX,
+        )
+    ).encode()
+).hexdigest()[:16]
