@@ -327,6 +327,7 @@ def reconcile_plan_state(
             category=workout.category,
             stored_detail=workout.detail_json,
             stored_duration=workout.duration_minutes,
+            status=workout.status,
         )
         patch: dict[str, Any] = {}
         if "category" in template:

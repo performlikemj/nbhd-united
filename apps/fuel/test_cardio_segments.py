@@ -69,7 +69,9 @@ class CardioContractTests(TestCase):
         self.assertEqual(
             normalize_detail(detail, "cardio", explicit_duration_minutes=45)[0]["planned"], {"duration_s": 2700}
         )
-        self.assertNotIn("planned", normalize_detail({"planned": {"distance_km": 99}}, "cardio")[0])
+        self.assertEqual(
+            normalize_detail({"planned": {"distance_km": 99}}, "cardio")[0]["planned"], {"distance_km": 99}
+        )
         self.assertEqual(detail["planned"], {"duration_s": 999})
         self.assertEqual(
             derive_planned(
@@ -460,7 +462,8 @@ class CardioRuntimeWriteTests(DjangoTestCase):
                 **self.headers,
             )
             self.assertEqual(echoed.status_code, 200, echoed.data)
-            self.assertEqual(Workout.objects.get(plan_id=plan_id).detail_json["planned"], {"duration_s": 2100})
+            self.assertEqual(Workout.objects.get(plan_id=plan_id).detail_json["planned"], {"duration_s": 2700})
+            self.assertEqual(Workout.objects.get(plan_id=plan_id).duration_minutes, 45)
             updated = self.client.patch(
                 self.base + f"plans/{plan_id}/",
                 {"schedule_json": {"monday": {"detail_json": EXAMPLES["intervals_mixed"]}}},

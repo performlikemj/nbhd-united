@@ -294,13 +294,14 @@ def _find_candidate(tenant, clean: dict, tz, consumed: set) -> Workout | None:
         if low_signal and not any(k in (c.activity or "").lower() for k in ("walk", "hike")):
             continue
         detail = c.detail_json if isinstance(c.detail_json, dict) else {}
-        planned = detail.get("planned") if isinstance(detail.get("planned"), dict) else {}
+        has_segments = c.category == "cardio" and bool(detail.get("segments"))
+        planned = detail.get("planned") if has_segments and isinstance(detail.get("planned"), dict) else {}
         planned_seconds = _safe_float(planned.get("duration_s"))
         planned_duration = planned_seconds / 60 if planned_seconds else c.duration_minutes
         if planned_duration:
             if clean["duration_minutes"] < _MIN_DURATION_RATIO * planned_duration:
                 continue
-        elif detail.get("segments"):
+        elif has_segments:
             planned_distance = _safe_float(planned.get("distance_km"))
             measured_distance = _safe_float(clean.get("metrics", {}).get("distance_km"))
             if (

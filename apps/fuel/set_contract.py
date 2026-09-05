@@ -152,7 +152,7 @@ def _cardio_errors(detail: Any, category: str = "cardio") -> list[dict]:
             }
         ]
     errors = []
-    if "terrain" in detail and detail["terrain"] not in CARDIO_TERRAINS:
+    if category == "cardio" and "terrain" in detail and detail["terrain"] not in CARDIO_TERRAINS:
         errors.append(
             {
                 "loc": ["terrain"],
@@ -339,10 +339,8 @@ def normalize_detail(
         return detail, category, []
 
     new = dict(detail)
-    if "segments" in new:
+    if category == "cardio" and "segments" in new:
         new["planned"] = derive_planned(new["segments"], explicit_duration_minutes)
-    else:
-        new.pop("planned", None)
     overrides: list[dict] = []
     reg_cats: list[str] = []
 
@@ -491,35 +489,39 @@ def validate_detail(detail: Any, category: str) -> tuple[Any, Any]:
     # used immediately, so the lint-autofix can't reap it.
     from apps.common.llm_contracts import LLMValidationError
 
-    cardio_error = _cardio_error_envelope(detail, category)
-    if cardio_error is not None:
-        return detail, cardio_error
-
+    errors = _cardio_errors(detail, category)
+    cardio_error_count = len(errors)
     allowed_roles = {"primary", "accessory", "warmup", "mobility"}
     for container in ("exercises", "skills"):
-        for index, item in enumerate(detail.get(container, [])):
+        items = detail.get(container)
+        if not isinstance(items, list):
+            continue
+        for index, item in enumerate(items):
             if isinstance(item, dict) and "role" in item and item.get("role") not in allowed_roles:
-                return detail, LLMValidationError(
-                    message="Exercise roles must use the documented plan-programming vocabulary.",
-                    details=[
-                        {
-                            "loc": [container, index, "role"],
-                            "msg": "role must be one of: primary, accessory, warmup, mobility",
-                            "type": "invalid_role",
-                            "allowed": sorted(allowed_roles),
-                        }
-                    ],
+                errors.append(
+                    {
+                        "loc": [container, index, "role"],
+                        "msg": "role must be one of: primary, accessory, warmup, mobility",
+                        "type": "invalid_role",
+                        "allowed": sorted(allowed_roles),
+                    }
                 )
-
-    if category not in ("strength", "calisthenics"):
-        return detail, None
-
-    coerced = _coerce_container(detail)
-
-    try:
-        _WorkoutDetail.model_validate(coerced)
-    except ValidationError as exc:
-        return coerced, LLMValidationError.from_pydantic(exc)
+    if not cardio_error_count and errors:
+        return detail, LLMValidationError(
+            message="Exercise roles must use the documented plan-programming vocabulary.", details=[errors[0]]
+        )
+    coerced = detail
+    if category in ("strength", "calisthenics"):
+        coerced = _coerce_container(detail)
+        try:
+            _WorkoutDetail.model_validate(coerced)
+        except ValidationError as exc:
+            set_error = LLMValidationError.from_pydantic(exc)
+            if not errors:
+                return coerced, set_error
+            errors.extend(set_error.details)
+    if errors:
+        return coerced, LLMValidationError(message="Workout detail validation failed.", details=errors)
     return coerced, None
 
 

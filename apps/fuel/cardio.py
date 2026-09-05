@@ -2,26 +2,32 @@
 
 from math import ceil
 
-from .set_contract import normalize_detail, validate_cardio_prescription
+from .set_contract import normalize_detail
 
 
-def materialize_prescription(fields, *, category=None, stored_detail=None, stored_duration=None):
-    """Return a write patch, retaining omission and clearing stale derived duration.
-
-    Only duration explicitly in this write may override segment totals. A bare
-    duration edit reuses stored segments; an unrelated edit leaves them alone.
-    """
+def materialize_prescription(fields, *, category=None, stored_detail=None, stored_duration=None, status="planned"):
+    """Materialise only segment prescriptions; preserve legacy and actual fields."""
     out = dict(fields)
     category = out.get("category", category or "other")
+    status = out.get("status", status)
     old = stored_detail if isinstance(stored_detail, dict) else {}
-    if "detail_json" not in out:
-        if "duration_minutes" not in out or "segments" not in old:
-            return out
-        out["detail_json"] = old
-    detail = out["detail_json"]
-    if not isinstance(detail, dict):
+    detail = out.get("detail_json", old)
+    if not isinstance(detail, dict) or category != "cardio":
         return out
-    explicit = out.get("duration_minutes")
+    if "segments" not in detail and "segments" not in old:
+        return out
+    if "detail_json" not in out and ("duration_minutes" not in out or status != "planned"):
+        return out
+    same_segments = "segments" in detail and detail.get("segments") == old.get("segments")
+    if same_segments and ("duration_minutes" not in out or status != "planned"):
+        if "detail_json" in out:
+            out["detail_json"] = dict(detail)
+            if "planned" in old:
+                out["detail_json"]["planned"] = old["planned"]
+            else:
+                out["detail_json"].pop("planned", None)
+        return out
+    explicit = out.get("duration_minutes") if status == "planned" else None
     if explicit is not None:
         try:
             explicit = int(explicit)
@@ -33,22 +39,22 @@ def materialize_prescription(fields, *, category=None, stored_detail=None, store
     out["detail_json"] = detail
     if normalized_category != category:
         out["category"] = normalized_category
-    if "segments" in detail and category == "cardio":
+    if "segments" in detail:
+        if status == "planned":
+            seconds = detail["planned"].get("duration_s")
+            out["duration_minutes"] = (
+                explicit if explicit is not None else ceil(seconds / 60) if seconds is not None else None
+            )
+    elif "segments" in old:
+        detail.pop("planned", None)
+        planned = old.get("planned") if isinstance(old.get("planned"), dict) else {}
+        seconds = planned.get("duration_s")
         if (
-            "duration_minutes" not in out
-            and old.get("segments") == detail["segments"]
-            and validate_cardio_prescription(detail)
+            status == "planned"
+            and "duration_minutes" not in out
+            and isinstance(seconds, (int, float))
+            and stored_duration == ceil(seconds / 60)
         ):
-            # Grandfathered invalid legacy detail cannot supply a new total.
-            # An unrelated edit must not erase its existing duration.
-            return out
-        seconds = detail["planned"].get("duration_s")
-        out["duration_minutes"] = (
-            explicit if explicit is not None else ceil(seconds / 60) if seconds is not None else None
-        )
-    elif "segments" in old and "duration_minutes" not in out:
-        seconds = (old.get("planned") or {}).get("duration_s")
-        if seconds is not None and stored_duration == ceil(seconds / 60):
             out["duration_minutes"] = None
     return out
 
