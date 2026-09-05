@@ -20,7 +20,7 @@ class StewardAuthError(Exception):
         return self.message
 
 
-def validate_steward_hmac(request: HttpRequest) -> None:
+def validate_steward_hmac(request: HttpRequest, *, body: bytes | None = None) -> None:
     """Validate the portfolio-scoped Steward ingest signature, failing closed."""
     secret = getattr(settings, "STEWARD_INGEST_SECRET", "").strip()
     if not secret:
@@ -38,7 +38,7 @@ def validate_steward_hmac(request: HttpRequest) -> None:
     if abs(time.time() - timestamp_s) > MAX_TIMESTAMP_SKEW_SECONDS:
         raise StewardAuthError("Steward timestamp is outside the 300-second window.", 401)
 
-    signed = timestamp.encode("ascii") + b"." + request.body
+    signed = timestamp.encode("ascii") + b"." + (request.body if body is None else body)
     expected = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
         raise StewardAuthError("Invalid Steward signature.", 401)

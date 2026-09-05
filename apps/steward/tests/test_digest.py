@@ -399,26 +399,29 @@ class StewardDigestTests(TestCase):
         self.assertLessEqual(len(rendered_suite), 64)
 
     @patch(
-        "apps.steward.digest.send_digest",
-        side_effect=RuntimeError("delivery down"),
-    )
-    @patch(
         "apps.steward.digest.collect_eval_evidence",
         return_value={"created": 0},
     )
-    def test_delivery_failure_still_writes_digest_record(self, _collect, _send):
-        result = run_steward_daily_digest()
-        record = DigestRecord.objects.get()
-        self.assertEqual(record.delivery, DigestRecord.Delivery.TRANSIENT)
-        self.assertEqual(record.body, "STEWARD DAILY FACTS\n" + record.body.split("\n", 1)[1])
-        self.assertEqual(result["digest_id"], record.id)
+    def test_daily_runner_records_facts_without_sending(self, _collect):
+        with patch("apps.steward.notify.send_mail") as send_mail:
+            result = run_steward_daily_digest()
 
-    @patch("apps.steward.digest.send_digest", return_value="delivered")
+        record = DigestRecord.objects.get()
+        self.assertEqual(record.delivery, DigestRecord.Delivery.RECORDED)
+        self.assertEqual(record.body, "STEWARD DAILY FACTS\n" + record.body.split("\n", 1)[1])
+        self.assertEqual(record.stats["facts"]["version"], 1)
+        self.assertEqual(
+            render_steward_daily_digest(facts=record.stats["facts"])[0],
+            record.body,
+        )
+        self.assertEqual(result["digest_id"], record.id)
+        send_mail.assert_not_called()
+
     @patch(
         "apps.steward.digest.collect_eval_evidence",
         return_value={"created": 0},
     )
-    def test_same_utc_date_retry_skips_second_send(self, _collect, send):
+    def test_same_utc_date_retry_skips_second_record(self, _collect):
         now = timezone.now()
         with patch("apps.steward.digest.timezone.now", return_value=now):
             first = run_steward_daily_digest()
@@ -427,18 +430,15 @@ class StewardDigestTests(TestCase):
         self.assertFalse(first["skipped"])
         self.assertTrue(retry["skipped"])
         self.assertEqual(first["digest_id"], retry["digest_id"])
-        send.assert_called_once()
         self.assertEqual(DigestRecord.objects.count(), 1)
 
-    @patch("apps.steward.digest.send_digest", return_value="delivered")
     @patch(
         "apps.steward.digest.collect_eval_evidence",
         side_effect=[RuntimeError("collector unavailable"), {"created": 0}],
     )
-    def test_collection_failure_does_not_claim_date_and_same_day_retry_sends(
+    def test_collection_failure_does_not_claim_date_and_same_day_retry_records(
         self,
         collect,
-        send,
     ):
         now = timezone.now()
         with patch("apps.steward.digest.timezone.now", return_value=now):
@@ -450,39 +450,10 @@ class StewardDigestTests(TestCase):
 
         self.assertFalse(retry["skipped"])
         self.assertEqual(collect.call_count, 2)
-        send.assert_called_once()
         self.assertEqual(
             DigestRecord.objects.get().delivery,
-            DigestRecord.Delivery.DELIVERED,
+            DigestRecord.Delivery.RECORDED,
         )
-
-    @patch(
-        "apps.steward.digest.collect_eval_evidence",
-        return_value={"created": 0},
-    )
-    def test_hard_exit_after_claim_burns_day(self, _collect):
-        now = timezone.now()
-        with (
-            patch("apps.steward.digest.timezone.now", return_value=now),
-            patch(
-                "apps.steward.digest.send_digest",
-                side_effect=[SystemExit("worker killed"), DigestRecord.Delivery.DELIVERED],
-            ) as send,
-        ):
-            with self.assertRaisesRegex(SystemExit, "worker killed"):
-                run_steward_daily_digest()
-
-            burned = DigestRecord.objects.get()
-            self.assertEqual(burned.delivery, DigestRecord.Delivery.TRANSIENT)
-            self.assertEqual(burned.body, "")
-
-            retry = run_steward_daily_digest()
-
-        self.assertFalse(retry["skipped"])
-        self.assertEqual(send.call_count, 2)
-        burned.refresh_from_db()
-        self.assertEqual(burned.delivery, DigestRecord.Delivery.DELIVERED)
-        self.assertTrue(burned.body)
 
     def test_integrity_flags_are_soft_and_linked_armed_expectation_clears_flag(self):
         active = self._item("Active orphan")
