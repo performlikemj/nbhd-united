@@ -330,6 +330,7 @@ class CardioRuntimeWriteTests(DjangoTestCase):
                     "category": "cardio",
                     "activity": "Run",
                     "status": state,
+                    **({"duration_minutes": 45} if expected else {}),
                     "detail_json": {"exercises": [{"name": "Run"}]},
                 },
                 format="json",
@@ -352,13 +353,79 @@ class CardioRuntimeWriteTests(DjangoTestCase):
                         "start_date": "2099-01-05",
                         "weeks": 1,
                         "days_per_week": 1,
-                        "schedule_json": {"monday": {"category": "cardio", "activity": "Run", "detail_json": detail}},
+                        "schedule_json": {
+                            "monday": {
+                                "category": "cardio",
+                                "activity": "Run",
+                                "detail_json": detail,
+                                **({"duration_minutes": 45} if warning else {}),
+                            }
+                        },
                     },
                     format="json",
                     **self.headers,
                 )
             self.assertEqual(response.status_code, 201, response.data)
             self.assertEqual("warnings" in response.data, warning)
+
+    def test_exercises_only_planned_cardio_rejected_on_all_write_paths(self):
+        from datetime import date
+
+        from apps.fuel.models import Workout
+
+        day = {"category": "cardio", "activity": "Run", "detail_json": {"exercises": [{"name": "Run"}]}}
+        workout = Workout.objects.create(tenant=self.tenant, date=date(2099, 1, 5), status="planned", **day)
+        requests = (
+            (self.client.post, self.base + "log/", {**day, "status": "planned"}),
+            (self.client.patch, self.base + f"workouts/{workout.id}/", {"detail_json": day["detail_json"]}),
+            (
+                self.client.post,
+                self.base + "plans/",
+                {
+                    "name": "Missing cardio prescription",
+                    "start_date": "2099-01-05",
+                    "weeks": 1,
+                    "days_per_week": 1,
+                    "schedule_json": {"monday": day},
+                },
+            ),
+        )
+        for request, url, payload in requests:
+            with self.subTest(url=url):
+                response = request(url, payload, format="json", **self.headers)
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertIn("missing_prescription", str(response.data))
+
+    def test_duration_carrying_legacy_patch_warns_and_emits_shape(self):
+        from datetime import date
+        from unittest.mock import patch
+
+        from apps.fuel.models import Workout
+
+        workout = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2099, 1, 5),
+            category="cardio",
+            activity="Run",
+            status="planned",
+            duration_minutes=45,
+        )
+        with patch("apps.platform_logs.telemetry.emit_tool_event") as emit:
+            response = self.client.patch(
+                self.base + f"workouts/{workout.id}/",
+                {"detail_json": {"exercises": [{"name": "Run"}]}},
+                format="json",
+                **self.headers,
+            )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["warnings"], ["cardio days use segments, not exercises"])
+        self.assertTrue(
+            any(
+                call.kwargs.get("tool_name") == "fuel.cardio.prescription_shape"
+                and call.kwargs.get("reason_code") == "exercises"
+                for call in emit.call_args_list
+            )
+        )
 
     def test_plan_segment_replacement_does_not_inherit_old_duration(self):
         from unittest.mock import patch

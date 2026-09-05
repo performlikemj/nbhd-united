@@ -624,6 +624,18 @@ test("cardio schemas are present in every write detail and stay open", () => {
     assert.deepEqual(variants[1].properties.recovery.properties.effort.enum, fixture.recovery_efforts);
     assert.equal(detail.properties.segments.minItems, 1);
     assert.equal(detail.properties.segments.maxItems, fixture.limits.blocks_max);
+    assert.match(detail.properties.segments.description, /exactly one dose; repeat\/recovery only on interval; recovery needs repeat ≥ 2/);
+    const assertProviderSafe = (node) => {
+      if (!node || typeof node !== "object") return;
+      for (const [key, value] of Object.entries(node)) {
+        assert.ok(!["not", "if", "then"].includes(key), `unsupported cardio schema keyword: ${key}`);
+        assertProviderSafe(value);
+      }
+    };
+    assertProviderSafe(detail.properties.segments);
+    for (const dose of [...variants, variants[1].properties.recovery]) {
+      assert.deepEqual(dose.oneOf, [{ required: ["duration_s"] }, { required: ["distance_km"] }]);
+    }
   }
   assert.equal(tools.nbhd_fuel_update_plan.parameters.properties.schedule_json.additionalProperties.required, undefined);
   assert.match(tools.nbhd_fuel_update_plan.description, /Do not target cardio days with accessory_rotations/);

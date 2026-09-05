@@ -20,8 +20,8 @@ const CARDIO_RECOVERY_EFFORTS = ["easy", "rest"];
 const CARDIO_TERRAINS = ["flat", "hills", "trail", "track", "treadmill"];
 const CARDIO_GUIDANCE = 'Cardio (run/bike/row/swim) PLANNED days: write "segments", never "exercises". Completed logs may be actuals only. Example: {"segments":[{"kind":"warmup","duration_s":600,"effort":"easy"},{"kind":"interval","repeat":6,"distance_km":0.8,"effort":"hard","recovery":{"duration_s":120,"effort":"easy"}},{"kind":"cooldown","duration_s":600,"effort":"easy"}]}. Effort is qualitative prescribed intensity.';
 const CARDIO_DOSE_RULE = [
-  { required: ["duration_s"], not: { required: ["distance_km"] } },
-  { required: ["distance_km"], not: { required: ["duration_s"] } },
+  { required: ["duration_s"] },
+  { required: ["distance_km"] },
 ];
 const CARDIO_WORK_PROPERTIES = {
   duration_s: { type: "integer", minimum: 10, maximum: 14400 },
@@ -31,13 +31,12 @@ const CARDIO_WORK_PROPERTIES = {
 };
 const CARDIO_SEGMENTS_SCHEMA = {
   type: "array", minItems: 1, maxItems: 40,
-  description: "Cardio-only ordered blocks; at most 200 expanded work reps. Omit the key when empty. Recovery occurs BETWEEN reps (repeat minus one). Planned totals are server-derived; segments take precedence over legacy structure and flat targets.",
+  description: "Cardio-only ordered blocks; exactly one dose; repeat/recovery only on interval; recovery needs repeat ≥ 2. At most 200 expanded work reps. Omit the key when empty. Recovery occurs BETWEEN reps (repeat minus one). Planned totals are server-derived; segments take precedence over legacy structure and flat targets.",
   items: {
     oneOf: [
       {
         type: "object", required: ["kind", "effort"], oneOf: CARDIO_DOSE_RULE,
         properties: { ...CARDIO_WORK_PROPERTIES, kind: { type: "string", enum: CARDIO_KINDS.filter(kind => kind !== "interval") } },
-        not: { anyOf: [{ required: ["repeat"] }, { required: ["recovery"] }] },
       },
       {
         type: "object", required: ["kind", "effort", "repeat"], oneOf: CARDIO_DOSE_RULE,
@@ -54,7 +53,6 @@ const CARDIO_SEGMENTS_SCHEMA = {
             },
           },
         },
-        if: { required: ["recovery"] }, then: { properties: { repeat: { minimum: 2 } } },
       },
     ],
   },

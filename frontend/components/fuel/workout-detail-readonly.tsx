@@ -381,11 +381,26 @@ function CardioStatsReadOnly({ detail, actualDurationSeconds }: { detail: Record
     { label: "POWER", value: avgPower, unit: "w" },
   ];
 
+  const populated = rows.filter((row) => row.value != null && row.value !== "");
+  const planned = detail.planned && typeof detail.planned === "object"
+    ? detail.planned as { duration_s?: number; distance_km?: number } : null;
+  const hasPrescription = (
+    (Array.isArray(detail.segments) && detail.segments.some((segment) => segment && typeof segment === "object")) ||
+    (typeof detail.structure === "string" && detail.structure.length > 0) ||
+    (typeof detail.terrain === "string" && detail.terrain.length > 0) ||
+    typeof planned?.duration_s === "number" || typeof planned?.distance_km === "number"
+  );
+  if (!hasPrescription && populated.length === 0) return <EmptyDetails />;
+
   return (
     <div className="space-y-3">
       <CardioPrescriptionReadOnly detail={detail} actualDurationSeconds={actualDurationSeconds} />
-      <SectionHeader label="STATS" />
-      <ReadOnlyStatGrid rows={rows} />
+      {populated.length > 0 ? (
+        <>
+          <SectionHeader label="STATS" />
+          <ReadOnlyStatGrid rows={populated} />
+        </>
+      ) : null}
     </div>
   );
 }

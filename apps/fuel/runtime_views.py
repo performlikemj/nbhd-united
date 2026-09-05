@@ -27,7 +27,7 @@ from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
 from . import catalog
-from .cardio import add_prescription_feedback, legacy_cardio_exercises, plan_prescription_days
+from .cardio import add_prescription_feedback, plan_prescription_days
 from .catalog_annotation import IncomingPath, annotate_incoming, incoming_name_paths, reinsert_catalog_refs
 from .models import (
     BodyWeightLog,
@@ -579,14 +579,10 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         requires_prescription = (
             category in ("strength", "calisthenics") and workout_status not in _NO_PRESCRIPTION_STATUSES
         ) or workout_status == WorkoutStatus.PLANNED
-        if (
-            requires_prescription
-            and not legacy_cardio_exercises(detail_json, category)
-            and not _has_prescription(
-                detail_json,
-                category,
-                duration_minutes=duration,
-            )
+        if requires_prescription and not _has_prescription(
+            detail_json,
+            category,
+            duration_minutes=duration,
         ):
             _emit_fuel_event(
                 tenant,
@@ -840,14 +836,10 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                     detail={"category": ncat, "field": str(flat_err.details[0]["loc"][-1])},
                 )
                 return Response(flat_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
-            if (
-                workout.status == WorkoutStatus.PLANNED
-                and not legacy_cardio_exercises(nd, ncat)
-                and not _has_prescription(
-                    nd,
-                    ncat,
-                    duration_minutes=workout.duration_minutes,
-                )
+            if workout.status == WorkoutStatus.PLANNED and not _has_prescription(
+                nd,
+                ncat,
+                duration_minutes=workout.duration_minutes,
             ):
                 _emit_fuel_event(
                     tenant,
@@ -2262,14 +2254,10 @@ def _validate_normalize_schedule(schedule_json, *, require_detail=True, detail_s
         # category matrix rejects a planned day that would expand into a title
         # and duration with no usable instructions. Omitted detail on partial
         # updates remains an explicit leave-existing-content-alone signal.
-        if (
-            (require_detail or detail_supplied)
-            and not legacy_cardio_exercises(detail, category)
-            and not _has_prescription(
-                detail,
-                category,
-                duration_minutes=duration,
-            )
+        if (require_detail or detail_supplied) and not _has_prescription(
+            detail,
+            category,
+            duration_minutes=duration,
         ):
             pres_err = _missing_prescription_error(
                 category,
