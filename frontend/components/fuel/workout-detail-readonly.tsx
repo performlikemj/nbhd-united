@@ -21,6 +21,8 @@
  * trap. Per-set rows inside a single exercise/skill are also capped.
  */
 
+import { StatusPill } from "@/components/status-pill";
+
 import type { WorkoutCategory } from "@/lib/types";
 
 import { kgToDisplay, useWeightUnit } from "./use-weight-unit";
@@ -51,6 +53,8 @@ function setMetric(s: RawSet): SetMetric {
 interface WorkoutDetailReadOnlyProps {
   detail: Record<string, unknown> | null | undefined;
   category: WorkoutCategory | string;
+  actualDurationSeconds?: number | null;
+  completed?: boolean;
 }
 
 /**
@@ -58,7 +62,7 @@ interface WorkoutDetailReadOnlyProps {
  * line if the category renderer finds nothing useful — the orphan-draft
  * spec calls this out explicitly: never silently render an empty section.
  */
-export function WorkoutDetailReadOnly({ detail, category }: WorkoutDetailReadOnlyProps) {
+export function WorkoutDetailReadOnly({ detail, category, actualDurationSeconds, completed = false }: WorkoutDetailReadOnlyProps) {
   const safeDetail = (detail ?? {}) as Record<string, unknown>;
 
   let body: React.ReactNode = null;
@@ -67,7 +71,7 @@ export function WorkoutDetailReadOnly({ detail, category }: WorkoutDetailReadOnl
       body = <StrengthReadOnly detail={safeDetail} />;
       break;
     case "cardio":
-      body = <CardioStatsReadOnly detail={safeDetail} />;
+      body = <CardioStatsReadOnly detail={safeDetail} actualDurationSeconds={actualDurationSeconds} completed={completed} />;
       break;
     case "hiit":
       body = (
@@ -285,7 +289,97 @@ function formatCalisthenicsSet(s: RawSet): string {
 
 /* ---- Cardio ---- */
 
-function CardioStatsReadOnly({ detail }: { detail: Record<string, unknown> }) {
+type CardioDose = { duration_s?: number; distance_km?: number; effort?: string };
+type CardioSegment = CardioDose & {
+  kind?: string;
+  repeat?: number;
+  recovery?: CardioDose;
+  target_pace?: string;
+};
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function cardioSegments(value: unknown): CardioSegment[] {
+  if (!Array.isArray(value)) return [];
+  const dose = (raw: Record<string, unknown>): CardioDose => ({
+    duration_s: finiteNumber(raw.duration_s) ? raw.duration_s : undefined,
+    distance_km: finiteNumber(raw.distance_km) ? raw.distance_km : undefined,
+    effort: typeof raw.effort === "string" ? raw.effort : undefined,
+  });
+  return value.filter((raw): raw is Record<string, unknown> => Boolean(raw) && typeof raw === "object" && !Array.isArray(raw))
+    .map((raw) => ({
+      ...dose(raw),
+      kind: typeof raw.kind === "string" ? raw.kind : undefined,
+      repeat: finiteNumber(raw.repeat) ? raw.repeat : undefined,
+      target_pace: typeof raw.target_pace === "string" ? raw.target_pace : undefined,
+      recovery: raw.recovery && typeof raw.recovery === "object" && !Array.isArray(raw.recovery)
+        ? dose(raw.recovery as Record<string, unknown>) : undefined,
+    }));
+}
+
+function durationLabel(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+export function CardioPrescriptionReadOnly({ detail, actualDurationSeconds, completed = false }: {
+  detail: Record<string, unknown>;
+  actualDurationSeconds?: number | null;
+  completed?: boolean;
+}) {
+  const { unit } = useDistanceUnit();
+  const segments = cardioSegments(detail.segments);
+  const doseLabel = (dose: CardioDose) => typeof dose.duration_s === "number"
+    ? durationLabel(dose.duration_s)
+    : typeof dose.distance_km === "number" ? `${kmToDisplay(dose.distance_km, unit)} ${unit}` : "—";
+  const planned = detail.planned && typeof detail.planned === "object"
+    ? detail.planned as { duration_s?: number; distance_km?: number } : null;
+  const plannedParts = [
+    finiteNumber(planned?.duration_s) ? durationLabel(planned.duration_s) : null,
+    finiteNumber(planned?.distance_km) ? `${kmToDisplay(planned.distance_km, unit)} ${unit}` : null,
+  ].filter(Boolean);
+  const actualParts = completed ? [
+    finiteNumber(actualDurationSeconds) ? durationLabel(actualDurationSeconds) : null,
+    finiteNumber(detail.distance_km) ? `${kmToDisplay(detail.distance_km, unit)} ${unit}` : null,
+  ].filter(Boolean) : [];
+  const structure = typeof detail.structure === "string" ? detail.structure : null;
+  const terrain = typeof detail.terrain === "string" ? detail.terrain : null;
+  if (!segments.length && !structure && !terrain && !plannedParts.length) return null;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <SectionHeader label="PRESCRIPTION" />
+        {terrain ? <StatusPill status={terrain} size="sm" /> : null}
+      </div>
+      {segments.length > 0 ? (
+        <ol className="divide-y divide-border rounded-lg border border-border bg-surface-elevated/40 px-3">
+          {segments.map((segment, index) => {
+            const pace = paceToDisplay(segment.target_pace, unit);
+            const work = `${segment.kind === "interval" ? `${segment.repeat ?? 1} × ` : ""}${doseLabel(segment)} ${segment.effort ?? ""}`;
+            const recovery = segment.kind === "interval" && segment.recovery
+              ? ` · ${doseLabel(segment.recovery)} ${segment.recovery.effort ?? ""}` : "";
+            return (
+              <li key={index} className="py-2 text-sm text-ink-muted">
+                <span className="capitalize text-ink">{segment.kind ?? "Segment"}</span>
+                <span> · {work}{recovery}{pace ? ` · ${pace}/${unit}` : ""}</span>
+              </li>
+            );
+          })}
+        </ol>
+      ) : structure ? <p className="whitespace-pre-line text-sm text-ink-muted">{structure}</p> : null}
+      {plannedParts.length > 0 && actualParts.length > 0 ? (
+        <p className="font-mono text-xs text-ink-muted">
+          Planned {plannedParts.join(" · ")} · Actual {actualParts.join(" · ")}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function CardioStatsReadOnly({ detail, actualDurationSeconds, completed = false }: { detail: Record<string, unknown>; actualDurationSeconds?: number | null; completed?: boolean }) {
   const { unit } = useDistanceUnit();
   const elevUnit = elevationLabel(unit);
 
@@ -309,13 +403,26 @@ function CardioStatsReadOnly({ detail }: { detail: Record<string, unknown> }) {
     { label: "POWER", value: avgPower, unit: "w" },
   ];
 
-  const populated = rows.filter((r) => r.value != null && r.value !== "");
-  if (populated.length === 0) return <EmptyDetails />;
+  const populated = rows.filter((row) => row.value != null && row.value !== "");
+  const planned = detail.planned && typeof detail.planned === "object"
+    ? detail.planned as { duration_s?: number; distance_km?: number } : null;
+  const hasPrescription = (
+    (cardioSegments(detail.segments).length > 0) ||
+    (typeof detail.structure === "string" && detail.structure.length > 0) ||
+    (typeof detail.terrain === "string" && detail.terrain.length > 0) ||
+    finiteNumber(planned?.duration_s) || finiteNumber(planned?.distance_km)
+  );
+  if (!hasPrescription && populated.length === 0) return <EmptyDetails />;
 
   return (
-    <div className="space-y-2">
-      <SectionHeader label="STATS" />
-      <ReadOnlyStatGrid rows={populated} />
+    <div className="space-y-3">
+      <CardioPrescriptionReadOnly detail={detail} actualDurationSeconds={actualDurationSeconds} completed={completed} />
+      {populated.length > 0 ? (
+        <>
+          <SectionHeader label="STATS" />
+          <ReadOnlyStatGrid rows={populated} />
+        </>
+      ) : null}
     </div>
   );
 }

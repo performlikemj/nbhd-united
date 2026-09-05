@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "kinds": ["warmup", "steady", "interval", "cooldown"],
+  "efforts": ["easy", "steady", "tempo", "hard", "max"],
+  "recovery_efforts": ["easy", "rest"],
+  "terrains": ["flat", "hills", "trail", "track", "treadmill"],
+  "limits": {
+    "blocks_max": 40, "expanded_reps_max": 200, "repeat_min": 1, "repeat_max": 30,
+    "duration_s_min": 10, "duration_s_max": 14400,
+    "distance_km_min": 0.05, "distance_km_max": 100,
+    "recovery_duration_s_min": 10, "recovery_duration_s_max": 3600,
+    "recovery_distance_km_min": 0.05, "recovery_distance_km_max": 10
+  },
+  "pace_regex": "^[0-9]{1,2}:[0-5][0-9]$",
+  "rules": [
+    "segments is cardio-only; omit the key when there are no segments; [] is invalid",
+    "each block has exactly one dose: duration_s or distance_km",
+    "interval: repeat 1..30; recovery is optional and happens BETWEEN reps (repeat-1 recoveries); repeat 1 with recovery is invalid",
+    "planned.duration_s is derived only when every work and recovery dose is time-based; planned.distance_km only when every dose is distance-based; otherwise the key is absent",
+    "planned is server-derived; clients never send it; HealthKit merges never touch it",
+    "precedence for display: segments > structure (legacy text) > flat targets"
+  ],
+  "examples": [
+    {
+      "name": "easy_run_timed",
+      "detail_json": {"segments": [
+        {"kind": "warmup", "duration_s": 300, "effort": "easy"},
+        {"kind": "steady", "duration_s": 1500, "effort": "steady"},
+        {"kind": "cooldown", "duration_s": 300, "effort": "easy"}
+      ]},
+      "expected": {"valid": true, "planned": {"duration_s": 2100}, "expanded_reps": 3, "has_prescription": true}
+    },
+    {
+      "name": "intervals_mixed",
+      "detail_json": {"segments": [
+        {"kind": "warmup", "duration_s": 600, "effort": "easy"},
+        {"kind": "interval", "repeat": 6, "distance_km": 0.8, "effort": "hard", "recovery": {"duration_s": 120, "effort": "easy"}},
+        {"kind": "cooldown", "duration_s": 600, "effort": "easy"}
+      ], "terrain": "track"},
+      "expected": {"valid": true, "planned": {}, "expanded_reps": 8, "has_prescription": true}
+    },
+    {
+      "name": "long_run_distance",
+      "detail_json": {"segments": [
+        {"kind": "steady", "distance_km": 16, "effort": "easy", "target_pace": "6:00"}
+      ]},
+      "expected": {"valid": true, "planned": {"distance_km": 16}, "expanded_reps": 1, "has_prescription": true}
+    },
+    {
+      "name": "intervals_all_timed",
+      "detail_json": {"segments": [
+        {"kind": "interval", "repeat": 4, "duration_s": 180, "effort": "tempo", "recovery": {"duration_s": 60, "effort": "rest"}}
+      ]},
+      "expected": {"valid": true, "planned": {"duration_s": 900}, "expanded_reps": 4, "has_prescription": true}
+    }
+  ],
+  "invalid": [
+    {"name": "both_doses", "detail_json": {"segments": [{"kind": "steady", "duration_s": 600, "distance_km": 2, "effort": "easy"}]}},
+    {"name": "no_dose", "detail_json": {"segments": [{"kind": "steady", "effort": "easy"}]}},
+    {"name": "empty_list", "detail_json": {"segments": []}},
+    {"name": "repeat_one_with_recovery", "detail_json": {"segments": [{"kind": "interval", "repeat": 1, "duration_s": 60, "effort": "hard", "recovery": {"duration_s": 60, "effort": "easy"}}]}},
+    {"name": "bad_pace", "detail_json": {"segments": [{"kind": "steady", "duration_s": 600, "effort": "easy", "target_pace": "5.30"}]}},
+    {"name": "unknown_effort", "detail_json": {"segments": [{"kind": "steady", "duration_s": 600, "effort": "brisk"}]}},
+    {"name": "unknown_kind", "detail_json": {"segments": [{"kind": "recovery", "duration_s": 600, "effort": "easy"}]}},
+    {"name": "bad_terrain", "detail_json": {"segments": [{"kind": "steady", "duration_s": 600, "effort": "easy"}], "terrain": "beach"}},
+    {"name": "too_many_reps", "detail_json": {"segments": [
+      {"kind": "interval", "repeat": 30, "duration_s": 60, "effort": "hard"}, {"kind": "interval", "repeat": 30, "duration_s": 60, "effort": "hard"},
+      {"kind": "interval", "repeat": 30, "duration_s": 60, "effort": "hard"}, {"kind": "interval", "repeat": 30, "duration_s": 60, "effort": "hard"},
+      {"kind": "interval", "repeat": 30, "duration_s": 60, "effort": "hard"}, {"kind": "interval", "repeat": 30, "duration_s": 60, "effort": "hard"},
+      {"kind": "interval", "repeat": 30, "duration_s": 60, "effort": "hard"}
+    ]}}
+  ]
+}

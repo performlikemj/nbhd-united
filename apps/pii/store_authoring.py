@@ -79,6 +79,7 @@ def owner_store_representation(instance, tenant, data: dict[str, Any], *, model_
                 value,
                 path,
                 lambda text: rehydrate_for_tenant(tenant, text),
+                exclude_paths=store.nested_json_exclusions(field),
             )
         represented[field] = value
     if "pii_receipts" in represented:

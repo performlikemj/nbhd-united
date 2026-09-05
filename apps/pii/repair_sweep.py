@@ -18,7 +18,7 @@ from django.utils import timezone
 
 from apps.pii.alerts import send_rate_alert
 from apps.pii.authoring import _aggregate_json_receipts, author_json_paths, author_text
-from apps.pii.store_registry import PlaceholderStore, registered_stores, rewrite_json_path
+from apps.pii.store_registry import CARDIO_TRAVERSAL_VERSION, PlaceholderStore, registered_stores, rewrite_json_path
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,10 @@ def _json_progress(old_receipt: Any, value: Any) -> tuple[int, dict[str, Any] | 
     if not isinstance(old_receipt, dict) or old_receipt.get("reason") != _PARTIAL_JSON_REASON:
         return 0, None
     progress = old_receipt.get(_PARTIAL_JSON_PROGRESS)
-    if not isinstance(progress, dict) or progress.get("source_digest") != _json_digest(value):
+    if not isinstance(progress, dict) or (
+        progress.get("source_digest") != _json_digest(value)
+        or progress.get("traversal_version") != CARDIO_TRAVERSAL_VERSION
+    ):
         return 0, None
     cursor = progress.get("cursor")
     aggregate = progress.get("aggregate")
@@ -123,6 +126,7 @@ def _partial_json_receipt(
         _PARTIAL_JSON_PROGRESS: {
             "cursor": cursor,
             "source_digest": _json_digest(value),
+            "traversal_version": CARDIO_TRAVERSAL_VERSION,
             "aggregate": aggregate,
         },
     }
@@ -167,9 +171,16 @@ def _author_json_chunk(
         leaf_receipts.append(authored.receipt)
         return authored.text
 
+    from apps.pii.store_registry import registered_store
+
+    exclusions = (
+        registered_store(model_label).nested_json_exclusions(field)
+        if model_label and model_label.startswith("fuel.")
+        else ()
+    )
     authored_value = value
     for path in paths:
-        authored_value, _changed = rewrite_json_path(authored_value, path, _author_leaf)
+        authored_value, _changed = rewrite_json_path(authored_value, path, _author_leaf, exclude_paths=exclusions)
 
     if leaves_seen == 0:
         # Preserve the existing empty-input and shape-mismatch semantics. This

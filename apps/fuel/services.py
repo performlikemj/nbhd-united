@@ -8,6 +8,7 @@ from datetime import date as _date
 from datetime import timedelta
 from typing import Any
 
+from .cardio import emit_prescription_shape, materialize_prescription
 from .set_contract import METRIC_HOLD_TIME, set_metric
 
 # --------------------------------------------------------------------------
@@ -37,6 +38,19 @@ class WorkoutSpec:
     duration_minutes: int | None
     detail_json: dict
     rpe: int | None = None
+
+    def __post_init__(self):
+        fields = materialize_prescription(
+            {
+                "category": self.category,
+                "activity": self.activity,
+                "detail_json": self.detail_json,
+                "duration_minutes": self.duration_minutes,
+            }
+        )
+        self.detail_json = fields["detail_json"]
+        self.duration_minutes = fields.get("duration_minutes")
+        self.category = fields["category"]
 
 
 @dataclass
@@ -308,6 +322,13 @@ def reconcile_plan_state(
         ``apply_reconciliation`` calling ``edit_lock_check`` and skipping
         the retemplate.
         """
+        template = materialize_prescription(
+            template,
+            category=workout.category,
+            stored_detail=workout.detail_json,
+            stored_duration=workout.duration_minutes,
+            status=workout.status,
+        )
         patch: dict[str, Any] = {}
         if "category" in template:
             cat = template["category"]
@@ -565,6 +586,7 @@ def apply_reconciliation(
                 update_fields.append("pii_receipts")
             update_fields.append("updated_at")
             workout.save(update_fields=update_fields)
+            emit_prescription_shape(tenant, workout.category, workout.detail_json)
             counts["workouts_adopted"] += 1
 
         for stale_workout, patch, field_receipts in authored_retemplates:
@@ -594,6 +616,7 @@ def apply_reconciliation(
             if update_fields:
                 update_fields.append("updated_at")
                 workout.save(update_fields=update_fields)
+                emit_prescription_shape(tenant, workout.category, workout.detail_json)
                 counts["workouts_retemplated"] += 1
 
         for spec, authored, receipts in authored_creations:
@@ -614,6 +637,7 @@ def apply_reconciliation(
                 rpe=spec.rpe,
                 pii_receipts=receipts,
             )
+            emit_prescription_shape(tenant, spec.category, authored["detail_json"])
             counts["workouts_created"] += 1
 
     return counts
