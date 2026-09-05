@@ -211,7 +211,7 @@ function DraftSummary({ draft }: { draft: OrphanDraft }) {
           <div className="mt-2 text-sm text-ink-muted whitespace-pre-line">&ldquo;{draft.notes}&rdquo;</div>
         )}
       </div>
-      <WorkoutDetailReadOnly detail={draft.detail_json} category={draft.category} />
+      <WorkoutDetailReadOnly detail={draft.detail_json} category={draft.category} completed={draft.status === "done"} />
     </div>
   );
 }

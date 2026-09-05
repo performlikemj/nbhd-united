@@ -609,16 +609,22 @@ test("cardio schemas are present in every write detail and stay open", () => {
     if (props.detail_json) details.push(props.detail_json);
     if (props.schedule_json) {
       details.push(props.schedule_json.additionalProperties.properties.detail_json);
-      const override = props.week_overrides.additionalProperties.additionalProperties.anyOf;
-      assert.equal(override[1].type, "null");
-      details.push(override[0].properties.detail_json);
+      const override = props.week_overrides.additionalProperties.additionalProperties;
+      assert.equal(override.type, undefined);
+      assert.match(override.description, /null makes this a rest day/);
+      details.push(override.properties.detail_json);
     }
   }
   assert.equal(details.length, 6);
   for (const detail of details) {
     assert.notEqual(detail.additionalProperties, false);
     assert.deepEqual(detail.properties.terrain.enum, fixture.terrains);
-    const variants = detail.properties.segments.items.oneOf;
+    const segments = detail.properties.segments;
+    if (!segments.items) {
+      assert.deepEqual(segments, { type: "array", description: "Cardio blocks — same shape as nbhd_fuel_create_plan detail_json.segments (server-validated)." });
+      continue;
+    }
+    const variants = segments.items.oneOf;
     assert.deepEqual(variants.flatMap(v => v.properties.kind.enum).sort(), fixture.kinds.toSorted());
     assert.deepEqual(variants[1].properties.effort.enum, fixture.efforts);
     assert.deepEqual(variants[1].properties.recovery.properties.effort.enum, fixture.recovery_efforts);
@@ -637,6 +643,26 @@ test("cardio schemas are present in every write detail and stay open", () => {
       assert.deepEqual(dose.oneOf, [{ required: ["duration_s"] }, { required: ["distance_km"] }]);
     }
   }
+  assert.equal(details.filter(detail => detail.properties.segments.items).length, 2);
+  for (const name of ["log_workout", "update_workout", "create_plan", "update_plan"]) {
+    const tool = tools[`nbhd_fuel_${name}`];
+    assert.equal((JSON.stringify(tool).match(/Effort is qualitative prescribed intensity/g) || []).length, 1);
+    const assertSafeShape = (node) => {
+      if (!node || typeof node !== "object") return;
+      assert.equal(Array.isArray(node.type), false);
+      for (const [key, value] of Object.entries(node)) {
+        assert.ok(!["not", "if", "then", "anyOf"].includes(key), `unsupported keyword ${key}`);
+        assertSafeShape(value);
+      }
+    };
+    assertSafeShape(tool.parameters);
+  }
+  const serializedSize = ["log_workout", "update_workout", "create_plan", "update_plan"]
+    .reduce((size, name) => {
+      const { name: toolName, description, parameters } = tools[`nbhd_fuel_${name}`];
+      return size + JSON.stringify({ name: toolName, description, parameters }).length;
+    }, 0);
+  assert.ok(serializedSize < 29000, `Fuel write metadata grew to ${serializedSize}`);
   assert.equal(tools.nbhd_fuel_update_plan.parameters.properties.schedule_json.additionalProperties.required, undefined);
   assert.match(tools.nbhd_fuel_update_plan.description, /Do not target cardio days with accessory_rotations/);
 });

@@ -736,6 +736,7 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
             <div className="space-y-3">
               <CardioPrescriptionReadOnly
                 detail={detail}
+                completed={workout.status === "done"}
                 actualDurationSeconds={workout.status === "done"
                   ? (workout as FuelWorkout & { duration_seconds?: number | null }).duration_seconds ?? (workout.duration_minutes != null ? workout.duration_minutes * 60 : null)
                   : null}

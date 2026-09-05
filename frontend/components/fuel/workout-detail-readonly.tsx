@@ -54,6 +54,7 @@ interface WorkoutDetailReadOnlyProps {
   detail: Record<string, unknown> | null | undefined;
   category: WorkoutCategory | string;
   actualDurationSeconds?: number | null;
+  completed?: boolean;
 }
 
 /**
@@ -61,7 +62,7 @@ interface WorkoutDetailReadOnlyProps {
  * line if the category renderer finds nothing useful — the orphan-draft
  * spec calls this out explicitly: never silently render an empty section.
  */
-export function WorkoutDetailReadOnly({ detail, category, actualDurationSeconds }: WorkoutDetailReadOnlyProps) {
+export function WorkoutDetailReadOnly({ detail, category, actualDurationSeconds, completed = false }: WorkoutDetailReadOnlyProps) {
   const safeDetail = (detail ?? {}) as Record<string, unknown>;
 
   let body: React.ReactNode = null;
@@ -70,7 +71,7 @@ export function WorkoutDetailReadOnly({ detail, category, actualDurationSeconds 
       body = <StrengthReadOnly detail={safeDetail} />;
       break;
     case "cardio":
-      body = <CardioStatsReadOnly detail={safeDetail} actualDurationSeconds={actualDurationSeconds} />;
+      body = <CardioStatsReadOnly detail={safeDetail} actualDurationSeconds={actualDurationSeconds} completed={completed} />;
       break;
     case "hiit":
       body = (
@@ -296,32 +297,53 @@ type CardioSegment = CardioDose & {
   target_pace?: string;
 };
 
+function finiteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function cardioSegments(value: unknown): CardioSegment[] {
+  if (!Array.isArray(value)) return [];
+  const dose = (raw: Record<string, unknown>): CardioDose => ({
+    duration_s: finiteNumber(raw.duration_s) ? raw.duration_s : undefined,
+    distance_km: finiteNumber(raw.distance_km) ? raw.distance_km : undefined,
+    effort: typeof raw.effort === "string" ? raw.effort : undefined,
+  });
+  return value.filter((raw): raw is Record<string, unknown> => Boolean(raw) && typeof raw === "object" && !Array.isArray(raw))
+    .map((raw) => ({
+      ...dose(raw),
+      kind: typeof raw.kind === "string" ? raw.kind : undefined,
+      repeat: finiteNumber(raw.repeat) ? raw.repeat : undefined,
+      target_pace: typeof raw.target_pace === "string" ? raw.target_pace : undefined,
+      recovery: raw.recovery && typeof raw.recovery === "object" && !Array.isArray(raw.recovery)
+        ? dose(raw.recovery as Record<string, unknown>) : undefined,
+    }));
+}
+
 function durationLabel(seconds: number): string {
   const total = Math.max(0, Math.round(seconds));
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
-export function CardioPrescriptionReadOnly({ detail, actualDurationSeconds }: {
+export function CardioPrescriptionReadOnly({ detail, actualDurationSeconds, completed = false }: {
   detail: Record<string, unknown>;
   actualDurationSeconds?: number | null;
+  completed?: boolean;
 }) {
   const { unit } = useDistanceUnit();
-  const segments = Array.isArray(detail.segments)
-    ? detail.segments.filter((segment): segment is CardioSegment => Boolean(segment) && typeof segment === "object")
-    : [];
+  const segments = cardioSegments(detail.segments);
   const doseLabel = (dose: CardioDose) => typeof dose.duration_s === "number"
     ? durationLabel(dose.duration_s)
     : typeof dose.distance_km === "number" ? `${kmToDisplay(dose.distance_km, unit)} ${unit}` : "—";
   const planned = detail.planned && typeof detail.planned === "object"
     ? detail.planned as { duration_s?: number; distance_km?: number } : null;
   const plannedParts = [
-    typeof planned?.duration_s === "number" ? durationLabel(planned.duration_s) : null,
-    typeof planned?.distance_km === "number" ? `${kmToDisplay(planned.distance_km, unit)} ${unit}` : null,
+    finiteNumber(planned?.duration_s) ? durationLabel(planned.duration_s) : null,
+    finiteNumber(planned?.distance_km) ? `${kmToDisplay(planned.distance_km, unit)} ${unit}` : null,
   ].filter(Boolean);
-  const actualParts = [
-    typeof actualDurationSeconds === "number" ? durationLabel(actualDurationSeconds) : null,
-    typeof detail.distance_km === "number" ? `${kmToDisplay(detail.distance_km, unit)} ${unit}` : null,
-  ].filter(Boolean);
+  const actualParts = completed ? [
+    finiteNumber(actualDurationSeconds) ? durationLabel(actualDurationSeconds) : null,
+    finiteNumber(detail.distance_km) ? `${kmToDisplay(detail.distance_km, unit)} ${unit}` : null,
+  ].filter(Boolean) : [];
   const structure = typeof detail.structure === "string" ? detail.structure : null;
   const terrain = typeof detail.terrain === "string" ? detail.terrain : null;
   if (!segments.length && !structure && !terrain && !plannedParts.length) return null;
@@ -357,7 +379,7 @@ export function CardioPrescriptionReadOnly({ detail, actualDurationSeconds }: {
   );
 }
 
-function CardioStatsReadOnly({ detail, actualDurationSeconds }: { detail: Record<string, unknown>; actualDurationSeconds?: number | null }) {
+function CardioStatsReadOnly({ detail, actualDurationSeconds, completed = false }: { detail: Record<string, unknown>; actualDurationSeconds?: number | null; completed?: boolean }) {
   const { unit } = useDistanceUnit();
   const elevUnit = elevationLabel(unit);
 
@@ -385,16 +407,16 @@ function CardioStatsReadOnly({ detail, actualDurationSeconds }: { detail: Record
   const planned = detail.planned && typeof detail.planned === "object"
     ? detail.planned as { duration_s?: number; distance_km?: number } : null;
   const hasPrescription = (
-    (Array.isArray(detail.segments) && detail.segments.some((segment) => segment && typeof segment === "object")) ||
+    (cardioSegments(detail.segments).length > 0) ||
     (typeof detail.structure === "string" && detail.structure.length > 0) ||
     (typeof detail.terrain === "string" && detail.terrain.length > 0) ||
-    typeof planned?.duration_s === "number" || typeof planned?.distance_km === "number"
+    finiteNumber(planned?.duration_s) || finiteNumber(planned?.distance_km)
   );
   if (!hasPrescription && populated.length === 0) return <EmptyDetails />;
 
   return (
     <div className="space-y-3">
-      <CardioPrescriptionReadOnly detail={detail} actualDurationSeconds={actualDurationSeconds} />
+      <CardioPrescriptionReadOnly detail={detail} actualDurationSeconds={actualDurationSeconds} completed={completed} />
       {populated.length > 0 ? (
         <>
           <SectionHeader label="STATS" />

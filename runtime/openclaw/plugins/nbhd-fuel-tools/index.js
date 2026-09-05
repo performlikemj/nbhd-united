@@ -61,25 +61,37 @@ const CARDIO_DETAIL_PROPERTIES = {
   segments: CARDIO_SEGMENTS_SCHEMA,
   terrain: { type: "string", enum: CARDIO_TERRAINS },
 };
+const COMPACT_CARDIO_DETAIL_PROPERTIES = {
+  segments: { type: "array", description: "Cardio blocks — same shape as nbhd_fuel_create_plan detail_json.segments (server-validated)." },
+  terrain: { type: "string", enum: CARDIO_TERRAINS },
+};
+const COMPACT_PLAN_DETAIL_SCHEMA = { type: "object", properties: COMPACT_CARDIO_DETAIL_PROPERTIES };
 const PLAN_DETAIL_SCHEMA = {
   type: "object", properties: CARDIO_DETAIL_PROPERTIES,
-  description: 'Category-specific prescription. Strength/calisthenics require non-empty exercises with typed sets (weighted_reps | bodyweight_reps | hold_time); optional role: primary | accessory | warmup | mobility. HIIT uses rounds/work_s/rest_s; mobility uses skills with hold times. ' + CARDIO_GUIDANCE,
+  description: 'Category-specific prescription. Strength/calisthenics require non-empty exercises with typed sets (weighted_reps | bodyweight_reps | hold_time); optional role: primary | accessory | warmup | mobility. HIIT uses rounds/work_s/rest_s; mobility uses skills with hold times.',
 };
 const PLAN_DAY_SCHEMA = {
   type: "object",
   properties: {
     activity: { type: "string", description: "Workout name." },
     category: { type: "string", enum: ["strength", "cardio", "hiit", "calisthenics", "mobility", "sport", "other"] },
-    duration_minutes: { type: ["integer", "null"], description: "Explicit planned estimate; overrides derived duration." },
+    duration_minutes: { type: "integer", description: "Explicit planned estimate; overrides derived duration." },
     detail_json: PLAN_DETAIL_SCHEMA,
     target_rpe: { type: "integer", minimum: 1, maximum: 10 },
   },
 };
 const COMPLETE_PLAN_DAY_SCHEMA = { ...PLAN_DAY_SCHEMA, required: ["activity", "category"] };
+const COMPACT_PLAN_DAY_SCHEMA = {
+  ...PLAN_DAY_SCHEMA,
+  properties: { ...PLAN_DAY_SCHEMA.properties, detail_json: COMPACT_PLAN_DETAIL_SCHEMA },
+};
 const WEEK_OVERRIDES_SCHEMA = {
   type: "object",
   additionalProperties: {
-    type: "object", additionalProperties: { anyOf: [COMPLETE_PLAN_DAY_SCHEMA, { type: "null" }] },
+    type: "object", additionalProperties: {
+      description: "Workout day override; null makes this a rest day. Use the base schedule day shape.",
+      properties: { detail_json: COMPACT_PLAN_DETAIL_SCHEMA },
+    },
   },
 };
 
@@ -824,7 +836,7 @@ export default function register(api) {
           notes: { type: "string", description: "Updated notes." },
           detail_json: {
             type: "object",
-            properties: CARDIO_DETAIL_PROPERTIES,
+            properties: COMPACT_CARDIO_DETAIL_PROPERTIES,
             description:
               'Updated category-specific structured data. For strength/calisthenics, every set in exercises[] must include its `type` (weighted_reps | bodyweight_reps | hold_time), same contract as nbhd_fuel_log_workout. For cardio, populate at least one of {distance_km, pace ("M:SS"), avg_hr, elevation, avg_power} — e.g. {"distance_km": 5, "pace": "5:30"}. For HIIT, set {rounds, work_s, rest_s} — e.g. {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility uses catalog-named skills with hold_time sets, e.g. {"skills":[{"name":"Kneeling Hip Flexor Stretch","sets":[{"type":"hold_time","hold_s":45}]}]}; blocks only for non-movement work such as breathing or foam rolling. Use this to fill in target prescriptions on planned workouts — do not leave a planned workout\'s detail_json empty.',
           },
@@ -1324,7 +1336,7 @@ export default function register(api) {
           },
           schedule_json: {
             type: "object",
-            additionalProperties: PLAN_DAY_SCHEMA,
+            additionalProperties: COMPACT_PLAN_DAY_SCHEMA,
             description:
               'Partial weekly schedule MERGE, keyed by weekday NAME ("monday".."sunday"; "mon".."sun" also accepted). Send only days to add/change; omitted days remain. Omit detail_json on a changed day to keep its exercises. Example adding weekends without touching weekdays: {"saturday":{"category":"mobility","activity":"Mobility"},"sunday":{"category":"mobility","activity":"Recovery Flow"}}. Legacy integer keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls — a wrong convention silently moves the session.',
           },
