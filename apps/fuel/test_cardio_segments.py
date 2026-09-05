@@ -153,3 +153,90 @@ class CardioRuntimeCategoryTests(DjangoTestCase):
         self.assertEqual(response.status_code, 400)
         workout.refresh_from_db()
         self.assertEqual(workout.category, "other")
+
+
+class CardioMaterializationTests(DjangoTestCase):
+    def setUp(self):
+        from datetime import date
+
+        from apps.fuel.models import WorkoutPlan
+        from apps.tenants.services import create_tenant
+
+        self.today = date(2026, 9, 7)
+        self.tenant = create_tenant(display_name="Cardio plan", telegram_chat_id=812909)
+        self.plan = WorkoutPlan.objects.create(tenant=self.tenant, name="Runs", start_date=self.today, weeks=1)
+
+    def day(self, name="easy_run_timed", **extra):
+        return {"category": "cardio", "activity": "Run", "detail_json": copy.deepcopy(EXAMPLES[name]), **extra}
+
+    def reconcile(self, day, **kwargs):
+        from apps.fuel.services import apply_reconciliation, reconcile_plan_state
+
+        rec = reconcile_plan_state(self.plan, {"0": day}, 1, today=self.today)
+        return apply_reconciliation(rec, plan=self.plan, tenant=self.tenant, **kwargs)
+
+    def test_initial_expansion_and_counter(self):
+        from apps.fuel.models import Workout
+        from apps.fuel.runtime_views import _author_plan_expansion_inputs, _expand_plan_workouts
+        from apps.platform_logs.models import ToolContractEvent
+
+        schedule = {"0": self.day()}
+        authored = _author_plan_expansion_inputs(self.tenant, schedule, 1, writer="runtime")
+        _expand_plan_workouts(self.plan, self.tenant, schedule, self.today, 1, authored_workouts=authored)
+        workout = Workout.objects.get(plan=self.plan)
+        self.assertEqual(workout.duration_minutes, 35)
+        self.assertEqual(workout.detail_json["planned"], {"duration_s": 2100})
+        event = ToolContractEvent.objects.get(tool_name="fuel.cardio.prescription_shape")
+        self.assertEqual(event.reason_code, "segments")
+        self.assertNotIn("dropped_keys", event.detail)
+
+    def test_reconciliation_create_retemplate_and_omission(self):
+        from apps.fuel.models import Workout
+
+        self.reconcile(self.day())
+        workout = Workout.objects.get(plan=self.plan)
+        self.assertEqual(workout.duration_minutes, 35)
+        self.reconcile({"category": "cardio"})
+        workout.refresh_from_db()
+        self.assertEqual(workout.duration_minutes, 35)
+        self.reconcile(self.day("intervals_mixed"))
+        workout.refresh_from_db()
+        self.assertIsNone(workout.duration_minutes)
+        self.assertEqual(workout.detail_json["planned"], {})
+        self.reconcile(self.day("intervals_mixed", duration_minutes=45))
+        workout.refresh_from_db()
+        self.assertEqual(workout.duration_minutes, 45)
+        self.assertEqual(workout.detail_json["planned"], {"duration_s": 2700})
+
+    def test_adoption_and_lock_preservation(self):
+        from apps.fuel.models import Workout
+
+        workout = Workout.objects.create(
+            tenant=self.tenant, plan=self.plan, date=self.today, category="cardio", activity="Run", status="planned"
+        )
+        self.reconcile(self.day())
+        workout.refresh_from_db()
+        self.assertIsNotNone(workout.slot_id)
+        self.assertEqual(workout.duration_minutes, 35)
+        counts = self.reconcile(self.day("intervals_mixed"), edit_lock_check=lambda _: True)
+        self.assertEqual(counts["workouts_locked_skip"], 1)
+        workout.refresh_from_db()
+        self.assertEqual(workout.duration_minutes, 35)
+
+    def test_helper_ceil_removal_duration_edit_and_no_mutation(self):
+        from apps.fuel.cardio import materialize_prescription
+
+        detail = {"segments": [{"kind": "steady", "duration_s": 61, "effort": "easy"}]}
+        fields = materialize_prescription({"category": "cardio", "detail_json": detail})
+        self.assertEqual(fields["duration_minutes"], 2)
+        self.assertEqual(fields["detail_json"]["planned"], {"duration_s": 61})
+        self.assertNotIn("planned", detail)
+        removed = materialize_prescription(
+            {"detail_json": {"structure": "easy run"}},
+            category="cardio",
+            stored_detail=fields["detail_json"],
+            stored_duration=2,
+        )
+        self.assertIsNone(removed["duration_minutes"])
+        edited = materialize_prescription({"duration_minutes": 45}, category="cardio", stored_detail=detail)
+        self.assertEqual(edited["detail_json"]["planned"], {"duration_s": 2700})

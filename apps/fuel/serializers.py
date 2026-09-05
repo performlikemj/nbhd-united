@@ -358,6 +358,18 @@ class WorkoutSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
                 attrs["detail_json"] = nd
             if ncat != base_cat:
                 attrs["category"] = ncat
+        from .cardio import materialize_prescription
+
+        materialized = materialize_prescription(
+            attrs,
+            category=attrs.get("category", self.instance.category if self.instance else "other"),
+            stored_detail=self.instance.detail_json if self.instance else None,
+            stored_duration=self.instance.duration_minutes if self.instance else None,
+        )
+        workout_status = attrs.get("status", self.instance.status if self.instance else "done")
+        if workout_status != "planned" and "duration_minutes" not in attrs:
+            materialized.pop("duration_minutes", None)
+        attrs = materialized
         return attrs
 
     def create(self, validated_data):

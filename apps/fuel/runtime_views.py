@@ -608,6 +608,14 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
 
         from apps.pii.store_authoring import author_store_fields
 
+        from .cardio import materialize_prescription
+
+        if workout_status == WorkoutStatus.PLANNED:
+            materialized = materialize_prescription(
+                {"detail_json": detail_json, "duration_minutes": duration}, category=category
+            )
+            detail_json = materialized["detail_json"]
+            duration = materialized.get("duration_minutes", duration)
         authored, receipts = author_store_fields(
             tenant,
             {
@@ -730,6 +738,8 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
 
         data, searched_before_write = _strip_search_marker(request.data)
         original_date = workout.date
+        stored_detail = workout.detail_json
+        stored_duration = workout.duration_minutes
         updated_fields = []
         catalog_matches: list[dict] = []
         unmatched_exercises: list[str] = []
@@ -853,6 +863,21 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                 workout.category = ncat
                 if "category" not in updated_fields:
                     updated_fields.append("category")
+
+        if "detail_json" in data or "duration_minutes" in data:
+            from .cardio import materialize_prescription
+
+            fields = {key: getattr(workout, key) for key in ("detail_json", "duration_minutes") if key in data}
+            materialized = materialize_prescription(
+                fields, category=workout.category, stored_detail=stored_detail, stored_duration=stored_duration
+            )
+            for key, value in materialized.items():
+                if key == "duration_minutes" and workout.status != WorkoutStatus.PLANNED and key not in data:
+                    continue
+                setattr(workout, key, value)
+                if key not in updated_fields:
+                    updated_fields.append(key)
+            server_owned_detail = workout.detail_json
 
         if updated_fields:
             from apps.pii.store_authoring import author_store_fields
@@ -2388,6 +2413,9 @@ def _author_plan_expansion_inputs(
             category = workout_def.get("category", "other")
             if category not in WorkoutCategory.values:
                 category = "other"
+            from .cardio import materialize_prescription
+
+            workout_def = materialize_prescription(workout_def)
             authored, receipts = author_store_fields(
                 tenant,
                 {
@@ -2403,6 +2431,7 @@ def _author_plan_expansion_inputs(
                 authored["detail_json"],
                 workout_def.get("detail_json", {}),
             )
+            authored["duration_minutes"] = workout_def.get("duration_minutes")
             authored_workouts[(week_idx, day_int)] = authored, receipts
     return authored_workouts
 
@@ -2504,11 +2533,14 @@ def _expand_plan_workouts(
                 status=WorkoutStatus.PLANNED,
                 category=category,
                 activity=authored["activity"],
-                duration_minutes=workout_def.get("duration_minutes"),
+                duration_minutes=authored.get("duration_minutes", workout_def.get("duration_minutes")),
                 rpe=workout_def.get("target_rpe"),
                 detail_json=authored["detail_json"],
                 pii_receipts=receipts,
             )
+            from .cardio import emit_prescription_shape
+
+            emit_prescription_shape(tenant, category, authored["detail_json"])
             workouts_created += 1
 
     return workouts_created
