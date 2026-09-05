@@ -453,7 +453,9 @@ class SharedPiiServerTests(SimpleTestCase):
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=5,
+                # This checks the exit contract, not cold Python/import latency.
+                # Leave room for startup on a busy CI or Docker host.
+                timeout=30,
                 check=False,
             )
 
