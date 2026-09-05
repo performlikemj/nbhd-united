@@ -293,8 +293,22 @@ def _find_candidate(tenant, clean: dict, tz, consumed: set) -> Workout | None:
             continue
         if low_signal and not any(k in (c.activity or "").lower() for k in ("walk", "hike")):
             continue
-        if c.duration_minutes and clean["duration_minutes"] < _MIN_DURATION_RATIO * c.duration_minutes:
-            continue
+        detail = c.detail_json if isinstance(c.detail_json, dict) else {}
+        planned = detail.get("planned") if isinstance(detail.get("planned"), dict) else {}
+        planned_seconds = _safe_float(planned.get("duration_s"))
+        planned_duration = planned_seconds / 60 if planned_seconds else c.duration_minutes
+        if planned_duration:
+            if clean["duration_minutes"] < _MIN_DURATION_RATIO * planned_duration:
+                continue
+        elif detail.get("segments"):
+            planned_distance = _safe_float(planned.get("distance_km"))
+            measured_distance = _safe_float(clean.get("metrics", {}).get("distance_km"))
+            if (
+                not planned_distance
+                or measured_distance is None
+                or measured_distance < _MIN_DURATION_RATIO * planned_distance
+            ):
+                continue
         if c.scheduled_at:
             window_start = c.window_start_at or (c.scheduled_at - timedelta(hours=2))
             window_end = c.window_end_at or (c.scheduled_at + timedelta(hours=2))
@@ -319,7 +333,11 @@ def _complete_planned(locked: Workout, clean: dict, authored_input: dict, input_
     Planned exercises/detail are preserved; measured metric keys win.
     """
     merged = dict(locked.detail_json or {})
-    healthkit_detail = dict(authored_input["detail_json"])
+    healthkit_detail = {
+        key: value
+        for key, value in authored_input["detail_json"].items()
+        if key not in {"planned", "segments", "terrain", "structure"}
+    }
     healthkit_detail["_healthkit"] = {**(healthkit_detail.get("_healthkit") or {}), "matched": True}
     merged.update(healthkit_detail)
 

@@ -2,6 +2,7 @@
 
 import copy
 import json
+from datetime import UTC
 from pathlib import Path
 from unittest import TestCase
 
@@ -240,3 +241,63 @@ class CardioMaterializationTests(DjangoTestCase):
         self.assertIsNone(removed["duration_minutes"])
         edited = materialize_prescription({"duration_minutes": 45}, category="cardio", stored_detail=detail)
         self.assertEqual(edited["detail_json"]["planned"], {"duration_s": 2700})
+
+
+class CardioHealthKitTests(DjangoTestCase):
+    def test_match_gates_and_preserved_prescription(self):
+        from datetime import datetime
+
+        from apps.fuel.cardio import materialize_prescription
+        from apps.fuel.healthkit import _complete_planned, _find_candidate
+        from apps.fuel.models import Workout
+        from apps.tenants.services import create_tenant
+
+        tenant = create_tenant(display_name="Cardio Health", telegram_chat_id=812910)
+        started = datetime(2026, 9, 7, 8, tzinfo=UTC)
+        cases = [
+            ("intervals_mixed", None, 3, 0.43, False),
+            ("intervals_mixed", 45, 32, 5.1, True),
+            ("long_run_distance", None, 30, 5, False),
+            ("long_run_distance", None, 60, 9, True),
+            ("long_run_distance", None, 60, None, False),
+            ("easy_run_timed", None, 30, 5.1, True),
+        ]
+        for name, duration, actual_minutes, distance, expected in cases:
+            with self.subTest(name=name, distance=distance, duration=duration):
+                fields = materialize_prescription(
+                    {"category": "cardio", "detail_json": EXAMPLES[name], "duration_minutes": duration}
+                )
+                fields["detail_json"]["structure"] = "legacy caption"
+                workout = Workout.objects.create(
+                    tenant=tenant, activity="Run", date=started.date(), status="planned", **fields
+                )
+                clean = {
+                    "started_at": started,
+                    "category": "cardio",
+                    "raw_type": "running",
+                    "duration_minutes": actual_minutes,
+                    "duration_seconds": actual_minutes * 60,
+                    "external_id": "cardio-test",
+                    "metrics": {"distance_km": distance},
+                }
+                match = _find_candidate(tenant, clean, UTC, set())
+                self.assertEqual(match is not None, expected)
+                if expected:
+                    prior = copy.deepcopy(workout.detail_json)
+                    receipt = {"status": "checked", "redactions": []}
+                    _complete_planned(
+                        workout,
+                        clean,
+                        {
+                            "activity": "Run",
+                            "detail_json": {"distance_km": distance, "avg_hr": 145, "planned": {"duration_s": 1}},
+                        },
+                        {"activity": receipt, "detail_json": receipt},
+                    )
+                    workout.refresh_from_db()
+                    for key in ("segments", "planned", "terrain", "structure"):
+                        self.assertEqual(workout.detail_json.get(key), prior.get(key))
+                    self.assertEqual(workout.detail_json["distance_km"], distance)
+                    self.assertEqual(workout.detail_json["avg_hr"], 145)
+                    self.assertEqual(workout.duration_seconds, actual_minutes * 60)
+                workout.delete()
