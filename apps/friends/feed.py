@@ -19,6 +19,7 @@ import json
 import logging
 
 from . import access
+from .models import NeighborProfile
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +53,22 @@ def build_thread_page(viewer_tenant, thread, *, cursor, limit) -> tuple[list[dic
     limit = max(1, min(int(limit or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
     viewer_id = getattr(viewer_tenant, "id", viewer_tenant)
     messages = access.thread_messages_page(thread, after, limit, viewer_tenant_id=viewer_id)
+    profiles = {
+        p.tenant_id: p for p in NeighborProfile.objects.filter(tenant_id__in={m.sender_tenant_id for m in messages})
+    }
     items = [
         {
             "public_id": str(m.public_id),
             "seq": m.seq,
             "text": m.text,  # raw human text — verbatim human↔human (design §4.6)
             "mine": m.sender_tenant_id == viewer_id,
+            "author": {
+                "handle": profiles[m.sender_tenant_id].handle if m.sender_tenant_id in profiles else None,
+                "display_name": profiles[m.sender_tenant_id].display_name
+                if m.sender_tenant_id in profiles
+                else "Neighbor",
+                "avatar_hue": profiles[m.sender_tenant_id].avatar_hue if m.sender_tenant_id in profiles else 210,
+            },
             "created_at": m.created_at.isoformat(),
         }
         for m in messages
