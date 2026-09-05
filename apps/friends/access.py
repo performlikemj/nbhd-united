@@ -938,13 +938,12 @@ def get_mission(mission_id):
         return None
 
 
-def missions_for(tenant):
-    """Active missions the tenant is an active member of, newest first."""
-    return (
-        SharedGoal.objects.filter(memberships__tenant=tenant, memberships__status="active")
-        .distinct()
-        .order_by("-created_at")
-    )
+def missions_for(tenant, *, include_invited=False):
+    """Active participation plus optional invitations on still-accepted edges."""
+    states = Q(memberships__status="active")
+    if include_invited:
+        states |= Q(memberships__status="invited", friendship__status="accepted")
+    return SharedGoal.objects.filter(states, memberships__tenant=tenant).distinct().order_by("-created_at")
 
 
 def update_mission(mission, *, expected_version, editor_owner, fields):

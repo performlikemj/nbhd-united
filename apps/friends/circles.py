@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import secrets
 
+from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
@@ -100,7 +101,8 @@ def _add_active_member(circle, tenant, user, role="member"):
     return membership
 
 
-def create_circle(tenant, user, *, name, description="", hue=210) -> Circle:
+@transaction.atomic
+def create_circle(tenant, user, *, name, description="", hue=210, agent_absorb_enabled=True) -> Circle:
     name = (name or "").strip()
     if not name:
         raise ValidationError("A circle name is required.")
@@ -117,7 +119,9 @@ def create_circle(tenant, user, *, name, description="", hue=210) -> Circle:
     thread = FriendThread.objects.create(
         kind=FriendThread.Kind.CIRCLE, circle=circle, title=name[:160], created_by=tenant
     )
-    FriendThreadMembership.objects.create(thread=thread, tenant=tenant, user=user)
+    FriendThreadMembership.objects.create(
+        thread=thread, tenant=tenant, user=user, agent_absorb_enabled=agent_absorb_enabled
+    )
     return circle
 
 
@@ -166,7 +170,8 @@ def get_circle_detail(tenant, circle_id) -> dict:
     }
 
 
-def join_circle(tenant, user, invite_code) -> dict:
+@transaction.atomic
+def join_circle(tenant, user, invite_code, *, agent_absorb_enabled=None) -> dict:
     circle = Circle.objects.filter(invite_code=(invite_code or "").strip()).first()
     if circle is None:
         raise NotFound("Invite code not found.")
@@ -176,6 +181,10 @@ def join_circle(tenant, user, invite_code) -> dict:
         raise PermissionDenied("You can only join a circle through a neighbor you're connected with.")
     _assert_circle_has_room(circle, tenant)
     _add_active_member(circle, tenant, user, role="member")
+    if agent_absorb_enabled is not None:
+        FriendThreadMembership.objects.filter(thread=_circle_thread(circle), tenant=tenant).update(
+            agent_absorb_enabled=agent_absorb_enabled
+        )
     return {"circle_id": str(circle.id), "status": "active"}
 
 
