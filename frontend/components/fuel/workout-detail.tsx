@@ -9,6 +9,7 @@ import { clearDraft, loadDraft, saveDraft, type AutosaveEntry } from "@/lib/fuel
 import { stashOrphan } from "@/lib/orphan-drafts";
 import { useAcquireEditLockMutation, useCompleteWorkoutMutation, useCreateWorkoutTemplateMutation, useDeleteWorkoutMutation, useDuplicateWorkoutMutation, useFuelVersionQuery, useMeQuery, useReleaseEditLockMutation, useUpdateWorkoutMutation, useWorkoutQuery } from "@/lib/queries";
 import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
+import { CardioPrescriptionReadOnly } from "./workout-detail-readonly";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
 import {
   displayToKm,
@@ -732,7 +733,15 @@ function WorkoutDetailInner({ workoutId, onClose }: { workoutId: string; onClose
             <StrengthEditor detail={detail} editing={editing} onChange={updateDetailJson} />
           )}
           {(draft.category || workout.category) === "cardio" && (
-            <CardioStatsEditor detail={detail} editing={editing} onChange={updateDetailJson} />
+            <div className="space-y-3">
+              <CardioPrescriptionReadOnly
+                detail={detail}
+                actualDurationSeconds={workout.status === "done"
+                  ? (workout as FuelWorkout & { duration_seconds?: number | null }).duration_seconds ?? (workout.duration_minutes != null ? workout.duration_minutes * 60 : null)
+                  : null}
+              />
+              <CardioStatsEditor detail={detail} editing={editing} onChange={updateDetailJson} />
+            </div>
           )}
           {(draft.category || workout.category) === "hiit" && (
             <StatsEditor detail={detail} editing={editing} onChange={updateDetailJson} fields={[
