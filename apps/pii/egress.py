@@ -208,14 +208,20 @@ def redact_known_value_fields(
 ) -> Any:
     """Recursively guard allowlisted human-text fields in a JSON-like payload."""
     try:
+        from apps.pii.store_registry import is_cardio_machine_path
 
-        def walk(value: Any, redact_strings: bool = False) -> Any:
+        def walk(value: Any, redact_strings: bool = False, path: tuple = ()) -> Any:
+            if is_cardio_machine_path(path):
+                return value
             if isinstance(value, str):
                 return _redact_known_values(tenant, value) if redact_strings else value
             if isinstance(value, list):
-                return [walk(item, redact_strings) for item in value]
+                return [walk(item, redact_strings, (*path, index)) for index, item in enumerate(value)]
             if isinstance(value, dict):
-                return {key: walk(item, redact_strings or str(key) in text_fields) for key, item in value.items()}
+                return {
+                    key: walk(item, redact_strings or str(key) in text_fields, (*path, key))
+                    for key, item in value.items()
+                }
             return value
 
         return walk(payload)

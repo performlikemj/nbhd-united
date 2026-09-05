@@ -455,6 +455,9 @@ class WorkoutTemplateSerializer(_FuelPiiSerializerMixin, serializers.ModelSerial
         read_only_fields = ["id", "pii_receipts", "created_at", "updated_at"]
 
     def validate(self, attrs):
+        if self.instance is not None and not {"detail_json", "category", "duration_minutes"}.intersection(attrs):
+            return attrs
+
         from .set_contract import normalize_detail, validate_detail, validate_flat_detail
 
         category = attrs.get("category", self.instance.category if self.instance else "other")

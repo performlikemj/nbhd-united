@@ -114,12 +114,12 @@ class CardioWriteValidationTests(TestCase):
         from apps.fuel.serializers import WorkoutTemplateSerializer
 
         serializer = WorkoutTemplateSerializer(
-            data={"name": "Run", "category": "cardio", "detail_json": EXAMPLES["intervals_mixed"]}
+            data={"name": "Run", "activity": "Run", "category": "cardio", "detail_json": EXAMPLES["intervals_mixed"]}
         )
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(serializer.validated_data["detail_json"]["planned"], {})
         serializer = WorkoutTemplateSerializer(
-            data={"name": "Run", "category": "cardio", "detail_json": {"segments": []}}
+            data={"name": "Run", "activity": "Run", "category": "cardio", "detail_json": {"segments": []}}
         )
         self.assertFalse(serializer.is_valid())
 
@@ -165,7 +165,9 @@ class CardioMaterializationTests(DjangoTestCase):
 
         self.today = date(2026, 9, 7)
         self.tenant = create_tenant(display_name="Cardio plan", telegram_chat_id=812909)
-        self.plan = WorkoutPlan.objects.create(tenant=self.tenant, name="Runs", start_date=self.today, weeks=1)
+        self.plan = WorkoutPlan.objects.create(
+            tenant=self.tenant, name="Runs", start_date=self.today, weeks=1, days_per_week=1
+        )
 
     def day(self, name="easy_run_timed", **extra):
         return {"category": "cardio", "activity": "Run", "detail_json": copy.deepcopy(EXAMPLES[name]), **extra}
@@ -323,7 +325,7 @@ class CardioRuntimeWriteTests(DjangoTestCase):
     def test_planned_legacy_log_warns_but_done_log_does_not(self):
         for state, expected in (("planned", True), ("done", False)):
             response = self.client.post(
-                self.base + "workouts/",
+                self.base + "log/",
                 {
                     "category": "cardio",
                     "activity": "Run",
@@ -346,7 +348,7 @@ class CardioRuntimeWriteTests(DjangoTestCase):
                 response = self.client.post(
                     self.base + "plans/",
                     {
-                        "name": "Runs",
+                        "name": "Legacy runs" if warning else "Segment runs",
                         "start_date": "2099-01-05",
                         "weeks": 1,
                         "days_per_week": 1,
@@ -357,3 +359,108 @@ class CardioRuntimeWriteTests(DjangoTestCase):
                 )
             self.assertEqual(response.status_code, 201, response.data)
             self.assertEqual("warnings" in response.data, warning)
+
+    def test_plan_segment_replacement_does_not_inherit_old_duration(self):
+        from unittest.mock import patch
+
+        from apps.fuel.models import Workout
+
+        day = {
+            "category": "cardio",
+            "activity": "Run",
+            "duration_minutes": 45,
+            "detail_json": EXAMPLES["easy_run_timed"],
+        }
+        with patch("apps.fuel.runtime_views._manage_fuel_cron"):
+            created = self.client.post(
+                self.base + "plans/",
+                {
+                    "name": "Duration regression",
+                    "start_date": "2099-01-05",
+                    "weeks": 1,
+                    "days_per_week": 1,
+                    "schedule_json": {"monday": day},
+                },
+                format="json",
+                **self.headers,
+            )
+            self.assertEqual(created.status_code, 201, created.data)
+            plan_id = created.data["id"]
+            echoed = self.client.patch(
+                self.base + f"plans/{plan_id}/",
+                {"schedule_json": {"monday": {"detail_json": EXAMPLES["easy_run_timed"]}}},
+                format="json",
+                **self.headers,
+            )
+            self.assertEqual(echoed.status_code, 200, echoed.data)
+            self.assertEqual(Workout.objects.get(plan_id=plan_id).detail_json["planned"], {"duration_s": 2100})
+            updated = self.client.patch(
+                self.base + f"plans/{plan_id}/",
+                {"schedule_json": {"monday": {"detail_json": EXAMPLES["intervals_mixed"]}}},
+                format="json",
+                **self.headers,
+            )
+        self.assertEqual(updated.status_code, 200, updated.data)
+        workout = Workout.objects.get(plan_id=plan_id)
+        self.assertIsNone(workout.duration_minutes)
+        self.assertEqual(workout.detail_json["planned"], {})
+
+    def test_runtime_workout_segment_and_duration_edits_recompute_totals(self):
+        from apps.fuel.models import Workout
+
+        created = self.client.post(
+            self.base + "log/",
+            {"category": "cardio", "activity": "Run", "status": "planned", "detail_json": EXAMPLES["easy_run_timed"]},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        workout = Workout.objects.get(pk=created.data["id"])
+        self.assertEqual(workout.duration_minutes, 35)
+        url = self.base + f"workouts/{workout.id}/"
+        changed = self.client.patch(url, {"detail_json": EXAMPLES["intervals_mixed"]}, format="json", **self.headers)
+        self.assertEqual(changed.status_code, 200, changed.data)
+        workout.refresh_from_db()
+        self.assertIsNone(workout.duration_minutes)
+        changed = self.client.patch(url, {"duration_minutes": 45}, format="json", **self.headers)
+        self.assertEqual(changed.status_code, 200, changed.data)
+        workout.refresh_from_db()
+        self.assertEqual(workout.detail_json["planned"], {"duration_s": 2700})
+        changed = self.client.patch(
+            url, {"detail_json": EXAMPLES["intervals_mixed"], "duration_minutes": {}}, format="json", **self.headers
+        )
+        self.assertEqual(changed.status_code, 200, changed.data)
+        workout.refresh_from_db()
+        self.assertEqual(workout.detail_json["planned"], {"duration_s": 2700})
+
+
+class CardioAdditionalRegressionTests(TestCase):
+    def test_template_name_only_patch_keeps_stored_plan(self):
+        from apps.fuel.models import WorkoutTemplate
+        from apps.fuel.serializers import WorkoutTemplateSerializer
+
+        instance = WorkoutTemplate(
+            name="Run",
+            category="cardio",
+            activity="Run",
+            detail_json={**EXAMPLES["intervals_mixed"], "planned": {"duration_s": 2700}},
+            duration_minutes=45,
+        )
+        serializer = WorkoutTemplateSerializer(instance, data={"name": "Intervals"}, partial=True)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertNotIn("detail_json", serializer.validated_data)
+
+    def test_null_pace_rejected(self):
+        detail = {"segments": [{"kind": "steady", "duration_s": 60, "effort": "easy", "target_pace": None}]}
+        self.assertTrue(validate_cardio_prescription(detail))
+
+    def test_owner_unrelated_edit_grandfathers_malformed_segment(self):
+        from apps.fuel.models import Workout
+        from apps.fuel.serializers import WorkoutSerializer
+
+        stored = copy.deepcopy(FIXTURE["invalid"][0]["detail_json"])
+        instance = Workout(category="cardio", detail_json=stored, status="planned", duration_minutes=35)
+        serializer = WorkoutSerializer(instance, data={"detail_json": {**stored, "notes": "changed"}}, partial=True)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["detail_json"]["segments"], stored["segments"])
+        self.assertNotIn("duration_minutes", serializer.validated_data)

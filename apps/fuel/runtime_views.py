@@ -766,6 +766,8 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             _, category_error = validate_detail(data.get("detail_json", workout.detail_json), data["category"])
             if category_error is not None:
                 return Response(category_error.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
+            if isinstance(workout.detail_json, dict) and "segments" in workout.detail_json:
+                data.setdefault("detail_json", workout.detail_json)
 
         if "category" in data:
             val = data["category"]
@@ -823,7 +825,7 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                 data["detail_json"],
                 workout.category,
                 activity=workout.activity,
-                explicit_duration_minutes=data.get("duration_minutes"),
+                explicit_duration_minutes=workout.duration_minutes if "duration_minutes" in data else None,
             )[:2]
             nd, verr = validate_detail(nd, ncat)
             if verr is not None:
@@ -2930,6 +2932,9 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
                 total=0,
                 searched_before_write=searched_before_write,
             )
+            add_prescription_feedback(
+                result, tenant, plan_prescription_days(existing.schedule_json, existing.week_overrides)
+            )
             return Response(result, status=status.HTTP_200_OK)
 
         plan_policy, policy_err = _resolve_plan_policy(data)
@@ -3213,6 +3218,21 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                     if isinstance(incoming_day, dict) and "rpe" in incoming_day and "target_rpe" not in incoming_day:
                         merged_day.pop("target_rpe", None)
                     merged_day.update(incoming_day if isinstance(incoming_day, dict) else {})
+                    # A new prescription cannot inherit an old explicit estimate:
+                    # only duration supplied alongside these segments may win.
+                    if (
+                        isinstance(incoming_day, dict)
+                        and "detail_json" in incoming_day
+                        and "duration_minutes" not in incoming_day
+                    ):
+                        old_detail = (existing_day or {}).get("detail_json") or {}
+                        new_detail = incoming_day.get("detail_json") or {}
+                        if (
+                            isinstance(old_detail, dict)
+                            and isinstance(new_detail, dict)
+                            and ("segments" in old_detail or "segments" in new_detail)
+                        ):
+                            merged_day.pop("duration_minutes", None)
 
                     old_category = existing_day.get("category", "other") if isinstance(existing_day, dict) else None
                     new_category = merged_day.get("category", "other")

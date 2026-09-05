@@ -78,9 +78,29 @@ class CardioPathTests(SimpleTestCase):
             self.assertEqual(value["notes"], "ALICE IS JOINING")
             self.assertEqual(value["segments"][1]["notes"], "RUN WITH ALICE")
 
+    def test_runtime_response_guard_preserves_machine_values(self):
+        from apps.pii.egress import redact_known_value_fields
+
+        tenant = SimpleNamespace(
+            id="cardio",
+            pii_entity_map={
+                "[PERSON_1]": {"name": "Alice"},
+                "[PERSON_2]": {"name": "easy"},
+                "[PERSON_3]": {"name": "track"},
+            },
+        )
+        result = redact_known_value_fields(
+            tenant, {"detail_json": detail()}, seam="test.cardio", text_fields=frozenset({"detail_json"})
+        )
+        self.assertEqual(result["detail_json"]["segments"][0]["effort"], "easy")
+        self.assertEqual(result["detail_json"]["terrain"], "track")
+        self.assertEqual(result["detail_json"]["notes"], "[PERSON_1] is joining")
+
 
 class CardioAuthoringTests(TestCase):
-    def test_owner_and_runtime_writes_keep_machine_fields_and_author_notes(self):
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    @patch("apps.pii.authoring._residual_summary", return_value={"count": 0, "kinds": {}})
+    def test_owner_and_runtime_writes_keep_machine_fields_and_author_notes(self, _residual, _detect):
         from apps.pii.store_authoring import author_store_fields
         from apps.tenants.services import create_tenant
 
@@ -101,7 +121,7 @@ class CardioAuthoringTests(TestCase):
                         model_label=label,
                         seam="test.cardio",
                         writer=writer,
-                        defer_detection=True,
+                        defer_detection=writer == "runtime",
                     )
                     expected = copy.deepcopy(original)
                     target = (

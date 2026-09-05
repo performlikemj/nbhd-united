@@ -2,7 +2,7 @@
 
 from math import ceil
 
-from .set_contract import normalize_detail
+from .set_contract import normalize_detail, validate_cardio_prescription
 
 
 def materialize_prescription(fields, *, category=None, stored_detail=None, stored_duration=None):
@@ -34,6 +34,14 @@ def materialize_prescription(fields, *, category=None, stored_detail=None, store
     if normalized_category != category:
         out["category"] = normalized_category
     if "segments" in detail and category == "cardio":
+        if (
+            "duration_minutes" not in out
+            and old.get("segments") == detail["segments"]
+            and validate_cardio_prescription(detail)
+        ):
+            # Grandfathered invalid legacy detail cannot supply a new total.
+            # An unrelated edit must not erase its existing duration.
+            return out
         seconds = detail["planned"].get("duration_s")
         out["duration_minutes"] = (
             explicit if explicit is not None else ceil(seconds / 60) if seconds is not None else None

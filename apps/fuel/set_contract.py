@@ -48,6 +48,9 @@ __all__ = [
     "coerce_set",
     "has_prescription",
     "normalize_detail",
+    "validate_cardio_prescription",
+    "expand_cardio_reps",
+    "derive_planned",
     "validate_detail",
     "validate_flat_detail",
     "FLAT_NUMERIC_FIELDS",
@@ -89,6 +92,12 @@ class _CardioRecovery(_CardioDose):
 class _CardioWork(_CardioDose):
     effort: Literal[*CARDIO_EFFORTS]
     target_pace: str | None = Field(default=None, pattern=CARDIO_PACE_REGEX)
+
+    @model_validator(mode="after")
+    def pace_if_supplied(self):
+        if "target_pace" in self.model_fields_set and self.target_pace is None:
+            raise ValueError("target_pace must be M:SS per km when supplied")
+        return self
 
 
 class _CardioSteady(_CardioWork):
@@ -469,8 +478,8 @@ def validate_detail(detail: Any, category: str) -> tuple[Any, Any]:
     """Coerce every set to a typed shape, then enforce the discriminated
     contract. Returns ``(coerced_detail, error_or_None)``; the error is
     an ``LLMValidationError`` the caller surfaces so the LLM
-    self-corrects. Only strength/calisthenics are validated — cardio /
-    HIIT / mobility keep their flat by-category shape untouched. The
+    self-corrects. Cardio segments and terrain are checked before the
+    strength/calisthenics set contract; legacy flat fields stay untouched. The
     coerced detail preserves every original key (extras, ``_normalized``,
     cardio fields), so it is always safe to persist.
     """
