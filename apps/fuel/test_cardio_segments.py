@@ -301,3 +301,59 @@ class CardioHealthKitTests(DjangoTestCase):
                     self.assertEqual(workout.detail_json["avg_hr"], 145)
                     self.assertEqual(workout.duration_seconds, actual_minutes * 60)
                 workout.delete()
+
+
+class CardioRuntimeWriteTests(DjangoTestCase):
+    def setUp(self):
+        from django.test import override_settings
+        from rest_framework.test import APIClient
+
+        from apps.tenants.services import create_tenant
+        from apps.tenants.test_utils import seed_internal_key
+
+        override = override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+        override.enable()
+        self.addCleanup(override.disable)
+        self.tenant = create_tenant(display_name="Cardio write", telegram_chat_id=812912)
+        seed_internal_key(self.tenant)
+        self.client = APIClient()
+        self.headers = {"HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key", "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id)}
+        self.base = f"/api/v1/fuel/runtime/{self.tenant.id}/"
+
+    def test_planned_legacy_log_warns_but_done_log_does_not(self):
+        for state, expected in (("planned", True), ("done", False)):
+            response = self.client.post(
+                self.base + "workouts/",
+                {
+                    "category": "cardio",
+                    "activity": "Run",
+                    "status": state,
+                    "detail_json": {"exercises": [{"name": "Run"}]},
+                },
+                format="json",
+                **self.headers,
+            )
+            self.assertEqual(response.status_code, 201, response.data)
+            self.assertEqual("warnings" in response.data, expected)
+            if expected:
+                self.assertEqual(response.data["warnings"], ["cardio days use segments, not exercises"])
+
+    def test_plan_day_warning_and_segment_plan_acceptance(self):
+        from unittest.mock import patch
+
+        for detail, warning in (({"exercises": [{"name": "Run"}]}, True), (EXAMPLES["intervals_mixed"], False)):
+            with patch("apps.fuel.runtime_views._manage_fuel_cron"):
+                response = self.client.post(
+                    self.base + "plans/",
+                    {
+                        "name": "Runs",
+                        "start_date": "2099-01-05",
+                        "weeks": 1,
+                        "days_per_week": 1,
+                        "schedule_json": {"monday": {"category": "cardio", "activity": "Run", "detail_json": detail}},
+                    },
+                    format="json",
+                    **self.headers,
+                )
+            self.assertEqual(response.status_code, 201, response.data)
+            self.assertEqual("warnings" in response.data, warning)

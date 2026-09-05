@@ -70,3 +70,35 @@ def emit_prescription_shape(tenant, category, detail):
         reason_code=prescription_shape(detail),
         detail={"category": "cardio"},
     )
+
+
+def legacy_cardio_exercises(detail, category):
+    return (
+        category == "cardio"
+        and isinstance(detail, dict)
+        and bool(detail.get("exercises"))
+        and not detail.get("segments")
+    )
+
+
+def add_prescription_feedback(payload, tenant, days):
+    """Add non-fatal guidance to the existing successful write envelope."""
+    for day in days:
+        if not isinstance(day, dict):
+            continue
+        category = day.get("category")
+        detail = day.get("detail_json")
+        emit_prescription_shape(tenant, category, detail)
+        if day.get("status", "planned") == "planned" and legacy_cardio_exercises(detail, category):
+            warning = "cardio days use segments, not exercises"
+            warnings = payload.setdefault("warnings", [])
+            if warning not in warnings:
+                warnings.append(warning)
+    return payload
+
+
+def plan_prescription_days(schedule, overrides):
+    yield from (schedule or {}).values()
+    for week in (overrides or {}).values():
+        if isinstance(week, dict):
+            yield from week.values()

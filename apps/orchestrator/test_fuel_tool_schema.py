@@ -8,6 +8,7 @@ from pathlib import Path
 
 from django.test import SimpleTestCase
 
+from apps.common import llm_lookups
 from apps.fuel import catalog
 from apps.fuel.set_contract import SET_METRICS
 
@@ -39,6 +40,12 @@ class FuelToolSchemaShapeTests(SimpleTestCase):
             {"weighted_reps", "bodyweight_reps", "hold_time"},
             set(SET_METRICS),
         )
+
+    def test_cardio_enums_match_backend(self):
+        for name in ("CARDIO_KINDS", "CARDIO_EFFORTS", "CARDIO_RECOVERY_EFFORTS", "CARDIO_TERRAINS"):
+            match = re.search(rf"const {name} = (\[[^;]+\]);", self.src)
+            self.assertIsNotNone(match, name)
+            self.assertEqual(json.loads(match.group(1)), list(getattr(llm_lookups, name)))
 
     def test_no_separate_skills_array_reintroduced(self):
         self.assertNotIn("skills:", self.src)

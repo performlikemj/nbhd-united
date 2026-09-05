@@ -13,6 +13,78 @@ const wrap = (def) => wrapTool(def, { plugin: "nbhd-fuel-tools" });
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
 
+// Keep these vocabularies in sync with apps/common/llm_lookups.py.
+const CARDIO_KINDS = ["warmup", "steady", "interval", "cooldown"];
+const CARDIO_EFFORTS = ["easy", "steady", "tempo", "hard", "max"];
+const CARDIO_RECOVERY_EFFORTS = ["easy", "rest"];
+const CARDIO_TERRAINS = ["flat", "hills", "trail", "track", "treadmill"];
+const CARDIO_GUIDANCE = 'Cardio (run/bike/row/swim) PLANNED days: write "segments", never "exercises". Completed logs may be actuals only. Example: {"segments":[{"kind":"warmup","duration_s":600,"effort":"easy"},{"kind":"interval","repeat":6,"distance_km":0.8,"effort":"hard","recovery":{"duration_s":120,"effort":"easy"}},{"kind":"cooldown","duration_s":600,"effort":"easy"}]}. Effort is qualitative prescribed intensity.';
+const CARDIO_DOSE_RULE = [
+  { required: ["duration_s"], not: { required: ["distance_km"] } },
+  { required: ["distance_km"], not: { required: ["duration_s"] } },
+];
+const CARDIO_WORK_PROPERTIES = {
+  duration_s: { type: "integer", minimum: 10, maximum: 14400 },
+  distance_km: { type: "number", minimum: 0.05, maximum: 100 },
+  effort: { type: "string", enum: CARDIO_EFFORTS },
+  target_pace: { type: "string", pattern: "^[0-9]{1,2}:[0-5][0-9]$", description: "Prescribed M:SS per km." },
+};
+const CARDIO_SEGMENTS_SCHEMA = {
+  type: "array", minItems: 1, maxItems: 40,
+  description: "Cardio-only ordered blocks; at most 200 expanded work reps. Omit the key when empty. Recovery occurs BETWEEN reps (repeat minus one). Planned totals are server-derived; segments take precedence over legacy structure and flat targets.",
+  items: {
+    oneOf: [
+      {
+        type: "object", required: ["kind", "effort"], oneOf: CARDIO_DOSE_RULE,
+        properties: { ...CARDIO_WORK_PROPERTIES, kind: { type: "string", enum: CARDIO_KINDS.filter(kind => kind !== "interval") } },
+        not: { anyOf: [{ required: ["repeat"] }, { required: ["recovery"] }] },
+      },
+      {
+        type: "object", required: ["kind", "effort", "repeat"], oneOf: CARDIO_DOSE_RULE,
+        properties: {
+          ...CARDIO_WORK_PROPERTIES,
+          kind: { type: "string", enum: CARDIO_KINDS.filter(kind => kind === "interval") },
+          repeat: { type: "integer", minimum: 1, maximum: 30 },
+          recovery: {
+            type: "object", required: ["effort"], oneOf: CARDIO_DOSE_RULE,
+            properties: {
+              duration_s: { type: "integer", minimum: 10, maximum: 3600 },
+              distance_km: { type: "number", minimum: 0.05, maximum: 10 },
+              effort: { type: "string", enum: CARDIO_RECOVERY_EFFORTS },
+            },
+          },
+        },
+        if: { required: ["recovery"] }, then: { properties: { repeat: { minimum: 2 } } },
+      },
+    ],
+  },
+};
+const CARDIO_DETAIL_PROPERTIES = {
+  segments: CARDIO_SEGMENTS_SCHEMA,
+  terrain: { type: "string", enum: CARDIO_TERRAINS },
+};
+const PLAN_DETAIL_SCHEMA = {
+  type: "object", properties: CARDIO_DETAIL_PROPERTIES,
+  description: 'Category-specific prescription. Strength/calisthenics require non-empty exercises with typed sets (weighted_reps | bodyweight_reps | hold_time); optional role: primary | accessory | warmup | mobility. HIIT uses rounds/work_s/rest_s; mobility uses skills with hold times. ' + CARDIO_GUIDANCE,
+};
+const PLAN_DAY_SCHEMA = {
+  type: "object",
+  properties: {
+    activity: { type: "string", description: "Workout name." },
+    category: { type: "string", enum: ["strength", "cardio", "hiit", "calisthenics", "mobility", "sport", "other"] },
+    duration_minutes: { type: ["integer", "null"], description: "Explicit planned estimate; overrides derived duration." },
+    detail_json: PLAN_DETAIL_SCHEMA,
+    target_rpe: { type: "integer", minimum: 1, maximum: 10 },
+  },
+};
+const COMPLETE_PLAN_DAY_SCHEMA = { ...PLAN_DAY_SCHEMA, required: ["activity", "category"] };
+const WEEK_OVERRIDES_SCHEMA = {
+  type: "object",
+  additionalProperties: {
+    type: "object", additionalProperties: { anyOf: [COMPLETE_PLAN_DAY_SCHEMA, { type: "null" }] },
+  },
+};
+
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -556,7 +628,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_log_workout",
       description:
-        'Log a workout from natural language. Infer the category from the activity name (e.g. "deadlift" → strength, "ran" → cardio, "yoga" → mobility); if unknown, use "other". Default to today\'s date and status "done". Confirm briefly and do not interrogate the user for missing optional fields. Use one call for a mixed session containing weighted exercises and holds. TWO hard server rules: (1) a strength or calisthenics workout MUST carry at least one exercise with sets in detail_json.exercises — an empty list is a 400, because a workout with no exercises is invisible in the app; if the user gave you no detail, ask once for the lifts, or log it under the category that matches what they actually described. (2) numeric detail_json fields are numbers only — distance_km is kilometres and work_s/rest_s are seconds, so convert first and send 8.05, never "5 miles".',
+        'Log a workout from natural language. Infer the category from the activity name (e.g. "deadlift" → strength, "ran" → cardio, "yoga" → mobility); if unknown, use "other". Default to today\'s date and status "done". Confirm briefly and do not interrogate the user for missing optional fields. Use one call for a mixed session containing weighted exercises and holds. TWO hard server rules: (1) a strength or calisthenics workout MUST carry at least one exercise with sets in detail_json.exercises — an empty list is a 400, because a workout with no exercises is invisible in the app; if the user gave you no detail, ask once for the lifts, or log it under the category that matches what they actually described. (2) numeric detail_json fields are numbers only — distance_km is kilometres and work_s/rest_s are seconds, so convert first and send 8.05, never "5 miles".' + " " + CARDIO_GUIDANCE,
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -601,6 +673,7 @@ export default function register(api) {
             description:
               "Category-specific structured data. Shape depends on category.",
             properties: {
+              ...CARDIO_DETAIL_PROPERTIES,
               exercises: {
                 type: "array",
                 description:
@@ -727,7 +800,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_update_workout",
       description:
-        'Update an existing workout. Use when the user wants to correct a logged workout — wrong date, wrong exercise, change status from planned to done, adjust rpe, etc. Get the workout_id from nbhd_fuel_summary or from the response when logging a workout. Only send the fields that need changing.',
+        'Update an existing workout. Use when the user wants to correct a logged workout — wrong date, wrong exercise, change status from planned to done, adjust rpe, etc. Get the workout_id from nbhd_fuel_summary or from the response when logging a workout. Only send the fields that need changing.' + " " + CARDIO_GUIDANCE,
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -753,6 +826,7 @@ export default function register(api) {
           notes: { type: "string", description: "Updated notes." },
           detail_json: {
             type: "object",
+            properties: CARDIO_DETAIL_PROPERTIES,
             description:
               'Updated category-specific structured data. For strength/calisthenics, every set in exercises[] must include its `type` (weighted_reps | bodyweight_reps | hold_time), same contract as nbhd_fuel_log_workout. For cardio, populate at least one of {distance_km, pace ("M:SS"), avg_hr, elevation, avg_power} — e.g. {"distance_km": 5, "pace": "5:30"}. For HIIT, set {rounds, work_s, rest_s} — e.g. {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility uses catalog-named skills with hold_time sets, e.g. {"skills":[{"name":"Kneeling Hip Flexor Stretch","sets":[{"type":"hold_time","hold_s":45}]}]}; blocks only for non-movement work such as breathing or foam rolling. Use this to fill in target prescriptions on planned workouts — do not leave a planned workout\'s detail_json empty.',
           },
@@ -1074,7 +1148,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_create_plan",
       description:
-        "Create a structured, multi-week workout plan. First call nbhd_fuel_search_exercises for each accessory/mobility group. Before designing, gather context with nbhd_fuel_summary, search approved fitness lessons with nbhd_lesson_search, and search relevant goals or memory with nbhd_journal_search when needed. USE THIS whenever the user asks to make / build / design / lay out / fill out / map out / write up a plan, program, routine, or schedule — including phrasings like 'fill out my workout plan for the rest of the month'. NEVER present a dated plan as a chat message: provide the WEEKLY CADENCE and let the backend assign calendar dates in the user's timezone. ALWAYS pass the user's tenant-local start anchor as start_date. For 'today' / 'I am at the gym now', start_date is today and schedule_json MUST include today's weekday — rotate the split so today is day 1; the server hard-rejects a plan that starts today with no session on today's weekday (400). Never design a cadence that excludes the requested first training day. The response's first_workout_date is the date to use when describing the first session; honor start_date_note and never assume start_date has a session. Design from the user's profile, journal context, sleep trends, lessons, and goals. Put contextual programming rationale in the plan notes. Base schedule_json contains training days only; omit rest days. schedule_json is keyed by weekday NAME — \"monday\", \"tuesday\", \"wednesday\", \"thursday\", \"friday\", \"saturday\", \"sunday\" — mapping each training day to a workout definition. Write the name, never a number: numeric indices are legacy-only and the numbering conventions disagree (Python Mon=0, ISO Mon=1, cron Sun=0), which is how a Wednesday session gets scheduled on Thursday. Set target_rpe per day, objective for the plan's through-line, and week_overrides for progression/deload. Plans four weeks or longer rotate accessories every 1–2 weeks. For accessory_rotations, you pick the pool; the plugin builds the weeks. Check nbhd_fuel_summary for an existing active plan first.",
+        "Create a structured, multi-week workout plan. First call nbhd_fuel_search_exercises for each accessory/mobility group. Before designing, gather context with nbhd_fuel_summary, search approved fitness lessons with nbhd_lesson_search, and search relevant goals or memory with nbhd_journal_search when needed. USE THIS whenever the user asks to make / build / design / lay out / fill out / map out / write up a plan, program, routine, or schedule — including phrasings like 'fill out my workout plan for the rest of the month'. NEVER present a dated plan as a chat message: provide the WEEKLY CADENCE and let the backend assign calendar dates in the user's timezone. ALWAYS pass the user's tenant-local start anchor as start_date. For 'today' / 'I am at the gym now', start_date is today and schedule_json MUST include today's weekday — rotate the split so today is day 1; the server hard-rejects a plan that starts today with no session on today's weekday (400). Never design a cadence that excludes the requested first training day. The response's first_workout_date is the date to use when describing the first session; honor start_date_note and never assume start_date has a session. Design from the user's profile, journal context, sleep trends, lessons, and goals. Put contextual programming rationale in the plan notes. Base schedule_json contains training days only; omit rest days. schedule_json is keyed by weekday NAME — \"monday\", \"tuesday\", \"wednesday\", \"thursday\", \"friday\", \"saturday\", \"sunday\" — mapping each training day to a workout definition. Write the name, never a number: numeric indices are legacy-only and the numbering conventions disagree (Python Mon=0, ISO Mon=1, cron Sun=0), which is how a Wednesday session gets scheduled on Thursday. Set target_rpe per day, objective for the plan's through-line, and week_overrides for progression/deload. Plans four weeks or longer rotate accessories every 1–2 weeks. For accessory_rotations, you pick the pool; the plugin builds the weeks. Check nbhd_fuel_summary for an existing active plan first." + " " + CARDIO_GUIDANCE,
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1103,30 +1177,7 @@ export default function register(api) {
             type: "object",
             description:
               'Weekly template. Keys are weekday NAMES: "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday" (case-insensitive; "mon".."sun" also accepted). Example: {"monday": {...}, "wednesday": {...}, "friday": {...}}. Legacy integer keys ("0"=Mon..."6"=Sun) are still accepted for back-compat but MUST NOT be used in new calls — three weekday-numbering conventions exist and picking the wrong one silently schedules the session on the wrong day. Values are workout definitions with activity, category, optional duration_minutes and detail_json. Cross-field rule: for a "today" / "at the gym now" start, schedule_json MUST include today\'s weekday by name; rotate the split so today is day 1. The server hard-rejects a plan whose start_date is today when that weekday is missing (400 naming the day to add). Never exclude the requested start day from the cadence. Only include training days — rest days are implied by absence. Send each weekday at most once; two keys resolving to the same day (e.g. "2" and "wednesday") are rejected. On strength and calisthenics days detail_json.exercises is REQUIRED: the server rejects an empty prescription (400 with the offending weekday) so an empty strength day never reaches the calendar.',
-            additionalProperties: {
-              type: "object",
-              properties: {
-                activity: { type: "string", description: "Workout name, e.g. 'Push — Chest & Shoulders'." },
-                category: {
-                  type: "string",
-                  enum: ["strength", "cardio", "hiit", "calisthenics", "mobility", "sport", "other"],
-                },
-                duration_minutes: { type: "integer", description: "Estimated duration in minutes." },
-                detail_json: {
-                  type: "object",
-                  description:
-                    'Category-specific prescription. Populate every training day, not just strength. Strength/calisthenics: REQUIRED — {"exercises": [{"name": "...", "role":"accessory", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}, ...]}]} (set type is weighted_reps | bodyweight_reps | hold_time; optional role is primary | accessory | warmup | mobility). The backend validates every planned category and rejects malformed sets or an empty prescription with a 400 carrying the offending weekday. Cardio: {"distance_km": 5, "pace": "5:30"}. HIIT: {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility uses skills with hold times and optional roles. Every planned day needs a prescription.',
-                },
-                target_rpe: {
-                  type: "integer",
-                  minimum: 1,
-                  maximum: 10,
-                  description:
-                    "Prescribed intensity for this session as a target RPE (1=very easy, 10=max effort). Optional.",
-                },
-              },
-              required: ["activity", "category"],
-            },
+            additionalProperties: COMPLETE_PLAN_DAY_SCHEMA,
           },
           objective: {
             type: "string",
@@ -1134,6 +1185,7 @@ export default function register(api) {
               "One-line through-line for the plan, e.g. 'Run a sub-25 5K' or 'Build pull strength'. The plan's structured objective, kept out of free-form notes.",
           },
           week_overrides: {
+            ...WEEK_OVERRIDES_SCHEMA,
             type: "object",
             description:
               'Optional per-week progression/deload. Keys are 0-indexed week offsets ("0"=first week). Each overridden weekday must be a complete day object with full detail_json because it replaces the base day wholesale. Example: {"3":{"monday":{"category":"strength","activity":"Deload","target_rpe":5,"detail_json":{"exercises":[{"name":"Bench Press","sets":[{"type":"weighted_reps","reps":5,"weight":50}]}]}}}}.',
@@ -1244,7 +1296,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_update_plan",
       description:
-        'Update an existing workout plan. First call nbhd_fuel_search_exercises for each accessory/mobility group. Before redesigning, gather context with nbhd_fuel_summary, search approved fitness lessons with nbhd_lesson_search, and search relevant goals or memory with nbhd_journal_search when needed. Put contextual programming rationale in notes. Base schedules contain training days only; omit rest days, using remove_days when an existing training day becomes rest. schedule_json MERGES by default: send only the days you want to add or change, and days you omit stay untouched. Example: add weekend mobility without touching weekdays by sending schedule_json: {"saturday":{"category":"mobility","activity":"Mobility"},"sunday":{"category":"mobility","activity":"Recovery Flow"}}. Omit detail_json from an updated day to keep that day\'s existing exercises. Remove days only with remove_days; use replace_schedule:true only when intentionally replacing the entire weekly template. Legacy integer weekday keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls because numbering conventions disagree. Item role is optional: primary | accessory | warmup | mobility. Plans four weeks or longer rotate accessories every 1–2 weeks. For accessory_rotations, you pick the pool; the plugin builds the weeks. If you send strength/calisthenics detail_json, it must contain a non-empty exercises list. Schedule or weeks changes reconcile future planned workouts.',
+        'Update an existing workout plan. First call nbhd_fuel_search_exercises for each accessory/mobility group. Before redesigning, gather context with nbhd_fuel_summary, search approved fitness lessons with nbhd_lesson_search, and search relevant goals or memory with nbhd_journal_search when needed. Put contextual programming rationale in notes. Base schedules contain training days only; omit rest days, using remove_days when an existing training day becomes rest. schedule_json MERGES by default: send only the days you want to add or change, and days you omit stay untouched. Example: add weekend mobility without touching weekdays by sending schedule_json: {"saturday":{"category":"mobility","activity":"Mobility"},"sunday":{"category":"mobility","activity":"Recovery Flow"}}. Omit detail_json from an updated day to keep that day\'s existing exercises. Remove days only with remove_days; use replace_schedule:true only when intentionally replacing the entire weekly template. Legacy integer weekday keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls because numbering conventions disagree. Item role is optional: primary | accessory | warmup | mobility. Plans four weeks or longer rotate accessories every 1–2 weeks. For accessory_rotations, you pick the pool; the plugin builds the weeks. If you send strength/calisthenics detail_json, it must contain a non-empty exercises list. Schedule or weeks changes reconcile future planned workouts.' + " " + CARDIO_GUIDANCE + " Do not target cardio days with accessory_rotations.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1274,6 +1326,7 @@ export default function register(api) {
           },
           schedule_json: {
             type: "object",
+            additionalProperties: PLAN_DAY_SCHEMA,
             description:
               'Partial weekly schedule MERGE, keyed by weekday NAME ("monday".."sunday"; "mon".."sun" also accepted). Send only days to add/change; omitted days remain. Omit detail_json on a changed day to keep its exercises. Example adding weekends without touching weekdays: {"saturday":{"category":"mobility","activity":"Mobility"},"sunday":{"category":"mobility","activity":"Recovery Flow"}}. Legacy integer keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls — a wrong convention silently moves the session.',
           },
@@ -1295,6 +1348,7 @@ export default function register(api) {
               "Set true only to make schedule_json replace the entire weekly template. Days omitted from schedule_json are removed.",
           },
           week_overrides: {
+            ...WEEK_OVERRIDES_SCHEMA,
             type: "object",
             description:
               'Replace the plan\'s whole per-week progression/deload map. Keys are 0-indexed ABSOLUTE plan weeks ("0" is always the plan\'s FIRST week) and must be within the plan\'s length. Each overridden weekday must be a complete day object with full detail_json because the override replaces that base day wholesale; null makes it a rest day. Sent as a whole map: it REPLACES the stored one, so include every week you want to keep. Triggers workout regeneration.',
