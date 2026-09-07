@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from apps.core import compose
 from apps.core.lesson import LESSON_JSON_SCHEMA, TRADITIONS, MeditationLesson, Tradition
+from apps.core.test_utils import ComposeSchemaCacheMixin
 from apps.core.tests import _valid_manifest
 
 
@@ -20,11 +21,9 @@ def answer(slug="wu-wei", tradition="taoist"):
 
 
 @override_settings(OPENROUTER_API_KEY="test-key", CORE_COMPOSE_MODEL="test/primary")
-class LessonTests(SimpleTestCase):
+class LessonTests(ComposeSchemaCacheMixin, SimpleTestCase):
     def setUp(self):
-        cache = patch.object(compose, "_SCHEMA_REJECTED_MODELS", set())
-        cache.start()
-        self.addCleanup(cache.stop)
+        super().setUp()
         self.signals = {
             "recent_meditations": [
                 {
@@ -115,6 +114,14 @@ class LessonTests(SimpleTestCase):
             result = compose.author_manifest(self.signals)
         self.assertEqual(result["lesson"]["teaching_slug"], "wu-wei")
         self.assertIn("clash_accepted", " ".join(logs.output))
+
+        completion.side_effect = [answer(), answer(), RuntimeError("unavailable")]
+        with (
+            patch("apps.core.compose._compose_models", return_value=["first", "second"]),
+            self.settings(CORE_COMPOSE_STRICT_VARIETY=True),
+            self.assertRaisesRegex(compose.ComposeError, "variety_clash"),
+        ):
+            compose.author_manifest(self.signals)
 
     @patch("apps.core.compose.chat_completion")
     def test_schema_4xx_fallback_is_per_model(self, completion):

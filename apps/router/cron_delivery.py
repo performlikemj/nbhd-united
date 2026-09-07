@@ -620,6 +620,8 @@ class CronDeliveryView(APIView):
         job_name = request.headers.get("X-NBHD-Job-Name", "")
         from apps.cron.patterns.workout_congrats import completion_still_valid
 
+        # Only identified workout congratulations require done evidence;
+        # unknown runtime cron IDs fall back to the legacy job_name check.
         if not completion_still_valid(
             tenant, job_name, gateway_job_id=request.headers.get("X-NBHD-Cron-Job-Id", "").strip()[:64]
         ):

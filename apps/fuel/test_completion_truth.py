@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from rest_framework.response import Response
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -122,6 +123,68 @@ class WorkoutCompletionTruthTests(TestCase):
         self.assertEqual(response.data["skipped"], "workout_not_done")
         send.assert_not_called()
 
+    def assert_cron_delivered(self, *, gateway_job_id, job_name=""):
+        self.tenant.status = "active"
+        self.tenant.save(update_fields=["status"])
+        with patch(
+            "apps.router.cron_delivery.CronDeliveryView._send_via_telegram",
+            return_value=Response({"status": "sent", "channel": "telegram"}),
+        ) as send:
+            response = self.runtime.post(
+                f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/",
+                {"message": "Your daily update."},
+                format="json",
+                HTTP_X_NBHD_CRON_JOB_ID=gateway_job_id,
+                **({"HTTP_X_NBHD_JOB_NAME": job_name} if job_name else {}),
+            )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data, {"status": "sent", "channel": "telegram"})
+        send.assert_called_once()
+
+    def test_delivery_unknown_cron_id_without_job_name_is_delivered(self):
+        CronJob.objects.create(tenant=self.tenant, name="daily briefing", pattern=CronPattern.DAILY_BRIEFING)
+        self.assert_cron_delivered(gateway_job_id="not-yet-synced")
+
+    def test_delivery_non_congrats_cron_is_delivered(self):
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="daily briefing",
+            gateway_job_id="runtime-briefing-id",
+            pattern=CronPattern.DAILY_BRIEFING,
+        )
+        self.assert_cron_delivered(gateway_job_id="runtime-briefing-id")
+
+    def test_delivery_congrats_done_workout_is_delivered(self):
+        workout = self.workout()
+        Workout.objects.filter(pk=workout.pk).update(status="done", completed_at=timezone.now())
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="stored congrats",
+            gateway_job_id="runtime-cron-id",
+            pattern=CronPattern.WORKOUT_CONGRATS,
+            typed_payload={"workout_id": str(workout.id), "activity": "Mobility"},
+        )
+        self.assert_cron_delivered(gateway_job_id="runtime-cron-id")
+
+    def test_delivery_unknown_cron_id_still_checks_legacy_congrats_name(self):
+        self.tenant.status = "active"
+        self.tenant.save(update_fields=["status"])
+        workout = self.workout()
+        name = congrats._congrats_cron_name(str(workout.id))
+        with patch("apps.router.cron_delivery.CronDeliveryView._send_via_telegram") as send:
+            response = self.runtime.post(
+                f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/",
+                {"message": "Nice workout!"},
+                format="json",
+                HTTP_X_NBHD_CRON_JOB_ID="not-yet-synced",
+                HTTP_X_NBHD_JOB_NAME=name,
+            )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data, {"delivered": False, "skipped": "workout_not_done"})
+        send.assert_not_called()
+        Workout.objects.filter(pk=workout.pk).update(status="done", completed_at=timezone.now())
+        self.assert_cron_delivered(gateway_job_id="not-yet-synced", job_name=name)
+
     def test_delivery_without_job_name_rechecks_payload_workout(self):
         self.tenant.status = "active"
         self.tenant.save(update_fields=["status"])
@@ -150,9 +213,10 @@ class WorkoutCompletionTruthTests(TestCase):
                 )
             self.assertEqual(response.status_code, 200, response.data)
             self.assertFalse(response.data["delivered"])
+            self.assertEqual(response.data["skipped"], "workout_not_done")
             send.assert_not_called()
         other = create_tenant(display_name="Other", telegram_chat_id=801991)
-        self.assertFalse(completion_still_valid(other, "", gateway_job_id="runtime-cron-id"))
+        self.assertTrue(completion_still_valid(other, "", gateway_job_id="runtime-cron-id"))
         workout.delete()
         self.assertFalse(completion_still_valid(self.tenant, "", gateway_job_id="runtime-cron-id"))
 

@@ -118,16 +118,18 @@ def completion_still_valid(tenant, job_name: str, *, gateway_job_id: str = "") -
     workout_id = None
     if gateway_job_id:
         job = CronJob.objects.filter(tenant=tenant, gateway_job_id=gateway_job_id).first()
-        if job is None:
-            logging.getLogger(__name__).info("cron delivery skip: reason=unknown_cron")
-            return False
-        if job.pattern != CronPattern.WORKOUT_CONGRATS:
-            return True
-        workout_id = job.typed_payload.get("workout_id")
-        job_name = job.name  # Legacy rows may predate the explicit payload ID.
+        # Canonical rows can lack a gateway ID until reconciliation. Unknown
+        # IDs must use the legacy name check, not suppress unrelated sends.
+        if job is not None:
+            if job.pattern != CronPattern.WORKOUT_CONGRATS:
+                return True
+            workout_id = job.typed_payload.get("workout_id")
+            job_name = job.name  # Legacy rows may predate the explicit payload ID.
+            if not workout_id and not job_name.startswith("_congrats-"):
+                return False
     if not workout_id:
         if not job_name.startswith("_congrats-"):
-            return not gateway_job_id
+            return True
         workout_id = job_name.removeprefix("_congrats-")
     try:
         workout_id = UUID(str(workout_id))

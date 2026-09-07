@@ -23,6 +23,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.core import compose, render, services
 from apps.core.models import CoreProfile, MeditationSession, MeditationStatus
+from apps.core.test_utils import ComposeSchemaCacheMixin
 from apps.lessons.models import Lesson, StarJournalEntry, TutoringSession
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -1686,7 +1687,7 @@ def _over_segmented_manifest() -> dict:
 
 
 @override_settings(OPENROUTER_API_KEY="test-or-key")
-class ComposeAuthoringTests(SimpleTestCase):
+class ComposeAuthoringTests(ComposeSchemaCacheMixin, SimpleTestCase):
     def _ok(self, content, model="test/primary"):
         """A ``chat_completion`` return value: ``(response_json, model_used)``."""
         return ({"choices": [{"message": {"content": content}}]}, model)

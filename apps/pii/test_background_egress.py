@@ -8,6 +8,7 @@ from rest_framework.test import APIRequestFactory
 from rest_framework.views import APIView
 
 from apps.core import compose, render
+from apps.core.test_utils import ComposeSchemaCacheMixin
 from apps.insights.synthesis import _call_synthesis_llm
 from apps.journal.agenda_hints import _classify
 from apps.journal.extraction import _call_extraction_llm
@@ -35,7 +36,7 @@ def _completion(content="{}"):
     return {"choices": [{"message": {"content": content}}], "usage": {}}, "test/model"
 
 
-class BackgroundPromptGuardTests(SimpleTestCase):
+class BackgroundPromptGuardTests(ComposeSchemaCacheMixin, SimpleTestCase):
     def assert_has_entity_legend(self, prompt):
         self.assertIn(ENTITY_LEGEND_HEADER, prompt)
         self.assertIn("[PERSON_1]: recruiter at [ORG_1]; from work", prompt)

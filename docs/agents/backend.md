@@ -54,6 +54,15 @@ Core practice counts/streaks use the tenant-local completion day, never compose
 Fuel writers preserve the first completion timestamp and clear it on reversal;
 HealthKit uses sample end (or start + duration for older clients).
 
+The send-to-user endpoint resolves `X-NBHD-Cron-Job-Id` within the tenant.
+Only a resolved `WORKOUT_CONGRATS` row requires the payload workout to remain
+`status="done"`; missing/reverted/deleted workouts skip with `workout_not_done`.
+Legacy congrats rows may use their `_congrats-<uuid>` name for the workout ID.
+Resolved non-congrats patterns deliver normally. Unknown IDs fall back to the
+legacy `job_name` check and deliver unless it identifies congratulations without
+current done evidence. Missing `gateway_job_id` mappings are normal before
+reconciliation and must never alone suppress heartbeat/briefing/evening sends.
+
 `POST /api/v1/core/sessions/<uuid>/complete/` is tenant-scoped, owner JWT only,
 with optional `{ "listened_seconds": 600 }` (logged, not persisted). From
 `ready`/`delivered`, stamp server time and mark done; repeated `done` returns
