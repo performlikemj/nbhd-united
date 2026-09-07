@@ -81,6 +81,7 @@ class YesterdaysSignalsToolInPromptsTest(SimpleTestCase):
         # authority. If this guard rail disappears, HB will start asking
         # questions and compete with PQ's once-daily dedup'd cadence.
         body = config_generator._HEARTBEAT_CHECKIN_PROMPT
+        self.assertIn("never congratulate or reference a completion that these counts do not show", body)
         self.assertIn("DO NOT turn this into a quiz", body)
         self.assertIn("Personal Question cron", body)
 
