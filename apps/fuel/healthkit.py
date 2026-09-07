@@ -247,7 +247,7 @@ def _clean_workout(item) -> tuple[dict | None, str | None]:
         "raw_type": raw_type,
         "source_bundle": source_bundle,
         "started_at": started_at,
-        "ended_at": ended_at,
+        "ended_at": ended_at or started_at + timedelta(seconds=duration_seconds or duration * 60),
         "duration_minutes": duration,
         "duration_seconds": duration_seconds,
         "metrics": metrics,
@@ -379,7 +379,7 @@ def _complete_planned(locked: Workout, clean: dict, authored_input: dict, input_
             stored_text=stored_thread,
         )
 
-    locked.status = WorkoutStatus.DONE
+    locked.set_status(WorkoutStatus.DONE, completed_at=clean["ended_at"])
     locked.duration_minutes = clean["duration_minutes"]
     locked.duration_seconds = clean["duration_seconds"]
     locked.detail_json = merged
@@ -390,6 +390,7 @@ def _complete_planned(locked: Workout, clean: dict, authored_input: dict, input_
     locked.save(
         update_fields=[
             "status",
+            "completed_at",
             "duration_minutes",
             "duration_seconds",
             "detail_json",
@@ -530,12 +531,23 @@ def _adopt_existing_log(locked: Workout, clean: dict, authored_input: dict, inpu
             stored_text=stored_thread,
         )
 
+    locked.completed_at = clean["ended_at"]
     locked.external_id = clean["external_id"]
     locked.detail_json = merged
     locked.notes_thread = thread
     locked.pii_receipts = receipts
     locked.version += 1
-    locked.save(update_fields=["external_id", "detail_json", "notes_thread", "pii_receipts", "version", "updated_at"])
+    locked.save(
+        update_fields=[
+            "completed_at",
+            "external_id",
+            "detail_json",
+            "notes_thread",
+            "pii_receipts",
+            "version",
+            "updated_at",
+        ]
+    )
 
     return {
         "external_id": clean["external_id"],
@@ -592,6 +604,7 @@ def _ingest_workout(tenant, clean: dict, tz, consumed: set) -> dict:
                         tenant=tenant,
                         date=clean["started_at"].astimezone(tz).date(),
                         status=WorkoutStatus.DONE,
+                        completed_at=clean["ended_at"],
                         source=WorkoutSource.HEALTHKIT,
                         external_id=eid,
                         category=clean["category"],

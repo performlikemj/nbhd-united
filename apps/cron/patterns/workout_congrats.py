@@ -20,7 +20,9 @@ fallback is a canned, still-warm one-liner so a validation miss never sends noth
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+from uuid import UUID
 
 from pydantic import Field
 
@@ -106,6 +108,23 @@ def _facts_line(payload: WorkoutCongratsPayload) -> str:
     return head
 
 
+def completion_still_valid(tenant, job_name: str) -> bool:
+    """Recheck immediately before transport; the agent turn permits only sending."""
+    from apps.fuel.models import Workout, WorkoutStatus
+
+    prefix = "_congrats-"
+    if not job_name.startswith(prefix):
+        return True
+    try:
+        workout_id = UUID(job_name.removeprefix(prefix))
+    except ValueError:
+        return False
+    valid = Workout.objects.filter(tenant=tenant, id=workout_id, status=WorkoutStatus.DONE).exists()
+    if not valid:
+        logging.getLogger(__name__).info("workout_congrats skip: workout=%s reason=not_done", workout_id)
+    return valid
+
+
 class WorkoutCongratsHandler(PatternHandler):
     pattern = "workout_congrats"
     payload_schema = WorkoutCongratsPayload
@@ -122,7 +141,7 @@ class WorkoutCongratsHandler(PatternHandler):
             "The user just completed this workout: "
             f"{_facts_line(payload)}.\n\n"
             "Send ONE short, warm, personal congratulations via "
-            "`nbhd_send_to_user` — reference something specific about the "
+            f"`nbhd_send_to_user` with job_name={name!r} — reference something specific about the "
             "workout, 1-2 sentences, no follow-up questions. If the facts include "
             "an est. 1RM PR, call it estimated and congratulate the actual source "
             "set (weight × reps); never present the estimate as weight lifted. Do not create "

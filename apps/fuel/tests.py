@@ -1608,6 +1608,7 @@ class RuntimeFuelViewTests(TestCase):
                 "calories": 430,
                 "detail_json": detail_json,
                 "status": "done",
+                "completed_at": None,
                 "scheduled_at": scheduled_at.isoformat(),
                 "plan_id": str(plan.id),
                 "slot_id": str(slot.id),

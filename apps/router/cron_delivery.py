@@ -618,6 +618,10 @@ class CronDeliveryView(APIView):
         from apps.router.proactive_context import record_proactive_outbound
 
         job_name = request.headers.get("X-NBHD-Job-Name", "")
+        from apps.cron.patterns.workout_congrats import completion_still_valid
+
+        if not completion_still_valid(tenant, job_name):
+            return Response({"delivered": False, "skipped": "workout_not_done"})
         delivery_attempt = None
         occurrence_key_header = request.headers.get("X-NBHD-Occurrence-Key", "").strip()[:64]
         explicit_occurrence_key = occurrence_key_header if job_name == "_subagent_result" else ""

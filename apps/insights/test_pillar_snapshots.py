@@ -7,11 +7,12 @@ tests exercise enablement gating + ISO-week idempotency with real-today data.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from apps.common.tenant_tz import tenant_tz
 from apps.core.models import MeditationSession, MeditationStatus
 from apps.fuel.models import (
     BodyWeightLog,
@@ -59,8 +60,15 @@ def _workout(tenant, *, on: date, status=WorkoutStatus.DONE, minutes=None, plan=
     )
 
 
-def _session(tenant, *, on: date, status=MeditationStatus.READY) -> MeditationSession:
-    return MeditationSession.objects.create(tenant=tenant, date=on, status=status)
+def _session(tenant, *, on: date, status=MeditationStatus.DONE) -> MeditationSession:
+    return MeditationSession.objects.create(
+        tenant=tenant,
+        date=on,
+        status=status,
+        completed_at=datetime.combine(on, time(12), tzinfo=tenant_tz(tenant))
+        if status == MeditationStatus.DONE
+        else None,
+    )
 
 
 def _entry(tenant, *, on: date) -> JournalEntry:

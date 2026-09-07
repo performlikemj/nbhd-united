@@ -153,13 +153,21 @@ def compose_spoken_status(tenant) -> str:
         try:
             from datetime import timedelta
 
+            from django.db.models.functions import TruncDate
+
+            from apps.common.tenant_tz import tenant_tz
             from apps.core.models import MeditationSession, MeditationStatus
 
-            count_7d = MeditationSession.objects.filter(
-                tenant=tenant,
-                status=MeditationStatus.READY,
-                date__gte=today - timedelta(days=7),
-            ).count()
+            count_7d = (
+                MeditationSession.objects.annotate(completion_date=TruncDate("completed_at", tzinfo=tenant_tz(tenant)))
+                .filter(
+                    tenant=tenant,
+                    status=MeditationStatus.DONE,
+                    completion_date__gte=today - timedelta(days=6),
+                    completion_date__lte=today,
+                )
+                .count()
+            )
             if count_7d:
                 sentences.append(f"{_plural(count_7d, 'meditation')} this week.")
         except Exception:

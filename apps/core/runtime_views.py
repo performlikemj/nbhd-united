@@ -109,11 +109,29 @@ class RuntimeCoreSummaryView(APIView):
         if isinstance(tenant, Response):
             return tenant
         ready = MeditationSession.objects.filter(tenant=tenant, status=MeditationStatus.READY)
-        last = ready.order_by("-date", "-created_at").first()
+        done = MeditationSession.objects.filter(tenant=tenant, status=MeditationStatus.DONE)
+        from django.db.models import F
+
+        last = done.order_by(F("completed_at").desc(nulls_last=True), "-created_at").first()
+        unplayed = ready.first()
         return Response(
             {
-                "total_sessions": ready.count(),
-                "last": ({"id": str(last.id), "title": last.title, "date": last.date.isoformat()} if last else None),
+                "total_sessions": done.count(),
+                "last": (
+                    {
+                        "id": str(last.id),
+                        "title": last.title,
+                        "date": last.date.isoformat(),
+                        "completed_at": last.completed_at.isoformat() if last.completed_at else None,
+                    }
+                    if last
+                    else None
+                ),
+                "ready_unplayed": (
+                    {"id": str(unplayed.id), "title": unplayed.title, "date": unplayed.date.isoformat()}
+                    if unplayed
+                    else None
+                ),
             }
         )
 

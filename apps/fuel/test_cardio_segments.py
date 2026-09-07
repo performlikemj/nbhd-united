@@ -250,7 +250,7 @@ class CardioMaterializationTests(DjangoTestCase):
 
 class CardioHealthKitTests(DjangoTestCase):
     def test_match_gates_and_preserved_prescription(self):
-        from datetime import datetime
+        from datetime import datetime, timedelta
 
         from apps.fuel.cardio import materialize_prescription
         from apps.fuel.healthkit import _complete_planned, _find_candidate
@@ -278,6 +278,7 @@ class CardioHealthKitTests(DjangoTestCase):
                 )
                 clean = {
                     "started_at": started,
+                    "ended_at": started + timedelta(minutes=actual_minutes),
                     "category": "cardio",
                     "raw_type": "running",
                     "duration_minutes": actual_minutes,
@@ -305,6 +306,7 @@ class CardioHealthKitTests(DjangoTestCase):
                     self.assertEqual(workout.detail_json["distance_km"], distance)
                     self.assertEqual(workout.detail_json["avg_hr"], 145)
                     self.assertEqual(workout.duration_seconds, actual_minutes * 60)
+                    self.assertEqual(workout.completed_at, clean["ended_at"])
                 workout.delete()
 
 

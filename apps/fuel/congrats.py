@@ -204,6 +204,10 @@ def _dispatch_schedule(tenant, *, workout_id: str, payload: dict) -> None:
 
     def _work() -> None:
         try:
+            if not Workout.objects.filter(id=workout_id, tenant=tenant, status="done").exists():
+                logger.info("workout_congrats skip: workout=%s reason=not_done", workout_id)
+                Workout.objects.filter(id=workout_id, tenant=tenant).update(congratulated_at=None)
+                return
             _schedule_congrats_cron(tenant, name=name, payload=payload)
         except Exception as exc:
             _rollback_congrats(tenant, workout_id=workout_id, name=name, exc=exc)

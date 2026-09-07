@@ -8,8 +8,8 @@ within the phase-arc grammar (fixed bookends, its choice of middle — see
 
 LLM access mirrors the project's other Django-side calls (apps/insights/synthesis.py,
 apps/pii/arbiter.py): the shared ``apps.common.openrouter.chat_completion`` client
-with JSON mode. Like those callers it tries an ORDERED CHAIN of low-cost OpenRouter
-models rather than a single one, so a single model's hiccup on this structured task
+with a manifest/lesson JSON schema and per-model JSON-mode fallback. It tries an
+ORDERED CHAIN of low-cost OpenRouter models rather than a single one, so a single model's hiccup on this structured task
 no longer fails the whole compose. Each candidate is parsed AND validated — a model
 that answers with unusable *content* (not just an empty body) also falls through to
 the next. Kept LEAN on purpose — sparse speech (~6-12 TTS calls) so a low Gemini
@@ -23,10 +23,12 @@ import logging
 import time
 
 from django.conf import settings
+from pydantic import ValidationError
 
 from apps.billing.constants import DEEPSEEK_FLASH_MODEL, DEEPSEEK_MODEL, GEMMA_MODEL
 from apps.common.openrouter import chat_completion
 from apps.core import render
+from apps.core.lesson import TRADITIONS, MeditationLesson, MeditationManifest, normalize_teaching_slug
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +67,7 @@ _TRANSIENT_MARKERS = (
 # The look-back block is the one prompt section that grows with use — a daily
 # sitter accumulates history forever. Cap it so the recent list can never crowd
 # out this week's actual signals (whole entries only; oldest dropped first).
-_RECENT_MEDITATIONS_CHAR_BUDGET = 1200
+_RECENT_MEDITATIONS_CHAR_BUDGET = 2600
 
 # Rough per-phase time budgets (seconds) for the ~10-min arc — guidance the model
 # paces toward and a fallback when it omits one. The model now OWNS the allocation
@@ -120,6 +122,12 @@ _SYSTEM_PROMPT = (
     '  global_tone: "soft, slow, warm; unhurried with generous space"\n'
     "  total_target_seconds: 600\n"
     "  ambient: null\n"
+    "  lesson: { tradition, teaching_slug, core_teaching, summary, practice }\n"
+    f"    tradition: exactly one of {', '.join(TRADITIONS)}; other is the honest exit\n"
+    "    teaching_slug: kebab-case tag for the ONE idea, 2-40 characters\n"
+    "    core_teaching: one sentence, at most 200 characters\n"
+    "    summary: 2-3 sentences, at most 400 characters\n"
+    "    practice: what the body/attention actually does, at most 200 characters\n"
     "  phases: the sit's arc — you choose today's shape, within the grammar below\n\n"
     "PHASE ARC — the bookends are fixed, the middle is yours:\n"
     "- The FIRST phase is always arrival and the LAST is always closing.\n"
@@ -161,6 +169,8 @@ _SYSTEM_PROMPT = (
     "one re-anchoring cue, the closing takeaway — while a guided one sits at the high end. Never name the "
     "density and never add a key for it.\n\n"
     "VARIETY — every sit must feel like a new doorway:\n"
+    "- Do not reuse any `teaching_slug` that appears in RECENT MEDITATIONS.\n"
+    "- Do not use the same `tradition` as either of the two most recent sits.\n"
     "- Your input may include a RECENT MEDITATIONS list (newest first, with each sit's title and theme). "
     "That list is what you must NOT repeat.\n"
     "- The title must not repeat or near-echo any recent title — not the same words, and not the same "
@@ -168,8 +178,8 @@ _SYSTEM_PROMPT = (
     "- Vary the imagery you reach for, how you open the sit, and what the practice focuses on, measured "
     "against those recent sits.\n\n"
     "WISDOM LESSON — each sit teaches ONE small idea:\n"
-    "- Draw it from the breadth of contemplative thought: Stoic, Zen, broader Buddhist, Taoist, Sufi, "
-    "Christian-contemplative, Jewish, or secular philosophy and the science of mind.\n"
+    f"- Draw it from these traditions: {', '.join(TRADITIONS)}.\n"
+    "- The teaching in the phases and the closing takeaway must express the SAME idea as lesson.\n"
     "- CHOOSE the idea to serve what today's signals show this person is carrying — not at random. Rotate "
     "which tradition you draw on against the recent sits.\n"
     "- Teach it plainly and invitationally, in a sentence or two, within core_practice or a teaching "
@@ -281,6 +291,10 @@ def _recent_meditation_lines(entries: list, *, budget: int = _RECENT_MEDITATIONS
         line += f'"{title}"' if title else "(untitled)"
         if theme:
             line += f" — {theme}"
+        lesson = entry.get("lesson") or {}
+        if isinstance(lesson, dict) and lesson.get("tradition") and lesson.get("teaching_slug"):
+            teaching = " ".join(str(lesson.get("core_teaching") or "").split())
+            line += f" [{lesson['tradition']}/{lesson['teaching_slug']}: {teaching}]"
         if used + len(line) + 1 > budget:  # +1 for the newline it will be joined with
             break
         lines.append(line)
@@ -423,7 +437,9 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
     before it's abandoned. A candidate that fails transport (after its retry),
     returns unparseable JSON, returns valid JSON that isn't a manifest object, or
     returns a structurally-invalid manifest is logged and the next candidate is
-    tried. Raises ``ComposeError`` if the key is missing or every candidate fails
+    tried. A repeated lesson gets one corrective retry on that model. If all
+    models clash, the last valid sit wins unless CORE_COMPOSE_STRICT_VARIETY is on.
+    Raises ``ComposeError`` if the key is missing or every candidate fails
     (carrying every candidate's failure reason for diagnosis).
     """
     api_key = getattr(settings, "OPENROUTER_API_KEY", "") or ""
@@ -449,7 +465,10 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
     body = {
         "max_tokens": _MAX_OUTPUT_TOKENS,
         "temperature": 0.7,
-        "response_format": {"type": "json_object"},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "meditation_manifest", "schema": MeditationManifest.model_json_schema()},
+        },
     }
 
     candidates = _compose_models(model)
@@ -459,35 +478,111 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
         failures.append(f"{model_id}: {reason}")
         logger.warning("compose: model %s failed — %s", model_id, reason)
 
+    recent = [e for e in (signals.get("recent_meditations") or []) if isinstance(e, dict)]
+    lessons = [(e, e.get("lesson") or {}) for e in recent if isinstance(e.get("lesson"), dict)]
+    traditions = [(e, lesson["tradition"]) for e, lesson in lessons if lesson.get("tradition")][:2]
+    slugs = [(e, str(lesson["teaching_slug"])) for e, lesson in lessons if lesson.get("teaching_slug")]
+    last_valid_clash = None
+    clash_models = 0
+
     for model_id in candidates:
-        try:
-            data, _used = _call_model(model_id, messages, api_key, body)
-            content = _strip_code_fences((data["choices"][0]["message"]["content"] or "").strip())
-        except Exception as exc:  # noqa: BLE001 — record + fall through to the next model
-            _record(model_id, f"LLM call failed: {str(exc)[:160]}")
-            continue
+        model_body = dict(body)
+        model_messages = list(messages)
+        for attempt in range(2):
+            try:
+                try:
+                    data, _used = _call_model(model_id, model_messages, api_key, model_body)
+                except Exception as exc:
+                    code = getattr(getattr(exc, "response", None), "status_code", None)
+                    if code is None or not 400 <= code < 500 or model_body["response_format"]["type"] != "json_schema":
+                        raise
+                    logger.info(
+                        "compose: schema rejected model=%s status=%s; falling back to json_object", model_id, code
+                    )
+                    model_body["response_format"] = {"type": "json_object"}
+                    data, _used = _call_model(model_id, model_messages, api_key, model_body)
+                content = _strip_code_fences((data["choices"][0]["message"]["content"] or "").strip())
+            except Exception as exc:  # noqa: BLE001 — record + next candidate
+                code = getattr(getattr(exc, "response", None), "status_code", None)
+                _record(model_id, f"LLM call failed: {type(exc).__name__} status={code}")
+                break
 
-        try:
-            manifest = json.loads(content)
-        except json.JSONDecodeError:
-            _record(model_id, f"non-JSON response: {content[:120]!r}")
-            continue
+            try:
+                manifest = json.loads(content)
+            except json.JSONDecodeError:
+                _record(model_id, "non-JSON response")
+                break
+            try:
+                manifest = _normalize(manifest, voice, target_seconds)
+                lesson = MeditationLesson.model_validate(manifest.get("lesson"))
+                manifest["lesson"] = lesson.model_dump()
+                MeditationManifest.model_validate(manifest)
+            except ValidationError as exc:
+                # ValidationError strings include input_value (private model-authored text).
+                _record(model_id, "invalid manifest/lesson: " + ", ".join(e["type"] for e in exc.errors()))
+                break
+            except ComposeError as exc:
+                _record(model_id, str(exc))
+                break
+            except (TypeError, AttributeError):
+                _record(model_id, "invalid manifest shape")
+                break
 
-        # _normalize raises ComposeError on valid-but-non-dict JSON (e.g. a top-level
-        # array or quoted string — a real drift mode); treat that like any other bad
-        # content and fall through rather than aborting the whole chain.
-        try:
-            manifest = _normalize(manifest, voice, target_seconds)
-        except ComposeError as exc:
-            _record(model_id, str(exc))
-            continue
+            clash = next(
+                (
+                    e
+                    for e, slug in slugs
+                    if normalize_teaching_slug(slug) == normalize_teaching_slug(lesson.teaching_slug)
+                ),
+                None,
+            )
+            if clash is None:
+                clash = next((e for e, tradition in traditions if tradition == lesson.tradition), None)
+            errors = render.validate_manifest(manifest)
+            if errors and clash is None:
+                _record(model_id, "invalid manifest: " + "; ".join(errors[:3]))
+                break
+            if clash is None:
+                logger.info(
+                    "compose: outcome=%s model=%s slug=%s",
+                    "accepted_after_retry" if attempt else "accepted_first",
+                    model_id,
+                    lesson.teaching_slug,
+                )
+                return manifest
 
-        errors = render.validate_manifest(manifest)
-        if errors:
-            _record(model_id, "invalid manifest: " + "; ".join(errors[:3]))
-            continue
+            if not errors:
+                last_valid_clash = manifest
+            if attempt:
+                _record(model_id, "variety_clash")
+                clash_models += 1
+                break
+            rejection = (
+                f"Rejected: teaching '{lesson.teaching_slug}' / tradition '{lesson.tradition}' repeats the sit on {clash.get('date', 'unknown')}. "
+                f"Choose a different teaching AND a tradition not in {[t for _, t in traditions]}; avoid all of: {[slug for _, slug in slugs]}."
+            )
+            model_messages.extend(
+                [
+                    {
+                        "role": "assistant",
+                        "content": redact_known_values(tenant, content, seam="meditation_compose_retry"),
+                    },
+                    {
+                        "role": "user",
+                        "content": redact_known_values(tenant, rejection, seam="meditation_compose_retry"),
+                    },
+                ]
+            )
 
-        return manifest
-
+    if (
+        clash_models == len(candidates)
+        and last_valid_clash is not None
+        and not getattr(settings, "CORE_COMPOSE_STRICT_VARIETY", False)
+    ):
+        logger.warning(
+            "compose: variety clash accepted outcome=clash_accepted slug=%s",
+            last_valid_clash["lesson"]["teaching_slug"],
+        )
+        return last_valid_clash
     detail = " | ".join(failures) if failures else "no compose model configured"
     raise ComposeError(detail)

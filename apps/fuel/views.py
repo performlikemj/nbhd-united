@@ -1025,10 +1025,10 @@ class WorkoutSkipView(APIView):
             writer="owner",
             receipts=workout.pii_receipts,
         )
-        workout.status = WorkoutStatus.SKIPPED
+        workout.set_status(WorkoutStatus.SKIPPED)
         workout.skip_reason = authored["skip_reason"]
         workout.pii_receipts = receipts
-        workout.save(update_fields=["status", "skip_reason", "pii_receipts", "updated_at"])
+        workout.save(update_fields=["status", "completed_at", "skip_reason", "pii_receipts", "updated_at"])
         return Response(WorkoutSerializer(workout, context={"tenant": tenant, "rehydrate": True}).data)
 
 
@@ -1045,7 +1045,7 @@ class WorkoutCompleteView(APIView):
             workout = Workout.objects.get(id=workout_id, tenant=tenant)
         except Workout.DoesNotExist:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
-        workout.status = WorkoutStatus.DONE
+        workout.set_status(WorkoutStatus.DONE)
         if "notes" in request.data:
             from apps.pii.store_authoring import author_store_fields
 

@@ -145,7 +145,7 @@ export default function CorePage() {
         }
         if (!pollRef.current.active) return;
         if (session) {
-          if (session.status === "ready" || session.status === "delivered") {
+          if (session.status === "ready" || session.status === "delivered" || session.status === "done") {
             pollRef.current.active = false;
             // Optimistically fold the fresh sit in (today/library derive from it)
             // so the UI flips instantly; the refetch below then reconciles.

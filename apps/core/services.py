@@ -151,22 +151,23 @@ def gather_meditation_signals(tenant: Tenant) -> dict:
     return signals
 
 
-def _recent_meditation_entries(tenant: Tenant, *, limit: int = 10) -> list[dict]:
+def _recent_meditation_entries(tenant: Tenant, *, limit: int = 20) -> list[dict]:
     """The last ``limit`` sits that actually reached the person, newest first.
 
-    READY and DELIVERED only — a failed or still-pending row was never heard, so
-    it is no reason to avoid a theme. Title and theme stay in placeholder space
+    READY, DELIVERED and DONE titles inform variety. A failed or still-pending
+    row was not available to play, so it is no reason to avoid a theme. Title,
+    theme and lesson prose stay in placeholder space
     (they are read straight off the row, un-rehydrated, like every other compose
-    signal). One query, three columns; a row with neither a title nor a theme
+    signal). One bounded query; a row with neither a title nor a theme
     carries no variety signal and is dropped.
     """
     rows = (
         MeditationSession.objects.filter(
             tenant=tenant,
-            status__in=(MeditationStatus.READY, MeditationStatus.DELIVERED),
+            status__in=(MeditationStatus.READY, MeditationStatus.DELIVERED, MeditationStatus.DONE),
         )
         .order_by("-date", "-created_at")
-        .values("date", "title", "theme")[:limit]
+        .values("date", "title", "theme", "lesson")[:limit]
     )
     entries: list[dict] = []
     for row in rows:
@@ -174,7 +175,11 @@ def _recent_meditation_entries(tenant: Tenant, *, limit: int = 10) -> list[dict]
         theme = " ".join((row["theme"] or "").split())[:200]
         if not title and not theme:
             continue
-        entries.append({"date": row["date"].isoformat() if row["date"] else "", "title": title, "theme": theme})
+        entry = {"date": row["date"].isoformat() if row["date"] else "", "title": title, "theme": theme}
+        lesson = row["lesson"]
+        if isinstance(lesson, dict) and lesson:
+            entry["lesson"] = {key: lesson.get(key, "") for key in ("tradition", "teaching_slug", "core_teaching")}
+        entries.append(entry)
     return entries
 
 
@@ -287,9 +292,11 @@ def compose_meditation(session: MeditationSession) -> None:
 
         from apps.pii.store_authoring import author_store_fields
 
+        lesson = manifest.pop("lesson", {})
         authored, receipts = author_store_fields(
             session.tenant,
             {
+                "lesson": lesson,
                 "manifest": manifest,
                 "title": str(manifest.get("title", ""))[:160],
                 "theme": str(manifest.get("theme", "")),
@@ -302,8 +309,9 @@ def compose_meditation(session: MeditationSession) -> None:
         session.manifest = authored["manifest"]
         session.title = authored["title"]
         session.theme = authored["theme"]
+        session.lesson = authored["lesson"]
         session.pii_receipts = receipts
-        _save_session(session, ["manifest", "title", "theme", "pii_receipts", "updated_at"])
+        _save_session(session, ["manifest", "title", "theme", "lesson", "pii_receipts", "updated_at"])
 
     # A publish failure intentionally propagates. QStash will redeliver compose,
     # which resumes from the valid persisted manifest without another LLM call.

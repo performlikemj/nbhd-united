@@ -174,6 +174,8 @@ def _serialize_workout_summary_card(workout: Workout) -> dict:
         "duration_minutes": workout.duration_minutes,
         "rpe": workout.rpe,
         "source": workout.source,
+        "status": workout.status,
+        "completed_at": workout.completed_at.isoformat() if workout.completed_at else None,
     }
     # Measured metrics (HealthKit imports and any logged actuals) so the
     # assistant can coach off real data, not just labels.
@@ -489,6 +491,8 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         if blocked is not None:
             return blocked
 
+        from django.utils import timezone
+
         data, searched_before_write = _strip_search_marker(request.data)
         category = data.get("category", "other")
         if category not in WorkoutCategory.values:
@@ -639,6 +643,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
                 tenant=tenant,
                 date=workout_date,
                 status=workout_status,
+                completed_at=timezone.now() if workout_status == WorkoutStatus.DONE else None,
                 # Provenance: this path is the assistant logging on the user's
                 # behalf from a chat message (any channel). Distinct from a
                 # user tapping "log workout" in the app/web (consumer endpoint
@@ -676,6 +681,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             "category": workout.category,
             "activity": workout.activity,
             "status": workout.status,
+            "completed_at": workout.completed_at.isoformat() if workout.completed_at else None,
             "rpe": workout.rpe,
             "guidance": "Confirm briefly in one line.",
         }
@@ -724,7 +730,6 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
         payload = {
             **_serialize_workout_summary_card(workout),
             "detail_json": workout.detail_json,
-            "status": workout.status,
             "scheduled_at": workout.scheduled_at.isoformat() if workout.scheduled_at else None,
         }
         if workout.plan_id:
@@ -779,8 +784,8 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             # missed" off a 200 while the row never moved off "planned".
             if val not in WorkoutStatus.values:
                 return _reject_unknown_status(tenant, val, tool_name="runtime-fuel-workout-detail")
-            workout.status = val
-            updated_fields.append("status")
+            workout.set_status(val)
+            updated_fields.extend(["status", "completed_at"])
 
         if "date" in data:
             try:
@@ -958,6 +963,7 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             "category": workout.category,
             "activity": workout.activity,
             "status": workout.status,
+            "completed_at": workout.completed_at.isoformat() if workout.completed_at else None,
             "duration_minutes": workout.duration_minutes,
             "rpe": workout.rpe,
         }
@@ -1054,14 +1060,15 @@ class RuntimeWorkoutSkipView(_FuelResponseGuard, APIView):
             receipts=workout.pii_receipts,
             defer_detection=True,
         )
-        workout.status = WorkoutStatus.SKIPPED
+        workout.set_status(WorkoutStatus.SKIPPED)
         workout.skip_reason = authored["skip_reason"]
         workout.pii_receipts = receipts
-        workout.save(update_fields=["status", "skip_reason", "pii_receipts", "updated_at"])
+        workout.save(update_fields=["status", "completed_at", "skip_reason", "pii_receipts", "updated_at"])
         return Response(
             {
                 "id": str(workout.id),
                 "status": workout.status,
+                "completed_at": workout.completed_at.isoformat() if workout.completed_at else None,
                 "skip_reason": workout.skip_reason,
                 "date": str(workout.date),
             }
@@ -1092,8 +1099,8 @@ class RuntimeWorkoutCompleteView(_FuelResponseGuard, APIView):
         if lock_resp is not None:
             logger.info("runtime.complete.edit_locked workout=%s", workout_id)
             return lock_resp
-        workout.status = WorkoutStatus.DONE
-        update_fields = ["status", "rpe", "duration_minutes", "updated_at"]
+        workout.set_status(WorkoutStatus.DONE)
+        update_fields = ["status", "completed_at", "rpe", "duration_minutes", "updated_at"]
         if "notes" in request.data:
             from apps.pii.store_authoring import author_store_fields
 
@@ -1135,6 +1142,7 @@ class RuntimeWorkoutCompleteView(_FuelResponseGuard, APIView):
             {
                 "id": str(workout.id),
                 "status": workout.status,
+                "completed_at": workout.completed_at.isoformat() if workout.completed_at else None,
                 "rpe": workout.rpe,
                 "duration_minutes": workout.duration_minutes,
                 "date": str(workout.date),
@@ -1247,6 +1255,7 @@ class RuntimeFuelSummaryView(_FuelResponseGuard, APIView):
             {
                 "id": str(w.id),
                 "date": str(w.date),
+                "status": w.status,
                 "category": w.category,
                 "activity": w.activity,
                 "duration_minutes": w.duration_minutes,
@@ -1915,6 +1924,7 @@ def _serialize_plan(plan, include_workouts=False, *, today=None):
                 "id": str(w.id),
                 "date": str(w.date),
                 "status": w.status,
+                "completed_at": w.completed_at.isoformat() if w.completed_at else None,
                 "category": w.category,
                 "activity": w.activity,
                 "duration_minutes": w.duration_minutes,
@@ -3688,6 +3698,7 @@ class RuntimeFuelAuditView(APIView):
                 "category": w.category,
                 "activity": w.activity,
                 "status": w.status,
+                "completed_at": w.completed_at.isoformat() if w.completed_at else None,
                 "duration_minutes": w.duration_minutes,
                 # Prescribed/actual intensity — for a planned row this is the
                 # target_rpe the assistant set; for a done row it's the logged

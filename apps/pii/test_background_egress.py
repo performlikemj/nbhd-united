@@ -66,10 +66,13 @@ class BackgroundPromptGuardTests(SimpleTestCase):
         self.assert_has_entity_legend(prompt)
 
     @override_settings(OPENROUTER_API_KEY="test-key")
-    @patch("apps.core.compose.render.validate_manifest", return_value=[])
-    @patch("apps.core.compose._normalize", return_value={"ok": True})
-    @patch("apps.core.compose.chat_completion", return_value=_completion("{}"))
-    def test_meditation_compose_prompt_is_guarded(self, completion, _normalize, _validate):
+    @patch("apps.core.compose.chat_completion")
+    def test_meditation_compose_prompt_is_guarded(self, completion):
+        import json
+
+        from apps.core.tests import _valid_manifest
+
+        completion.return_value = _completion(json.dumps(_valid_manifest()))
         compose.author_manifest({"additional_context": "Theo Smith at Optiver"}, tenant=_tenant_stub())
         prompt = completion.call_args.args[1][1]["content"]
         self.assert_has_entity_legend(prompt)

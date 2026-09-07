@@ -34,6 +34,13 @@ _HAS_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 def _valid_manifest(*, total: int = 600) -> dict:
     """A minimal manifest that passes ``validate_manifest`` (canonical arc)."""
     return {
+        "lesson": {
+            "tradition": "taoist",
+            "teaching_slug": "wu-wei",
+            "core_teaching": "Let attention settle without force.",
+            "summary": "Release the urge to force calm. Let the breath move on its own.",
+            "practice": "Feel the breath without changing it.",
+        },
         "schema_version": 1,
         "title": "Letting go",
         "theme": "release work tension",
@@ -1740,9 +1747,10 @@ class ComposeAuthoringTests(SimpleTestCase):
 
         # WISDOM LESSON — one small idea, broad traditions, chosen for today, never preachy.
         self.assertIn("WISDOM LESSON", system)
-        for tradition in ("Stoic", "Zen", "Buddhist", "Taoist", "Sufi", "Christian-contemplative", "Jewish"):
+        from apps.core.lesson import TRADITIONS
+
+        for tradition in TRADITIONS:
             self.assertIn(tradition, system)
-        self.assertIn("science of mind", system)
         self.assertIn("serve what today's signals show", system)
         self.assertIn("Never preach", system)
         self.assertIn("never presume what this person believes", system)
@@ -1997,7 +2005,7 @@ class ComposeAuthoringTests(SimpleTestCase):
         msg = str(ctx.exception)
         self.assertIn("too many spoken", msg)
         self.assertIn("non-JSON", msg)
-        self.assertIn("503", msg)
+        self.assertIn("RuntimeError", msg)
 
     def test_strips_code_fences(self):
         fenced = "```json\n" + json.dumps(_valid_manifest()) + "\n```"
@@ -2304,6 +2312,7 @@ class ComposeMeditationServiceTests(TestCase):
         session.refresh_from_db()
         self.assertTrue(session.manifest.get("phases"))
         self.assertEqual(session.title, manifest["title"])
+        self.assertEqual(session.lesson["teaching_slug"], "wu-wei")
         mock_publish.assert_called_once_with("render_meditation", str(session.id))
 
     def test_concurrent_compose_delivery_does_not_author_twice(self):
@@ -2539,22 +2548,22 @@ class MeditationLookBackTests(TestCase):
         self.assertEqual(recent[0]["date"], (date.today() - timedelta(days=1)).isoformat())
 
     def test_only_sits_that_reached_the_person_are_counted(self):
-        # DELIVERED counts (they heard it); a failed or still-in-flight sit was
-        # never heard, so it is no reason to avoid a theme.
+        # Library titles count for variety, independently of practice evidence.
+        self._sit(0, status=MeditationStatus.DONE, title="Finished It")
         self._sit(1, status=MeditationStatus.DELIVERED, title="Heard It")
         self._sit(2, status=MeditationStatus.FAILED, title="Never Rendered")
         self._sit(3, status=MeditationStatus.PENDING, title="Still Pending")
         self._sit(4, status=MeditationStatus.RENDERING, title="Mid Render")
         titles = [e["title"] for e in services.gather_meditation_signals(self.tenant)["recent_meditations"]]
-        self.assertEqual(titles, ["Heard It"])
+        self.assertEqual(titles, ["Finished It", "Heard It"])
 
-    def test_look_back_window_is_ten_sits(self):
-        for days_ago in range(1, 15):
+    def test_look_back_window_is_twenty_sits(self):
+        for days_ago in range(1, 25):
             self._sit(days_ago)
         recent = services.gather_meditation_signals(self.tenant)["recent_meditations"]
-        self.assertEqual(len(recent), 10)
+        self.assertEqual(len(recent), 20)
         self.assertEqual(recent[0]["title"], "Sit 1")  # newest kept
-        self.assertEqual(recent[-1]["title"], "Sit 10")  # the 11th-oldest is dropped
+        self.assertEqual(recent[-1]["title"], "Sit 20")  # the 21st-oldest is dropped
 
     def test_sit_with_neither_title_nor_theme_is_dropped(self):
         self._sit(1, title="", theme="")
