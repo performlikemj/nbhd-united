@@ -75,6 +75,7 @@ class WorkoutCongratsTriggerTests(TestCase):
         # contain ':' or whitespace.
         self.assertNotIn(":", kwargs["name"])
         self.assertEqual(kwargs["typed_payload"]["activity"], "Push Day")
+        self.assertEqual(kwargs["typed_payload"]["workout_id"], str(w.id))
 
         # Durable stamp set atomically.
         w.refresh_from_db()

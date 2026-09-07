@@ -8,6 +8,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.cron.models import CronJob, CronPattern
 from apps.cron.patterns.workout_congrats import completion_still_valid
 from apps.fuel import congrats
 from apps.fuel import tests as fuel_tests
@@ -120,6 +121,40 @@ class WorkoutCompletionTruthTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["skipped"], "workout_not_done")
         send.assert_not_called()
+
+    def test_delivery_without_job_name_rechecks_payload_workout(self):
+        self.tenant.status = "active"
+        self.tenant.save(update_fields=["status"])
+        workout = self.workout()
+        Workout.objects.filter(pk=workout.pk).update(status="done", completed_at=timezone.now())
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="stored congrats",
+            gateway_job_id="runtime-cron-id",
+            pattern=CronPattern.WORKOUT_CONGRATS,
+            typed_payload={"workout_id": str(workout.id), "activity": "Mobility"},
+        )
+        self.assertTrue(completion_still_valid(self.tenant, "", gateway_job_id="runtime-cron-id"))
+        Workout.objects.filter(pk=workout.pk).update(status="planned", completed_at=None)
+        for headers in ({}, {"HTTP_X_NBHD_JOB_NAME": "misleading-name"}):
+            with (
+                self.subTest(headers=headers),
+                patch("apps.router.cron_delivery.CronDeliveryView._send_via_telegram") as send,
+            ):
+                response = self.runtime.post(
+                    f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/",
+                    {"message": "Nice workout!"},
+                    format="json",
+                    HTTP_X_NBHD_CRON_JOB_ID="runtime-cron-id",
+                    **headers,
+                )
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertFalse(response.data["delivered"])
+            send.assert_not_called()
+        other = create_tenant(display_name="Other", telegram_chat_id=801991)
+        self.assertFalse(completion_still_valid(other, "", gateway_job_id="runtime-cron-id"))
+        workout.delete()
+        self.assertFalse(completion_still_valid(self.tenant, "", gateway_job_id="runtime-cron-id"))
 
     def test_reverted_or_deleted_workout_suppresses_congrats(self):
         workout = self.workout()

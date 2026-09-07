@@ -286,7 +286,7 @@ def _schedule_congrats_cron(tenant, *, name: str, payload: dict) -> None:
     create_typed_cron(
         tenant=tenant,
         pattern=CronPattern.WORKOUT_CONGRATS,
-        typed_payload=payload,
+        typed_payload={**payload, "workout_id": name.removeprefix("_congrats-")},
         name=name,
         schedule={"kind": "at", "at": fire_at.isoformat()},
         source=CronJobSource.SYSTEM,

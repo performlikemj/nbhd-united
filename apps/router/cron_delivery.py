@@ -620,7 +620,9 @@ class CronDeliveryView(APIView):
         job_name = request.headers.get("X-NBHD-Job-Name", "")
         from apps.cron.patterns.workout_congrats import completion_still_valid
 
-        if not completion_still_valid(tenant, job_name):
+        if not completion_still_valid(
+            tenant, job_name, gateway_job_id=request.headers.get("X-NBHD-Cron-Job-Id", "").strip()[:64]
+        ):
             return Response({"delivered": False, "skipped": "workout_not_done"})
         delivery_attempt = None
         occurrence_key_header = request.headers.get("X-NBHD-Occurrence-Key", "").strip()[:64]

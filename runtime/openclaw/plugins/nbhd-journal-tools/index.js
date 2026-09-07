@@ -1024,7 +1024,7 @@ export default function register(api) {
   );
 
   // ── Send message to user (for cron jobs / proactive messages) ──────
-  api.registerTool(wrap({
+  api.registerTool((toolContext) => wrap({
     name: "nbhd_send_to_user",
     description:
       "Send a message to the user on their active channel (the NBHD app, " +
@@ -1067,6 +1067,11 @@ export default function register(api) {
       const threadId = asTrimmedString(input.thread_id);
       const occurrenceKey = asTrimmedString(input.occurrence_key);
       const extraHeaders = {};
+      // Runtime-owned isolated cron identity; never read this from model params.
+      const cronSession = /^agent:[^:]+:cron:([^:]+)(?::run:[^:]+)?$/u.exec(
+        asTrimmedString(toolContext?.sessionKey),
+      );
+      if (cronSession) extraHeaders["X-NBHD-Cron-Job-Id"] = cronSession[1].slice(0, 64);
       if (jobName) extraHeaders["X-NBHD-Job-Name"] = jobName.slice(0, 64);
       if (occurrenceKey) extraHeaders["X-NBHD-Occurrence-Key"] = occurrenceKey.slice(0, 64);
       const payload = await callRuntime(api, {

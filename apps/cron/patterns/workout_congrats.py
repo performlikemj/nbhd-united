@@ -56,6 +56,8 @@ class WorkoutCongratsPayload(PatternPayload):
     redaction, so only structured, low-sensitivity fields are embedded.
     """
 
+    workout_id: UUID | None = Field(None, description="Workout to recheck at delivery; absent on legacy crons.")
+
     activity: str = Field(
         ...,
         min_length=1,
@@ -108,15 +110,27 @@ def _facts_line(payload: WorkoutCongratsPayload) -> str:
     return head
 
 
-def completion_still_valid(tenant, job_name: str) -> bool:
-    """Recheck immediately before transport; the agent turn permits only sending."""
+def completion_still_valid(tenant, job_name: str, *, gateway_job_id: str = "") -> bool:
+    """Resolve trusted runtime cron identity, then recheck just before transport."""
+    from apps.cron.models import CronJob, CronPattern
     from apps.fuel.models import Workout, WorkoutStatus
 
-    prefix = "_congrats-"
-    if not job_name.startswith(prefix):
-        return True
+    workout_id = None
+    if gateway_job_id:
+        job = CronJob.objects.filter(tenant=tenant, gateway_job_id=gateway_job_id).first()
+        if job is None:
+            logging.getLogger(__name__).info("cron delivery skip: reason=unknown_cron")
+            return False
+        if job.pattern != CronPattern.WORKOUT_CONGRATS:
+            return True
+        workout_id = job.typed_payload.get("workout_id")
+        job_name = job.name  # Legacy rows may predate the explicit payload ID.
+    if not workout_id:
+        if not job_name.startswith("_congrats-"):
+            return not gateway_job_id
+        workout_id = job_name.removeprefix("_congrats-")
     try:
-        workout_id = UUID(job_name.removeprefix(prefix))
+        workout_id = UUID(str(workout_id))
     except ValueError:
         return False
     valid = Workout.objects.filter(tenant=tenant, id=workout_id, status=WorkoutStatus.DONE).exists()

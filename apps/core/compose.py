@@ -46,6 +46,7 @@ DEFAULT_COMPOSE_MODEL = GEMMA_MODEL
 _FALLBACK_COMPOSE_MODELS = [DEEPSEEK_FLASH_MODEL, DEEPSEEK_MODEL]
 _MAX_OUTPUT_TOKENS = 3000  # headroom: holistic manifests carry many explicit-silence segments
 _LLM_TIMEOUT_S = 60
+_SCHEMA_REJECTED_MODELS: set[str] = set()
 # A transient hiccup (timeout / 429 / 5xx) on the FIRST attempt of a model gets
 # ONE retry after a short backoff before we give up on that model and fall to the
 # next. Content failures (unparseable / invalid manifest) are NOT retried — a
@@ -437,8 +438,8 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
     before it's abandoned. A candidate that fails transport (after its retry),
     returns unparseable JSON, returns valid JSON that isn't a manifest object, or
     returns a structurally-invalid manifest is logged and the next candidate is
-    tried. A repeated lesson gets one corrective retry on that model. If all
-    models clash, the last valid sit wins unless CORE_COMPOSE_STRICT_VARIETY is on.
+    tried. A repeated lesson gets one corrective retry on that model. If no model succeeds,
+    the last valid clashing sit wins unless CORE_COMPOSE_STRICT_VARIETY is on.
     Raises ``ComposeError`` if the key is missing or every candidate fails
     (carrying every candidate's failure reason for diagnosis).
     """
@@ -483,10 +484,11 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
     traditions = [(e, lesson["tradition"]) for e, lesson in lessons if lesson.get("tradition")][:2]
     slugs = [(e, str(lesson["teaching_slug"])) for e, lesson in lessons if lesson.get("teaching_slug")]
     last_valid_clash = None
-    clash_models = 0
 
     for model_id in candidates:
         model_body = dict(body)
+        if model_id in _SCHEMA_REJECTED_MODELS:
+            model_body["response_format"] = {"type": "json_object"}
         model_messages = list(messages)
         for attempt in range(2):
             try:
@@ -496,6 +498,7 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
                     code = getattr(getattr(exc, "response", None), "status_code", None)
                     if code is None or not 400 <= code < 500 or model_body["response_format"]["type"] != "json_schema":
                         raise
+                    _SCHEMA_REJECTED_MODELS.add(model_id)
                     logger.info(
                         "compose: schema rejected model=%s status=%s; falling back to json_object", model_id, code
                     )
@@ -504,7 +507,7 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
                 content = _strip_code_fences((data["choices"][0]["message"]["content"] or "").strip())
             except Exception as exc:  # noqa: BLE001 — record + next candidate
                 code = getattr(getattr(exc, "response", None), "status_code", None)
-                _record(model_id, f"LLM call failed: {type(exc).__name__} status={code}")
+                _record(model_id, f"LLM call failed: {type(exc).__name__} status={code}: {str(exc)[:80]}")
                 break
 
             try:
@@ -555,7 +558,6 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
                 last_valid_clash = manifest
             if attempt:
                 _record(model_id, "variety_clash")
-                clash_models += 1
                 break
             rejection = (
                 f"Rejected: teaching '{lesson.teaching_slug}' / tradition '{lesson.tradition}' repeats the sit on {clash.get('date', 'unknown')}. "
@@ -574,11 +576,7 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
                 ]
             )
 
-    if (
-        clash_models == len(candidates)
-        and last_valid_clash is not None
-        and not getattr(settings, "CORE_COMPOSE_STRICT_VARIETY", False)
-    ):
+    if last_valid_clash is not None and not getattr(settings, "CORE_COMPOSE_STRICT_VARIETY", False):
         logger.warning(
             "compose: variety clash accepted outcome=clash_accepted slug=%s",
             last_valid_clash["lesson"]["teaching_slug"],

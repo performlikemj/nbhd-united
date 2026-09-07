@@ -1026,7 +1026,7 @@ _HEARTBEAT_CHECKIN_PROMPT = (
     "2. Calendar — any events in the next 2-3 hours? (`nbhd_calendar_list_events`)\n"
     "3. Recent journal context — anything unfinished? (`nbhd_journal_context`)\n"
     "4. Pending lessons — any waiting for approval? (`nbhd_lessons_pending`)\n"
-    "5. Yesterday's cross-pillar signals — call `nbhd_yesterdays_signals` "
+    "5. Yesterday's cross-pillar signals — call `nbhd_yesterdays_signals`. "
     "Only `workouts_done` / `sessions` counts are evidence something happened. A planned workout or a ready "
     "meditation is NOT done; never congratulate or reference a completion that these counts do not show. "
     "Use the tool for ambient awareness (workouts done, journal entries, energy, "

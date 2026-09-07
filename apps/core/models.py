@@ -106,7 +106,9 @@ class MeditationSession(models.Model):
         blank=True,
         help_text="When the person finished listening; stamped server-side once.",
     )
-    lesson = models.JSONField(default=dict, blank=True)
+    lesson = models.JSONField(
+        default=dict, blank=True, help_text="Validated meditation teaching and practice; empty for legacy sessions."
+    )
     failure_class = models.CharField(
         max_length=12,
         choices=MeditationFailureClass.choices,

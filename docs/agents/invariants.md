@@ -75,3 +75,12 @@ The bootstrap cap is 26,000 CHARS (not bytes; `BOOTSTRAP_MAX_CHARS`), the sentin
 ## 17. Every app-turn writer locks the ChatThread before newest/requeue decisions
 
 App chat ingress, local/offline turn insertion, and dropped-turn replay must take the same `ChatThread` row lock before checking newest-turn state or requeueing. The shared lock closes the insert-between-check-and-requeue race; a new app-turn writer that skips it can replay an older user message after a newer one has arrived.
+
+## 18. Congratulations require current completion evidence
+
+Workout congratulations store `workout_id` in the typed cron payload. The runtime
+send tool forwards its own cron session ID, independent of model `job_name`;
+Django resolves that tenant's canonical cron and re-reads the payload workout
+immediately before delivery. Reverted/deleted workouts must not send. Keep the
+Python dispatch-time check too; copied cron facts and planned daily notes are
+never evidence of completion.

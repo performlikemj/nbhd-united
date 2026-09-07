@@ -22,6 +22,9 @@ def answer(slug="wu-wei", tradition="taoist"):
 @override_settings(OPENROUTER_API_KEY="test-key", CORE_COMPOSE_MODEL="test/primary")
 class LessonTests(SimpleTestCase):
     def setUp(self):
+        cache = patch.object(compose, "_SCHEMA_REJECTED_MODELS", set())
+        cache.start()
+        self.addCleanup(cache.stop)
         self.signals = {
             "recent_meditations": [
                 {
@@ -103,13 +106,15 @@ class LessonTests(SimpleTestCase):
             compose.author_manifest(self.signals)
 
     @patch("apps.core.compose.chat_completion")
-    def test_invalid_candidate_prevents_all_clash_fallback(self, completion):
+    def test_valid_clashes_then_transport_failure_accepts_last_valid_sit(self, completion):
         completion.side_effect = [answer(), answer(), RuntimeError("unavailable")]
         with (
             patch("apps.core.compose._compose_models", return_value=["first", "second"]),
-            self.assertRaises(compose.ComposeError),
+            self.assertLogs("apps.core.compose", level="WARNING") as logs,
         ):
-            compose.author_manifest(self.signals)
+            result = compose.author_manifest(self.signals)
+        self.assertEqual(result["lesson"]["teaching_slug"], "wu-wei")
+        self.assertIn("clash_accepted", " ".join(logs.output))
 
     @patch("apps.core.compose.chat_completion")
     def test_schema_4xx_fallback_is_per_model(self, completion):
@@ -122,6 +127,31 @@ class LessonTests(SimpleTestCase):
             [c.kwargs["response_format"]["type"] for c in completion.call_args_list],
             ["json_schema", "json_object", "json_object"],
         )
+
+    @patch("apps.core.compose.chat_completion")
+    def test_schema_rejection_is_cached_across_composes_and_logged_once(self, completion):
+        response = requests.Response()
+        response.status_code = 400
+        completion.side_effect = [requests.HTTPError(response=response), answer(), answer(), answer()]
+        with self.assertLogs("apps.core.compose", level="INFO") as logs:
+            compose.author_manifest({}, model="first")
+            compose.author_manifest({}, model="first")
+            compose.author_manifest({}, model="second")
+        self.assertEqual(
+            [c.kwargs["response_format"]["type"] for c in completion.call_args_list],
+            ["json_schema", "json_object", "json_object", "json_schema"],
+        )
+        self.assertEqual(sum("schema rejected" in line for line in logs.output), 1)
+
+    @patch("apps.core.compose.chat_completion")
+    def test_provider_failure_detail_is_bounded(self, completion):
+        response = requests.Response()
+        response.status_code = 403
+        completion.side_effect = requests.HTTPError("provider detail " + "x" * 100, response=response)
+        with self.assertRaises(compose.ComposeError) as caught:
+            compose.author_manifest({}, model="first")
+        self.assertIn("HTTPError status=403: " + ("provider detail " + "x" * 100)[:80], str(caught.exception))
+        self.assertNotIn("x" * 81, str(caught.exception))
 
     @patch("apps.core.compose.chat_completion")
     def test_invalid_lesson_skips_model_and_does_not_log_private_input(self, completion):

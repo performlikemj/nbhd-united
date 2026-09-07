@@ -2005,7 +2005,7 @@ class ComposeAuthoringTests(SimpleTestCase):
         msg = str(ctx.exception)
         self.assertIn("too many spoken", msg)
         self.assertIn("non-JSON", msg)
-        self.assertIn("RuntimeError", msg)
+        self.assertIn("RuntimeError status=None: 503", msg)
 
     def test_strips_code_fences(self):
         fenced = "```json\n" + json.dumps(_valid_manifest()) + "\n```"
