@@ -4,11 +4,14 @@ import math
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from django.contrib import admin
 from django.db.models import Count, Q
+from django.urls import reverse
 
 from apps.evals.models import EvalResult, EvalRun
 from apps.evals.suites.slo_snapshot import SUITE as SLO_SUITE
 from apps.evals.suites.slo_snapshot import _metric_series
+from apps.friends.models import ContentReport
 from apps.steward.collectors.openrouter import NULL_RATE_THRESHOLD_PCT
 from apps.steward.models import (
     AlertState,
@@ -151,6 +154,32 @@ def _stalled(now: datetime) -> list[dict[str, Any]]:
             }
         )
     return facts
+
+
+def _content_reports(now: datetime) -> list[dict[str, Any]]:
+    # "hidden" only hides content for the reporter; it still needs human review.
+    reports = (
+        ContentReport.objects.filter(status__in=["open", "hidden"], resolved_at__isnull=True)
+        .order_by("created_at", "id")
+        .values("id", "created_at", "target_kind", "status")
+    )
+    registered = admin.site.is_registered(ContentReport)
+    target_kinds = dict(ContentReport._meta.get_field("target_kind").choices)
+    return [
+        {
+            "id": f"content-report:{report['id']}",
+            "created_at": _iso(report["created_at"]),
+            "age_seconds": _age_seconds(now, report["created_at"]),
+            # The model's reason is user-authored text, not a category code.
+            "category": None,
+            "target_kind": report["target_kind"] if report["target_kind"] in target_kinds else "unknown",
+            "status": report["status"],
+            "hint": "read the report, then hide the content, block/warn the user, or dismiss (24h promise)",
+            "link": reverse("admin:friends_contentreport_change", args=[report["id"]]) if registered else None,
+            "already_alerted": False,
+        }
+        for report in reports
+    ]
 
 
 def _trains(now: datetime) -> list[dict[str, Any]]:
@@ -451,6 +480,7 @@ def compose_steward_facts(now: datetime, since: datetime) -> dict[str, Any]:
     since = since.astimezone(UTC)
     needs_you = _needs_you(now)
     stalled = _stalled(now)
+    content_reports = _content_reports(now)
     trains = _trains(now)
     failing_evals = _failing_evals(now)
     slo_breaches = _slo_breaches(now)
@@ -467,12 +497,14 @@ def compose_steward_facts(now: datetime, since: datetime) -> dict[str, Any]:
             "needs_you": len(needs_you),
             "trains": len(trains),
             "stalled": len(stalled),
+            "content_reports": len(content_reports),
             "slo_evals": len(failing_evals) + len(slo_breaches),
             "openrouter": len(openrouter_severe),
             "repos": len(stale_prs),
             "integrity": len(integrity),
         },
         "stalled": stalled,
+        "content_reports": content_reports,
         "slo_breaches": slo_breaches,
         "failing_evals": failing_evals,
         "openrouter_severe": openrouter_severe,

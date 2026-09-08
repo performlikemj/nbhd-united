@@ -58,6 +58,17 @@ def _stalled_lines(facts: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _report_lines(facts: dict[str, Any]) -> list[str]:
+    lines = []
+    for item in facts.get("content_reports", []):
+        age = _age_label(item["age_seconds"]).removesuffix(" ago")
+        lines.append(
+            f"- {item['id']} — {item.get('category') or 'report'} on {item['target_kind']} — {age} old "
+            "— read the report, then hide, block/warn, or dismiss"
+        )
+    return lines
+
+
 def _train_lines(facts: dict[str, Any]) -> list[str]:
     lines = []
     for item in facts["trains"]:
@@ -201,6 +212,7 @@ def render_steward_daily_digest(
     sections = [
         ("NEEDS YOU", _needs_you_lines(facts), stats["needs_you"]),
         ("STALLED", _stalled_lines(facts), stats["stalled"]),
+        ("REPORTS", _report_lines(facts), len(facts.get("content_reports", []))),
         ("TRAINS", _train_lines(facts), stats["trains"]),
         ("SLO / EVALS", _slo_eval_lines(facts), stats["slo_evals"]),
         ("OPENROUTER", _openrouter_lines(facts), stats["openrouter"]),
