@@ -39,6 +39,10 @@ from apps.tenants.services import create_tenant
 class HibernateIdleCronWakeRaceTests(TestCase):
     """Pin: hibernate_idle_tenants must not race with wake_for_cron."""
 
+    def setUp(self):
+        # Successful idle cases require a known-empty live cron list.
+        self.enterContext(patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": []}))
+
     def _make_idle_tenant(self, *, suffix: int) -> Tenant:
         tenant = create_tenant(
             display_name=f"Idle Cron Race {suffix}",
@@ -269,6 +273,34 @@ class HibernateIdleImminentCronTests(TestCase):
         called_with = mock_hibernate.call_args[0][0]
         self.assertIn(called_with, {tenant_busy, tenant_quiet})
 
+    @patch("apps.orchestrator.hibernation.hibernate_idle_tenant", return_value=True)
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_defers_when_cron_state_read_fails(self, mock_invoke, mock_hibernate):
+        from apps.cron.gateway_client import GatewayError
+
+        self._make_idle_tenant(suffix=6)
+        mock_invoke.side_effect = GatewayError("bad_gateway", status_code=502)
+        with self.assertLogs("apps.orchestrator.hibernation", level="WARNING"):
+            result = hibernate_idle_tenants_task()
+        mock_hibernate.assert_not_called()
+        self.assertEqual(result["hibernated"], 0)
+        self.assertEqual(result["skipped_imminent_cron"], 1)
+
+    @patch("apps.orchestrator.hibernation.hibernate_idle_tenant", return_value=True)
+    @patch("apps.cron.gateway_client.requests.post")
+    @patch("apps.cron.gateway_client._get_gateway_token", return_value="test-token")
+    def test_defers_when_cron_state_requests_time_out(self, _mock_token, mock_post, mock_hibernate):
+        import requests
+
+        self._make_idle_tenant(suffix=7)
+        mock_post.side_effect = requests.Timeout("busy")
+        with self.assertLogs("apps.orchestrator.hibernation", level="WARNING"):
+            result = hibernate_idle_tenants_task()
+        self.assertEqual(mock_post.call_count, 2)
+        mock_hibernate.assert_not_called()
+        self.assertEqual(result["hibernated"], 0)
+        self.assertEqual(result["skipped_imminent_cron"], 1)
+
 
 class CronActiveOrImminentTests(TestCase):
     """Unit tests for ``_cron_active_or_imminent`` itself."""
@@ -331,17 +363,18 @@ class CronActiveOrImminentTests(TestCase):
         self.assertIsNone(_cron_active_or_imminent(tenant))
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
-    def test_returns_none_when_gateway_unreachable(self, mock_invoke):
-        """Conservative on failure: don't block the sweep if cron.list
-        fails — the configured idle cutoff and cron_wake_at remain backstops.
-        """
+    def test_returns_unknown_when_gateway_unreachable(self, mock_invoke):
         from apps.cron.gateway_client import GatewayError
         from apps.orchestrator.hibernation import _cron_active_or_imminent
 
         tenant = self._make_tenant()
-        mock_invoke.side_effect = GatewayError("boom")
-
-        self.assertIsNone(_cron_active_or_imminent(tenant))
+        for error in (GatewayError("boom"), GatewayError("bad_gateway", status_code=502), GatewayError("timeout")):
+            with self.subTest(error=str(error)):
+                mock_invoke.side_effect = error
+                with self.assertLogs("apps.orchestrator.hibernation", level="WARNING") as logs:
+                    self.assertEqual(_cron_active_or_imminent(tenant), "cron_state_unknown")
+                self.assertIn(str(tenant.id), logs.output[0])
+                self.assertIn("deferring hibernation/image replacement", logs.output[0])
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_skips_disabled_jobs(self, mock_invoke):

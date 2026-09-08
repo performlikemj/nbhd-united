@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -13,6 +14,12 @@ from apps.orchestrator.azure_client import read_key_vault_secret
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
+
+# Only explicitly read-only operations may replay a proxy 502. Share the
+# attempt budget with timeout retries so mixed failures cannot multiply it.
+_PROXY_502_RETRY_TOOLS = frozenset({"cron.list"})
+_PROXY_502_BACKOFF_SECONDS = (0.5, 1.5)
+_PROXY_502_MAX_ATTEMPTS = len(_PROXY_502_BACKOFF_SECONDS) + 1
 
 
 class GatewayError(Exception):
@@ -224,8 +231,8 @@ def invoke_gateway_tool(
     # canary 2026-05-13 22:00 UTC incident hit this: Morning Briefing's
     # stale payload.model wasn't fixed before the 22:00 fire window
     # because the 22:00 reconcile timed out reading cron.list.
-    last_exc: requests.RequestException | None = None
-    for attempt in (1, 2):
+    max_attempts = _PROXY_502_MAX_ATTEMPTS if tool in _PROXY_502_RETRY_TOOLS else 2
+    for attempt in range(1, max_attempts + 1):
         try:
             resp = requests.post(
                 url,
@@ -233,21 +240,40 @@ def invoke_gateway_tool(
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=45,
             )
-            break
         except requests.Timeout as exc:
-            last_exc = exc
             if attempt == 1:
                 logger.warning(
-                    "Gateway %s.%s timed out (attempt 1/2) — retrying",
+                    "Gateway %s.%s timed out for tenant %s (attempt 1/2) — retrying",
                     tool_name,
                     action or "",
+                    tenant.id,
                 )
                 continue
             raise GatewayError(f"Gateway request failed: {exc}") from exc
         except requests.RequestException as exc:
             raise GatewayError(f"Gateway request failed: {exc}") from exc
-    else:  # pragma: no cover — defensive, the for-else only runs if no break
-        raise GatewayError(f"Gateway request failed: {last_exc}")
+
+        if (
+            tool in _PROXY_502_RETRY_TOOLS
+            and resp.status_code == 502
+            and '"bad_gateway"' in resp.text
+            and "upstream" in resp.text
+            and "unreachable" in resp.text
+            and attempt < max_attempts
+        ):
+            delay = _PROXY_502_BACKOFF_SECONDS[attempt - 1]
+            logger.warning(
+                "Gateway %s.%s returned 502 for tenant %s (attempt %d/%d) — retrying in %.1fs",
+                tool_name,
+                action or "",
+                tenant.id,
+                attempt,
+                max_attempts,
+                delay,
+            )
+            time.sleep(delay)
+            continue
+        break
 
     if resp.status_code != 200:
         if _is_container_unavailable(resp.status_code, resp.text):
@@ -267,10 +293,11 @@ def invoke_gateway_tool(
             )
         logger.log(
             error_log_level,
-            "Gateway %s.%s returned %s: %s",
+            "Gateway %s.%s returned %s for tenant %s: %s",
             tool_name,
             action or "",
             resp.status_code,
+            tenant.id,
             resp.text[:500],
         )
         raise GatewayError(

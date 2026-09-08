@@ -320,16 +320,8 @@ def _next_cron_within_window(
     back-to-back crons through cold-start cycles when ``last_message_at``
     can't be used to keep the container awake (cron output never moves it).
 
-    Source order, mirroring ``_capture_tenant_cron_schedules``:
-
-    1. Live ``cron.list`` against the gateway. The tenant is awake at this
-       point (the idle check only runs after a successful cron wake), so
-       the gateway should respond. This catches schedule changes that
-       happened during the wake window — the snapshot would miss them.
-    2. ``tenant.cron_jobs_snapshot`` if the live call raises. Stale by
-       design (point-in-time at the last hibernation), but better than
-       nothing if the gateway is briefly unreachable.
-    3. ``None`` if both fail. Caller hibernates conservatively.
+    Requires a live ``cron.list``. A snapshot cannot prove that no cron is
+    due now, so gateway failures propagate to the caller to defer this cycle.
 
     Reads ``state.nextRunAtMs`` directly (the gateway's actual field
     location — see plugin-sdk's ``Cron.JobState``) rather than calling
@@ -340,29 +332,14 @@ def _next_cron_within_window(
     to fire from our perspective", which is the right conservative
     answer here.
     """
-    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+    from apps.cron.gateway_client import invoke_gateway_tool
     from apps.orchestrator.services import _extract_cron_jobs
 
     if window_seconds is None:
         window_seconds = _cron_hold_seconds()
 
-    jobs: list | None = None
-
-    try:
-        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": False})
-        jobs = _extract_cron_jobs(result)
-    except GatewayError:
-        logger.warning(
-            "lookahead: live cron.list failed for tenant %s — falling back to snapshot",
-            str(tenant.id)[:8],
-            exc_info=True,
-        )
-
-    if not jobs:
-        snapshot = tenant.cron_jobs_snapshot or {}
-        snapshot_jobs = snapshot.get("jobs") if isinstance(snapshot, dict) else None
-        if isinstance(snapshot_jobs, list):
-            jobs = snapshot_jobs
+    result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": False})
+    jobs = _extract_cron_jobs(result)
 
     if not jobs:
         return None
@@ -409,9 +386,9 @@ def _cron_active_or_imminent(
        the in-process cron dispatch.
 
     Single live ``cron.list`` services both checks. Conservative on
-    failure: returns ``None`` (don't block the sweep) if the gateway is
-    unreachable — the configured idle cutoff and ``cron_wake_at`` still
-    act as backstops, and the next sweep will retry.
+    failure: returns ``cron_state_unknown`` if the gateway cannot be read.
+    Both hibernation and image replacement must defer for this cycle;
+    unknown cron state is not permission to stop the container.
     """
     from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
     from apps.orchestrator.services import _extract_cron_jobs
@@ -421,11 +398,12 @@ def _cron_active_or_imminent(
         jobs = _extract_cron_jobs(result)
     except GatewayError:
         logger.warning(
-            "defer-for-cron: live cron.list failed for tenant %s — proceeding without deferral",
-            str(tenant.id)[:8],
+            "defer-for-cron: live cron.list failed for tenant %s — deferring hibernation/image replacement "
+            "(cron_state_unknown)",
+            tenant.id,
             exc_info=True,
         )
-        return None
+        return "cron_state_unknown"
 
     if not jobs:
         return None
@@ -867,7 +845,27 @@ def check_cron_wake_idle_task(tenant_id: str) -> dict:
     # cold-start cycle. ``last_message_at`` doesn't move on cron output, so
     # without this check a back-to-back pattern (e.g. 7am + 8:30am) always
     # paid two cold-starts.
-    upcoming_cron_ms = _next_cron_within_window(tenant)
+    from apps.cron.gateway_client import GatewayError
+
+    try:
+        upcoming_cron_ms = _next_cron_within_window(tenant)
+    except GatewayError:
+        logger.warning(
+            "check_cron_wake_idle: cron state unknown for tenant %s — deferring re-hibernation",
+            tenant_id,
+            exc_info=True,
+        )
+        try:
+            from apps.cron.publish import publish_task
+
+            publish_task("check_cron_wake_idle", tenant_id, delay_seconds=_cron_wake_idle_seconds())
+        except Exception:
+            logger.warning(
+                "check_cron_wake_idle: failed to schedule deferred check for %s — leaving tenant awake",
+                tenant_id,
+                exc_info=True,
+            )
+        return {"status": "deferred_for_unknown_cron_state"}
     if upcoming_cron_ms is not None:
         now_ms = int(timezone.now().timestamp() * 1000)
         # Re-check one configured idle window after the upcoming cron fires.
@@ -886,8 +884,9 @@ def check_cron_wake_idle_task(tenant_id: str) -> dict:
                 "check_cron_wake_idle: failed to schedule deferred check for %s",
                 tenant_id[:8],
             )
-            # Fall through to re-hibernate so we don't end up in a state
-            # with no future check pending.
+            # A publish failure is not permission to interrupt the upcoming
+            # cron. The periodic idle sweep will check this tenant again.
+            return {"status": "deferred_for_upcoming_cron"}
         else:
             logger.info(
                 "check_cron_wake_idle: tenant %s — upcoming cron in %ds, deferring re-hibernation (next check in %ds)",

@@ -58,6 +58,28 @@ def _batch_return_len(tasks, **kwargs):
 class ApplyPendingConfigsImageTests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        self.gateway = self.enterContext(
+            patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": []})
+        )
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.cron.publish.publish_batch", side_effect=_batch_return_len)
+    def test_image_bump_deferred_when_cron_state_read_fails(self, mock_batch, _mock_verify):
+        from apps.cron.gateway_client import GatewayError
+
+        tenant = _create_tenant_with_state(
+            user_suffix=1,
+            last_message_at=timezone.now() - timedelta(minutes=20),
+            container_image_tag="oldtag",
+        )
+        self.gateway.side_effect = GatewayError("bad_gateway", status_code=502)
+        with self.assertLogs("apps.orchestrator.hibernation", level="WARNING") as logs:
+            response = self.client.post("/api/v1/cron/apply-pending-configs/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["image_enqueued"], 0)
+        self.assertEqual(response.json()["image_skipped_imminent_cron"], 1)
+        self.assertEqual(_extract_batch_tasks(mock_batch, "apply_single_tenant_image"), [])
+        self.assertIn(str(tenant.id), logs.output[0])
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
     @patch("apps.cron.publish.publish_batch", side_effect=_batch_return_len)
