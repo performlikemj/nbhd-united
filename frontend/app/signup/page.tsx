@@ -15,6 +15,7 @@ import {
   getAuthenticationEpoch,
 } from "@/lib/auth";
 import { hasPendingAppAuthorize } from "@/lib/app-authorize";
+import { authPathForIntent } from "@/lib/authorize-decision";
 import { stashInviteToken } from "@/lib/invite-token";
 import { decidePostAuthRoute } from "@/lib/post-auth-route";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
@@ -24,6 +25,13 @@ function SignupPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const fromApp = searchParams.get("from") === "app";
+  const loginParams = new URLSearchParams();
+  for (const key of ["from", "invite"]) {
+    const value = searchParams.get(key);
+    if (value !== null) loginParams.set(key, value);
+  }
+  const loginQuery = loginParams.toString();
+  const loginHref = `${authPathForIntent("signin")}${loginQuery ? `?${loginQuery}` : ""}`;
 
   // Neighborhood invite handoff: stash `?invite=<token>` now — tenant
   // provisioning (and the invite claim) happens later, in PersonaScene
@@ -38,6 +46,7 @@ function SignupPageInner() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
+  const [emailExists, setEmailExists] = useState(false);
   const [loading, setLoading] = useState(false);
   const [appleBusy, setAppleBusy] = useState(false);
   const [returnToApp, setReturnToApp] = useState<{
@@ -107,6 +116,7 @@ function SignupPageInner() {
     e.preventDefault();
     if (appleBusy) return;
     setError("");
+    setEmailExists(false);
 
     if (password !== confirmPassword) {
       setError("Passwords do not match.");
@@ -133,6 +143,7 @@ function SignupPageInner() {
         attemptAccessToken,
       );
     } catch (err) {
+      setEmailExists(err instanceof Error && "status" in err && err.status === 409);
       setError(err instanceof Error ? err.message : "Signup failed.");
     } finally {
       setLoading(false);
@@ -262,7 +273,15 @@ function SignupPageInner() {
 
             {error && (
               <p className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-300">
-                {error}
+                {emailExists ? (
+                  <>
+                    An account with this email already exists.{" "}
+                    <Link href={loginHref} className="underline hover:text-ink">
+                      Sign in
+                    </Link>{" "}
+                    to continue.
+                  </>
+                ) : error}
               </p>
             )}
 
@@ -293,7 +312,7 @@ function SignupPageInner() {
 
         <p className="mt-6 text-center text-sm text-white/40">
           Already have an account?{" "}
-          <Link href="/login" className="text-white/60 underline hover:text-white/80">Sign in</Link>
+          <Link href={loginHref} className="text-white/60 underline hover:text-white/80">Sign in</Link>
         </p>
       </div>
     </OnboardingShell>
