@@ -3,10 +3,11 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
-from django.contrib import admin
+from django.conf import settings
 from django.db.models import Count, Q
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
 
 from apps.evals.models import EvalResult, EvalRun
 from apps.evals.suites.slo_snapshot import SUITE as SLO_SUITE
@@ -156,6 +157,14 @@ def _stalled(now: datetime) -> list[dict[str, Any]]:
     return facts
 
 
+def _content_report_link(report_id: UUID) -> str | None:
+    try:
+        path = reverse("admin:friends_contentreport_change", args=[report_id])
+    except NoReverseMatch:
+        return None
+    return f"{settings.API_BASE_URL.rstrip('/')}{path}"
+
+
 def _content_reports(now: datetime) -> list[dict[str, Any]]:
     # "hidden" only hides content for the reporter; it still needs human review.
     reports = (
@@ -163,7 +172,6 @@ def _content_reports(now: datetime) -> list[dict[str, Any]]:
         .order_by("created_at", "id")
         .values("id", "created_at", "target_kind", "status")
     )
-    registered = admin.site.is_registered(ContentReport)
     target_kinds = dict(ContentReport._meta.get_field("target_kind").choices)
     return [
         {
@@ -175,7 +183,7 @@ def _content_reports(now: datetime) -> list[dict[str, Any]]:
             "target_kind": report["target_kind"] if report["target_kind"] in target_kinds else "unknown",
             "status": report["status"],
             "hint": "read the report, then hide the content, block/warn the user, or dismiss (24h promise)",
-            "link": reverse("admin:friends_contentreport_change", args=[report["id"]]) if registered else None,
+            "link": _content_report_link(report["id"]),
             "already_alerted": False,
         }
         for report in reports

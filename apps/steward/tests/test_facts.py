@@ -7,10 +7,9 @@ from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
-from django.contrib.admin.sites import AdminSite
 from django.core.cache import cache
 from django.test import TestCase, override_settings
-from django.urls import path
+from django.urls import NoReverseMatch
 
 from apps.friends.models import ContentReport
 from apps.steward.digest import render_steward_daily_digest, run_steward_daily_digest
@@ -75,6 +74,7 @@ FACTS_SNAPSHOT = {
 }
 
 
+@override_settings(API_BASE_URL="https://api.hoodunited.org")
 class StewardFactsComposerTests(TestCase):
     def setUp(self):
         for collector in CollectorStatus.Collector.values:
@@ -181,7 +181,7 @@ class StewardFactsComposerTests(TestCase):
 
         item = compose_steward_facts(NOW, SINCE)["content_reports"][0]
 
-        # Exact allowlist: IDs, ISO timestamps, numbers, enums, and fixed copy/nulls.
+        # Exact allowlist: IDs, ISO timestamps, numbers, enums, fixed copy, and admin URLs.
         # This also rejects any newly added reporter, reason, or content fields.
         self.assertEqual(
             item,
@@ -193,7 +193,7 @@ class StewardFactsComposerTests(TestCase):
                 "target_kind": "general",
                 "status": "open",
                 "hint": "read the report, then hide the content, block/warn the user, or dismiss (24h promise)",
-                "link": None,
+                "link": f"https://api.hoodunited.org/admin/friends/contentreport/{report.pk}/change/",
                 "already_alerted": False,
             },
         )
@@ -208,16 +208,33 @@ class StewardFactsComposerTests(TestCase):
 
         self.assertEqual(item["target_kind"], "unknown")
 
-    def test_content_report_links_to_admin_when_registered(self):
+    def test_content_report_admin_link_is_absolute_with_or_without_trailing_slash(self):
         report = self._report()
-        site = AdminSite()
-        site.register(ContentReport)
-        urls = type("ReportAdminURLs", (), {"urlpatterns": [path("admin/", site.urls)]})
 
-        with self.settings(ROOT_URLCONF=urls), patch("apps.steward.facts.admin.site", site):
+        for base_url in ("https://api.hoodunited.org", "https://api.hoodunited.org/"):
+            with self.subTest(base_url=base_url), self.settings(API_BASE_URL=base_url):
+                item = compose_steward_facts(NOW, SINCE)["content_reports"][0]
+
+                self.assertEqual(
+                    item["link"], f"https://api.hoodunited.org/admin/friends/contentreport/{report.pk}/change/"
+                )
+
+    def test_content_report_link_is_null_when_reverse_fails(self):
+        self._report()
+
+        with patch("apps.steward.facts.reverse", side_effect=NoReverseMatch):
             item = compose_steward_facts(NOW, SINCE)["content_reports"][0]
 
-        self.assertEqual(item["link"], f"/admin/friends/contentreport/{report.pk}/change/")
+        self.assertIsNone(item["link"])
+
+    def test_content_report_link_does_not_swallow_other_errors(self):
+        self._report()
+
+        with (
+            patch("apps.steward.facts.reverse", side_effect=RuntimeError("unexpected error")),
+            self.assertRaisesMessage(RuntimeError, "unexpected error"),
+        ):
+            compose_steward_facts(NOW, SINCE)
 
     def test_digest_reports_follow_stalled_and_use_category_fallback(self):
         self._missed_heartbeat()
