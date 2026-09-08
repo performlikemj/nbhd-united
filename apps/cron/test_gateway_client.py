@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest import mock
 
-from django.test import TestCase
+import requests
+from django.test import SimpleTestCase, TestCase
 
 from apps.cron.gateway_client import (
     GatewayError,
@@ -19,6 +21,110 @@ from apps.cron.gateway_client import (
 )
 
 _OMIT = object()  # sentinel: build a job with NO delivery block
+
+
+class InvokeGatewayToolRetryTests(SimpleTestCase):
+    def setUp(self):
+        self.tenant = SimpleNamespace(
+            id="11111111-1111-1111-1111-111111111111",
+            container_fqdn="oc-test.example.com",
+            internal_api_key="test-token",
+        )
+        self.bad_gateway = mock.Mock(
+            status_code=502,
+            text='{"error":"bad_gateway","detail":"upstream 18789 unreachable"}',
+        )
+        self.success = mock.Mock(status_code=200)
+        self.success.json.return_value = {"ok": True, "result": {"jobs": []}}
+        self.post = self.enterContext(mock.patch("apps.cron.gateway_client.requests.post"))
+        self.sleep = self.enterContext(mock.patch("apps.cron.gateway_client.time.sleep"))
+
+    def test_proxy_502_retries_then_succeeds(self):
+        self.post.side_effect = [self.bad_gateway, self.bad_gateway, self.success]
+        with self.assertLogs("apps.cron.gateway_client", level="WARNING") as logs:
+            result = invoke_gateway_tool(self.tenant, "cron.list", {"includeDisabled": False})
+
+        self.assertEqual(result, {"jobs": []})
+        self.assertEqual(self.post.call_count, 3)
+        self.assertEqual(self.sleep.call_args_list, [mock.call(0.5), mock.call(1.5)])
+        self.assertEqual([r.levelno for r in logs.records], [logging.WARNING, logging.WARNING])
+        for record in logs.records:
+            self.assertIn(self.tenant.id, record.getMessage())
+        self.assertEqual(self.post.call_args_list, [self.post.call_args] * 3)
+
+    def test_proxy_502_exhaustion_logs_one_error_with_tenant(self):
+        self.post.return_value = self.bad_gateway
+        with (
+            self.assertLogs("apps.cron.gateway_client", level="WARNING") as logs,
+            self.assertRaises(GatewayError) as raised,
+        ):
+            invoke_gateway_tool(self.tenant, "cron.list", {})
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertEqual(self.post.call_count, 3)
+        self.assertEqual(self.sleep.call_args_list, [mock.call(0.5), mock.call(1.5)])
+        self.assertEqual([r.levelno for r in logs.records], [logging.WARNING, logging.WARNING, logging.ERROR])
+        self.assertIn(self.tenant.id, logs.records[-1].getMessage())
+
+    def test_writes_are_not_retried_on_proxy_502(self):
+        for tool in ("cron.add", "cron.remove", "cron.update"):
+            with self.subTest(tool=tool):
+                self.post.reset_mock()
+                self.post.return_value = self.bad_gateway
+                with self.assertLogs("apps.cron.gateway_client", level="ERROR"), self.assertRaises(GatewayError):
+                    invoke_gateway_tool(self.tenant, tool, {})
+                self.post.assert_called_once()
+                self.sleep.assert_not_called()
+
+    def test_other_http_failures_are_not_retried(self):
+        for status, body in (
+            (502, "other bad gateway"),
+            (502, '{"error":"bad_gateway","detail":"invalid response"}'),
+            (503, self.bad_gateway.text),
+            (404, "Container App - Unavailable"),
+        ):
+            with self.subTest(status=status, body=body):
+                self.post.reset_mock()
+                self.post.return_value = mock.Mock(status_code=status, text=body)
+                with (
+                    self.assertLogs("apps.cron.gateway_client", level="INFO"),
+                    self.assertRaises(GatewayError) as raised,
+                ):
+                    invoke_gateway_tool(self.tenant, "cron.list", {})
+                self.post.assert_called_once()
+                self.sleep.assert_not_called()
+                self.assertEqual(raised.exception.unavailable, status == 404)
+
+    def test_timeout_and_502_share_attempt_budget(self):
+        self.post.side_effect = [requests.Timeout("busy"), self.bad_gateway, self.bad_gateway]
+        with self.assertLogs("apps.cron.gateway_client", level="WARNING"), self.assertRaises(GatewayError):
+            invoke_gateway_tool(self.tenant, "cron.list", {})
+        self.assertEqual(self.post.call_count, 3)
+        self.sleep.assert_called_once_with(1.5)
+
+    def test_existing_timeout_retry_is_preserved(self):
+        for tool in ("cron.list", "cron.add"):
+            with self.subTest(tool=tool):
+                self.post.reset_mock()
+                self.post.side_effect = [requests.Timeout("busy"), self.success]
+                with self.assertLogs("apps.cron.gateway_client", level="WARNING"):
+                    self.assertEqual(invoke_gateway_tool(self.tenant, tool, {}), {"jobs": []})
+                self.assertEqual(self.post.call_count, 2)
+                self.sleep.assert_not_called()
+
+    def test_repeated_timeouts_stop_after_existing_two_attempts(self):
+        self.post.side_effect = requests.Timeout("busy")
+        with self.assertLogs("apps.cron.gateway_client", level="WARNING"), self.assertRaises(GatewayError):
+            invoke_gateway_tool(self.tenant, "cron.list", {})
+        self.assertEqual(self.post.call_count, 2)
+        self.sleep.assert_not_called()
+
+    def test_exhaustion_respects_error_log_level_override(self):
+        self.post.return_value = self.bad_gateway
+        with self.assertLogs("apps.cron.gateway_client", level="WARNING") as logs, self.assertRaises(GatewayError):
+            invoke_gateway_tool(self.tenant, "cron.list", {}, error_log_level=logging.WARNING)
+        self.assertEqual(self.post.call_count, 3)
+        self.assertEqual([r.levelno for r in logs.records], [logging.WARNING] * 3)
 
 
 class NormalizeCronDeliveryTests(TestCase):

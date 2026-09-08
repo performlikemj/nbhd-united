@@ -19,6 +19,7 @@ a hand-fed literal would happily agree with itself while production diverged.
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
@@ -314,7 +315,11 @@ class TaskHygieneSeedPathWiringTests(TestCase):
     def test_provisioning_seed_path_creates_it_for_a_gated_tenant(self):
         from apps.orchestrator.services import seed_cron_jobs
 
-        with override_settings(TASK_HYGIENE_TENANT_IDS=str(self.tenant.id)):
+        # Exercise real Postgres seeding even when CI sets AZURE_MOCK=true.
+        with (
+            override_settings(TASK_HYGIENE_TENANT_IDS=str(self.tenant.id)),
+            patch("apps.orchestrator.services._is_mock", return_value=False),
+        ):
             seed_cron_jobs(self.tenant)
 
         self.assertTrue(CronJob.objects.filter(tenant=self.tenant, name=TASK_HYGIENE_CRON_NAME).exists())

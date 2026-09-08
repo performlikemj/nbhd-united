@@ -67,7 +67,7 @@ class NextCronWithinWindowTests(_Base):
         self.assertEqual(result, in_10min_ms)
         mock_invoke.assert_called_once_with(self.tenant, "cron.list", {"includeDisabled": False})
 
-    def test_snapshot_fallback_when_gateway_fails(self):
+    def test_gateway_failure_propagates_even_with_snapshot(self):
         in_15min_ms = int(timezone.now().timestamp() * 1000) + 15 * 60 * 1000
         snapshot_jobs = [self._job(name="Heartbeat", next_run_ms=in_15min_ms)]
         self.tenant.cron_jobs_snapshot = {
@@ -76,25 +76,27 @@ class NextCronWithinWindowTests(_Base):
         }
         self.tenant.save(update_fields=["cron_jobs_snapshot"])
 
-        with patch(
-            "apps.cron.gateway_client.invoke_gateway_tool",
-            side_effect=GatewayError("502: bad_gateway", status_code=502),
+        with (
+            patch(
+                "apps.cron.gateway_client.invoke_gateway_tool",
+                side_effect=GatewayError("502: bad_gateway", status_code=502),
+            ),
+            self.assertRaises(GatewayError),
         ):
-            result = _next_cron_within_window(self.tenant, window_seconds=1200)
+            _next_cron_within_window(self.tenant, window_seconds=1200)
 
-        self.assertEqual(result, in_15min_ms)
-
-    def test_no_data_anywhere_returns_none(self):
+    def test_gateway_failure_without_snapshot_propagates(self):
         self.tenant.cron_jobs_snapshot = {}
         self.tenant.save(update_fields=["cron_jobs_snapshot"])
 
-        with patch(
-            "apps.cron.gateway_client.invoke_gateway_tool",
-            side_effect=GatewayError("502: bad_gateway", status_code=502),
+        with (
+            patch(
+                "apps.cron.gateway_client.invoke_gateway_tool",
+                side_effect=GatewayError("502: bad_gateway", status_code=502),
+            ),
+            self.assertRaises(GatewayError),
         ):
-            result = _next_cron_within_window(self.tenant, window_seconds=1200)
-
-        self.assertIsNone(result)
+            _next_cron_within_window(self.tenant, window_seconds=1200)
 
     def test_cron_outside_window_returns_none(self):
         # Fires 25 minutes from now — outside an explicit 20-minute window.
@@ -129,6 +131,41 @@ class NextCronWithinWindowTests(_Base):
 
 class CheckCronWakeIdleLookAheadTests(_Base):
     """Integration tests of ``check_cron_wake_idle_task`` with the look-ahead step."""
+
+    def test_gateway_failure_defers_even_if_retry_publish_fails(self):
+        for publish_error in (None, RuntimeError("queue unavailable")):
+            with (
+                self.subTest(publish_error=publish_error),
+                patch(
+                    "apps.cron.gateway_client.invoke_gateway_tool",
+                    side_effect=GatewayError("bad_gateway", status_code=502),
+                ),
+                patch.object(hibernation, "hibernate_idle_tenant") as mock_hibernate,
+                patch("apps.cron.publish.publish_task", side_effect=publish_error) as mock_publish,
+                self.assertLogs("apps.orchestrator.hibernation", level="WARNING") as logs,
+            ):
+                result = check_cron_wake_idle_task(str(self.tenant.id))
+                self.assertEqual(result["status"], "deferred_for_unknown_cron_state")
+                mock_hibernate.assert_not_called()
+                mock_publish.assert_called_once_with(
+                    "check_cron_wake_idle", str(self.tenant.id), delay_seconds=hibernation._cron_wake_idle_seconds()
+                )
+                self.tenant.refresh_from_db()
+                self.assertIsNotNone(self.tenant.cron_wake_at)
+                self.assertIn(str(self.tenant.id), logs.output[0])
+
+    def test_upcoming_cron_defers_even_if_publish_fails(self):
+        with (
+            patch.object(
+                hibernation, "_next_cron_within_window", return_value=int(timezone.now().timestamp() * 1000) + 60000
+            ),
+            patch.object(hibernation, "hibernate_idle_tenant") as mock_hibernate,
+            patch("apps.cron.publish.publish_task", side_effect=RuntimeError("queue unavailable")),
+            self.assertLogs("apps.orchestrator.hibernation", level="ERROR"),
+        ):
+            result = check_cron_wake_idle_task(str(self.tenant.id))
+        self.assertEqual(result["status"], "deferred_for_upcoming_cron")
+        mock_hibernate.assert_not_called()
 
     def test_no_cron_in_window_rehibernates(self):
         with (
