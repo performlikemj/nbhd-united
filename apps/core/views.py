@@ -216,7 +216,7 @@ class CoreProfileView(APIView):
 
 
 class MeditationSessionListView(ListAPIView):
-    """GET the tenant's meditations (the library). Defaults to ready sessions."""
+    """GET the tenant's meditations (the library). Defaults to playable sessions."""
 
     permission_classes = [IsAuthenticated]
     serializer_class = MeditationSessionSerializer
@@ -237,7 +237,7 @@ class MeditationSessionListView(ListAPIView):
         if requested:
             qs = qs.filter(status=requested)
         else:
-            qs = qs.filter(status=MeditationStatus.READY)
+            qs = qs.filter(status__in=[MeditationStatus.READY, MeditationStatus.DELIVERED, MeditationStatus.DONE])
         return qs
 
 
@@ -275,6 +275,29 @@ class MeditationSessionDetailView(RetrieveUpdateAPIView):
         if "user_feedback" in serializer.validated_data or "feedback_note" in serializer.validated_data:
             extra["feedback_at"] = timezone.now()
         serializer.save(**extra)
+
+
+class MeditationSessionCompleteView(APIView):
+    """Only the authenticated player can record a finished sit."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, id):
+        tenant = getattr(request.user, "tenant", None)
+        with transaction.atomic():
+            session = MeditationSession.objects.select_for_update().filter(id=id, tenant=tenant).first()
+            if session is None:
+                return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+            if session.status not in (MeditationStatus.READY, MeditationStatus.DELIVERED, MeditationStatus.DONE):
+                return Response({"error": "not_ready"}, status=status.HTTP_409_CONFLICT)
+            if session.status != MeditationStatus.DONE:
+                session.status = MeditationStatus.DONE
+                session.completed_at = timezone.now()
+                session.save(update_fields=["status", "completed_at", "updated_at"])
+        listened_seconds = request.data.get("listened_seconds")
+        if isinstance(listened_seconds, int) and not isinstance(listened_seconds, bool):
+            _logger.info("meditation_complete: session=%s listened_seconds=%d", session.id, listened_seconds)
+        return Response(MeditationSessionSerializer(session, context={"tenant": tenant, "rehydrate": True}).data)
 
 
 class CoreComposeView(APIView):

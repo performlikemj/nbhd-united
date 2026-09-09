@@ -20,6 +20,8 @@ export interface Meditation {
   theme: string;
   durationMin: number;
   audioUrl?: string;
+  status?: MeditationSession["status"];
+  completedAt?: string | null;
 }
 
 export interface CoreStats {
@@ -138,14 +140,16 @@ export function toMeditation(s: MeditationSession, tz: string): Meditation {
     theme: s.theme || "",
     durationMin: s.duration_ms ? Math.max(1, Math.round(s.duration_ms / 60_000)) : 10,
     audioUrl: s.audio_url || undefined,
+    status: s.status,
+    completedAt: s.completed_at,
   };
 }
 
 /**
- * Derive the four stat cards from the ready library (no backend formula — the
+ * Derive the four stat cards from completed sits in the library (no backend formula — the
  * raw sessions are the evidence; this is plain aggregation for display).
- * `meds` is expected newest-first (the API orders by -date, -created_at). `tz`
- * is the tenant's IANA zone, so "today" matches the day the dates were stamped.
+ * Completion timestamps are grouped in the tenant's IANA zone, independently
+ * of when each sit was composed or its position in the library.
  */
 export function computeCoreStats(meds: Meditation[], tz: string): CoreStats {
   const today = dayKeyInTz(new Date(), tz); // tenant-local day, not the device's
@@ -153,10 +157,17 @@ export function computeCoreStats(meds: Meditation[], tz: string): CoreStats {
   let sessionsThisWeek = 0;
   let totalMinutes = 0;
   const days = new Set<string>();
+  let lastDay = "";
   for (const m of meds) {
+    if (m.status !== "done" || !m.completedAt) continue;
+    const completed = new Date(m.completedAt);
+    if (Number.isNaN(completed.getTime())) continue;
+    const day = dayKeyInTz(completed, tz);
+    if (day > today) continue;
     totalMinutes += m.durationMin;
-    if (m.date >= weekFloor && m.date <= today) sessionsThisWeek += 1; // YYYY-MM-DD compares chronologically
-    days.add(m.date);
+    if (day >= weekFloor) sessionsThisWeek += 1;
+    days.add(day);
+    if (day > lastDay) lastDay = day;
   }
   // Streak: consecutive days with ≥1 sit, anchored at today (or yesterday if
   // nothing yet today, so an evening sit doesn't read as a broken streak).
@@ -171,6 +182,6 @@ export function computeCoreStats(meds: Meditation[], tz: string): CoreStats {
     sessionsThisWeek,
     totalMinutes,
     streakDays,
-    lastSatLabel: meds.length ? meds[0].dateLabel : "—",
+    lastSatLabel: lastDay ? relativeDateLabel(lastDay, tz) : "—",
   };
 }

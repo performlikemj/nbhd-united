@@ -193,6 +193,7 @@ class WorkoutSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
             "window_start_at",
             "window_end_at",
             "status",
+            "completed_at",
             "source",
             "original_workout",
             "skip_reason",
@@ -362,7 +363,18 @@ class WorkoutSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
         attrs = materialized
         return attrs
 
+    completed_at = serializers.DateTimeField(read_only=True)
+
+    def update(self, instance, validated_data):
+        if "status" in validated_data:
+            instance.set_status(validated_data["status"])
+            validated_data["completed_at"] = instance.completed_at
+        return super().update(instance, validated_data)
+
     def create(self, validated_data):
+        initial = Workout(status=validated_data.get("status", "done"))
+        initial.set_status(initial.status)
+        validated_data["completed_at"] = initial.completed_at
         validated_data["tenant"] = self.context["tenant"]
         return super().create(validated_data)
 

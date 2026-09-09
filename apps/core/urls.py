@@ -11,6 +11,7 @@ from .views import (
     CoreProfileView,
     CoreRestartView,
     CoreSettingsView,
+    MeditationSessionCompleteView,
     MeditationSessionDetailView,
     MeditationSessionListView,
 )
@@ -23,6 +24,7 @@ urlpatterns = [
     path("compose/", CoreComposeView.as_view(), name="core-compose"),
     path("sessions/", MeditationSessionListView.as_view(), name="core-sessions"),
     path("sessions/<uuid:id>/", MeditationSessionDetailView.as_view(), name="core-session-detail"),
+    path("sessions/<uuid:id>/complete/", MeditationSessionCompleteView.as_view(), name="core-session-complete"),
     # Internal runtime (OpenClaw plugin, X-NBHD-Internal-Key)
     path("runtime/<uuid:tenant_id>/summary/", RuntimeCoreSummaryView.as_view(), name="core-runtime-summary"),
     path("runtime/<uuid:tenant_id>/profile/", RuntimeCoreProfileView.as_view(), name="core-runtime-profile"),

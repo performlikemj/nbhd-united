@@ -443,6 +443,7 @@ GEMINI_TTS_MODEL = env("GEMINI_TTS_MODEL", default="gemini-2.5-flash-preview-tts
 # model OpenRouter lists for structured outputs (English-native, non-reasoning), so
 # it steers reliably on this structured task; the DeepSeek reasoning models are the
 # fallbacks. See apps/core/compose.py.
+CORE_COMPOSE_STRICT_VARIETY = env.bool("CORE_COMPOSE_STRICT_VARIETY", default=False)
 CORE_COMPOSE_MODEL = env("CORE_COMPOSE_MODEL", default="openrouter/google/gemma-4-31b-it")
 # Bounded-parallel TTS calls per render — kept low to respect low-tier per-minute
 # rate caps (concurrent calls burst past the cap; the 429 backoff handles the rest).

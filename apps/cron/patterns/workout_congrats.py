@@ -20,7 +20,9 @@ fallback is a canned, still-warm one-liner so a validation miss never sends noth
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+from uuid import UUID
 
 from pydantic import Field
 
@@ -53,6 +55,8 @@ class WorkoutCongratsPayload(PatternPayload):
     Deliberately excludes free-text notes: cron prompts bypass inbound PII
     redaction, so only structured, low-sensitivity fields are embedded.
     """
+
+    workout_id: UUID | None = Field(None, description="Workout to recheck at delivery; absent on legacy crons.")
 
     activity: str = Field(
         ...,
@@ -106,6 +110,37 @@ def _facts_line(payload: WorkoutCongratsPayload) -> str:
     return head
 
 
+def completion_still_valid(tenant, job_name: str, *, gateway_job_id: str = "") -> bool:
+    """Resolve trusted runtime cron identity, then recheck just before transport."""
+    from apps.cron.models import CronJob, CronPattern
+    from apps.fuel.models import Workout, WorkoutStatus
+
+    workout_id = None
+    if gateway_job_id:
+        job = CronJob.objects.filter(tenant=tenant, gateway_job_id=gateway_job_id).first()
+        # Canonical rows can lack a gateway ID until reconciliation. Unknown
+        # IDs must use the legacy name check, not suppress unrelated sends.
+        if job is not None:
+            if job.pattern != CronPattern.WORKOUT_CONGRATS:
+                return True
+            workout_id = job.typed_payload.get("workout_id")
+            job_name = job.name  # Legacy rows may predate the explicit payload ID.
+            if not workout_id and not job_name.startswith("_congrats-"):
+                return False
+    if not workout_id:
+        if not job_name.startswith("_congrats-"):
+            return True
+        workout_id = job_name.removeprefix("_congrats-")
+    try:
+        workout_id = UUID(str(workout_id))
+    except ValueError:
+        return False
+    valid = Workout.objects.filter(tenant=tenant, id=workout_id, status=WorkoutStatus.DONE).exists()
+    if not valid:
+        logging.getLogger(__name__).info("workout_congrats skip: workout=%s reason=not_done", workout_id)
+    return valid
+
+
 class WorkoutCongratsHandler(PatternHandler):
     pattern = "workout_congrats"
     payload_schema = WorkoutCongratsPayload
@@ -122,7 +157,7 @@ class WorkoutCongratsHandler(PatternHandler):
             "The user just completed this workout: "
             f"{_facts_line(payload)}.\n\n"
             "Send ONE short, warm, personal congratulations via "
-            "`nbhd_send_to_user` — reference something specific about the "
+            f"`nbhd_send_to_user` with job_name={name!r} — reference something specific about the "
             "workout, 1-2 sentences, no follow-up questions. If the facts include "
             "an est. 1RM PR, call it estimated and congratulate the actual source "
             "set (weight × reps); never present the estimate as weight lifted. Do not create "

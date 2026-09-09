@@ -45,3 +45,47 @@ Read before writing Django code. `docs/agents/invariants.md` holds the platform-
 ## LLM-adjacent judgment calls
 
 Backend computes evidence; the LLM judges. Don't encode fuzzy human judgments as arithmetic formulas in Python — pass structured evidence to the model and let it decide (established pattern across insights/fuel).
+
+## Completion evidence (Fuel and Core)
+
+Finishable rows use `status="done"` plus nullable `completed_at`; no backfill.
+Core practice counts/streaks use the tenant-local completion day, never compose
+`date`. `ready`/`delivered` audio is playable but uncompleted; `done` stays playable.
+Fuel writers preserve the first completion timestamp and clear it on reversal;
+HealthKit uses sample end (or start + duration for older clients).
+
+The send-to-user endpoint resolves `X-NBHD-Cron-Job-Id` within the tenant.
+Only a resolved `WORKOUT_CONGRATS` row requires the payload workout to remain
+`status="done"`; missing/reverted/deleted workouts skip with `workout_not_done`.
+Legacy congrats rows may use their `_congrats-<uuid>` name for the workout ID.
+Resolved non-congrats patterns deliver normally. Unknown IDs fall back to the
+legacy `job_name` check and deliver unless it identifies congratulations without
+current done evidence. Missing `gateway_job_id` mappings are normal before
+reconciliation and must never alone suppress heartbeat/briefing/evening sends.
+
+`POST /api/v1/core/sessions/<uuid>/complete/` is tenant-scoped, owner JWT only,
+with optional `{ "listened_seconds": 600 }` (logged, not persisted). From
+`ready`/`delivered`, stamp server time and mark done; repeated `done` returns
+unchanged. `pending`/`rendering`/`failed` returns 409 `{"error":"not_ready"}`;
+missing or foreign rows return 404. The 200 detail representation exposes
+read-only `status`, `completed_at`, and `lesson`. No runtime completion route:
+only the player reports completion; the server does not measure listening.
+
+## Compose lesson variety
+
+`apps/core/lesson.py` owns the tradition vocabulary and Pydantic lesson/manifest
+schemas. Compose requests `json_schema`, caching per-model schema rejection for
+process-lifetime `json_object` fallback; local lesson/render validation always
+applies. Lesson prose passes through the PII authoring registry before storage.
+Non-JSON schema answers also trigger JSON-mode fallback. Invalid manifests/lessons
+and variety clashes share one corrective retry per model, with redacted feedback.
+HTTP 200 empty/unusable choices are transient and get the existing backed-off retry.
+
+The latest 20 playable sits supply history (2,600 characters, whole entries).
+Reject normalized teaching-slug repeats and either of the two latest known
+traditions; allow one corrective retry per model, then the next model. If no
+candidate succeeds but a structurally valid clash exists, accept the last one
+with a warning. `CORE_COMPOSE_STRICT_VARIETY=True` disables that fallback
+(default false). Logs expose `accepted_first`, `accepted_after_retry`, and
+`clash_accepted`. Legacy empty lessons contribute title/theme only; narration
+alignment with lesson metadata remains a prompt requirement.

@@ -16,10 +16,13 @@ const PUT_KINDS = ["daily", "weekly", "monthly", "project", "ideas", "memory"];
 const DOC_KIND_TOOLS = ["nbhd_document_get", "nbhd_document_append", "nbhd_journal_search"];
 const ALL_KIND_TOOLS = [...DOC_KIND_TOOLS, "nbhd_document_put"];
 
-function collectTools() {
+function collectTools(context = {}) {
   const tools = {};
   const api = {
-    registerTool(def) { tools[def.name] = def; },
+    registerTool(def) {
+      if (typeof def === "function") def = def(context);
+      tools[def.name] = def;
+    },
     registerHook() {},
     on() {},
     logger: { info() {}, warn() {}, error() {}, debug() {} },
@@ -109,7 +112,10 @@ test("runtime field validation errors are surfaced to the model", async () => {
   const tools = {};
   const api = {
     pluginConfig: { apiBaseUrl: "https://nbhd.test" },
-    registerTool(def) { tools[def.name] = def; },
+    registerTool(def) {
+      if (typeof def === "function") def = def({});
+      tools[def.name] = def;
+    },
     registerHook() {},
     on() {},
     logger: { info() {}, warn() {}, error() {}, debug() {} },
@@ -271,7 +277,10 @@ test("platform issue sender omits absent optional strings and preserves supplied
   const tools = {};
   const api = {
     pluginConfig: { apiBaseUrl: "https://nbhd.test" },
-    registerTool(def) { tools[def.name] = def; },
+    registerTool(def) {
+      if (typeof def === "function") def = def({});
+      tools[def.name] = def;
+    },
     registerHook() {},
     on() {},
     logger: { info() {}, warn() {}, error() {}, debug() {} },
@@ -358,7 +367,10 @@ test("situation tool posts only place_label and reports rejected labels graceful
   const tools = {};
   const api = {
     pluginConfig: { apiBaseUrl: "https://nbhd.test" },
-    registerTool(def) { tools[def.name] = def; },
+    registerTool(def) {
+      if (typeof def === "function") def = def({});
+      tools[def.name] = def;
+    },
     registerHook() {},
     on() {},
     logger: { info() {}, warn() {}, error() {}, debug() {} },
@@ -429,5 +441,23 @@ test("situation tool posts only place_label and reports rejected labels graceful
     else process.env.NBHD_TENANT_ID = originalTenantId;
     if (originalInternalKey === undefined) delete process.env.NBHD_INTERNAL_API_KEY;
     else process.env.NBHD_INTERNAL_API_KEY = originalInternalKey;
+  }
+});
+
+
+test("send_to_user forwards runtime cron identity even without model job_name", async (t) => {
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    assert.equal(options.headers["X-NBHD-Cron-Job-Id"], "trusted-job");
+    assert.equal(options.headers["X-NBHD-Job-Name"], undefined);
+    return { ok: true, status: 200, async text() { return "{}"; } };
+  });
+  const saved = { ...process.env };
+  t.after(() => { process.env = saved; });
+  process.env.NBHD_API_BASE_URL = "https://nbhd.test";
+  process.env.NBHD_TENANT_ID = "tenant-test";
+  process.env.NBHD_INTERNAL_API_KEY = "test-key";
+  for (const sessionKey of ["agent:main:cron:trusted-job:run:run-1", "agent:main:cron:trusted-job"]) {
+    const tools = collectTools({ sessionKey });
+    await tools.nbhd_send_to_user.execute("call-1", { message: "Nice work", cron_job_id: "forged" });
   }
 });

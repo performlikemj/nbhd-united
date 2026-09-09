@@ -8,6 +8,7 @@ from rest_framework.test import APIRequestFactory
 from rest_framework.views import APIView
 
 from apps.core import compose, render
+from apps.core.test_utils import ComposeSchemaCacheMixin
 from apps.insights.synthesis import _call_synthesis_llm
 from apps.journal.agenda_hints import _classify
 from apps.journal.extraction import _call_extraction_llm
@@ -35,7 +36,7 @@ def _completion(content="{}"):
     return {"choices": [{"message": {"content": content}}], "usage": {}}, "test/model"
 
 
-class BackgroundPromptGuardTests(SimpleTestCase):
+class BackgroundPromptGuardTests(ComposeSchemaCacheMixin, SimpleTestCase):
     def assert_has_entity_legend(self, prompt):
         self.assertIn(ENTITY_LEGEND_HEADER, prompt)
         self.assertIn("[PERSON_1]: recruiter at [ORG_1]; from work", prompt)
@@ -66,10 +67,13 @@ class BackgroundPromptGuardTests(SimpleTestCase):
         self.assert_has_entity_legend(prompt)
 
     @override_settings(OPENROUTER_API_KEY="test-key")
-    @patch("apps.core.compose.render.validate_manifest", return_value=[])
-    @patch("apps.core.compose._normalize", return_value={"ok": True})
-    @patch("apps.core.compose.chat_completion", return_value=_completion("{}"))
-    def test_meditation_compose_prompt_is_guarded(self, completion, _normalize, _validate):
+    @patch("apps.core.compose.chat_completion")
+    def test_meditation_compose_prompt_is_guarded(self, completion):
+        import json
+
+        from apps.core.tests import _valid_manifest
+
+        completion.return_value = _completion(json.dumps(_valid_manifest()))
         compose.author_manifest({"additional_context": "Theo Smith at Optiver"}, tenant=_tenant_stub())
         prompt = completion.call_args.args[1][1]["content"]
         self.assert_has_entity_legend(prompt)

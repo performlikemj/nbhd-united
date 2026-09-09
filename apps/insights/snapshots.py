@@ -32,10 +32,8 @@ from apps.tenants.models import Tenant
 
 SCHEMA_VERSION = 1
 
-# Core sessions in these states count as a completed sit (the audio was made
-# and either delivered or is ready to play). Pending / rendering / failed are
-# not practice.
-_CORE_DONE_STATES = (MeditationStatus.READY, MeditationStatus.DELIVERED)
+# Only player-reported completion is practice evidence; rendered audio is not.
+_CORE_DONE_STATES = (MeditationStatus.DONE,)
 
 
 def _money(value: Decimal | None) -> str:
@@ -142,18 +140,26 @@ def compute_core_snapshot(tenant: Tenant, *, today: date | None = None) -> dict[
     today = today or tenant_today(tenant)
     start_7, start_28 = _window_starts(today)
 
-    done = MeditationSession.objects.filter(
+    from django.db.models.functions import TruncDate
+
+    from apps.common.tenant_tz import tenant_tz
+
+    done = MeditationSession.objects.annotate(
+        completion_date=TruncDate("completed_at", tzinfo=tenant_tz(tenant))
+    ).filter(
         tenant=tenant,
         status__in=_CORE_DONE_STATES,
-        date__lte=today,
+        completion_date__lte=today,
     )
-    sessions_28d = done.filter(date__gte=start_28).count()
-    sessions_7d = done.filter(date__gte=start_7).count()
+    sessions_28d = done.filter(completion_date__gte=start_28).count()
+    sessions_7d = done.filter(completion_date__gte=start_7).count()
 
     # Streak: look back far enough to catch a long run, but bound the scan.
-    streak_dates = set(done.filter(date__gte=today - timedelta(days=365)).values_list("date", flat=True))
+    streak_dates = set(
+        done.filter(completion_date__gte=today - timedelta(days=365)).values_list("completion_date", flat=True)
+    )
     streak = _practice_streak(streak_dates, today=today)
-    last_session_date = done.order_by("-date").values_list("date", flat=True).first()
+    last_session_date = done.order_by("-completion_date").values_list("completion_date", flat=True).first()
 
     return {
         "schema_version": SCHEMA_VERSION,

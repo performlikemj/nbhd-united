@@ -204,6 +204,10 @@ def _dispatch_schedule(tenant, *, workout_id: str, payload: dict) -> None:
 
     def _work() -> None:
         try:
+            if not Workout.objects.filter(id=workout_id, tenant=tenant, status="done").exists():
+                logger.info("workout_congrats skip: workout=%s reason=not_done", workout_id)
+                Workout.objects.filter(id=workout_id, tenant=tenant).update(congratulated_at=None)
+                return
             _schedule_congrats_cron(tenant, name=name, payload=payload)
         except Exception as exc:
             _rollback_congrats(tenant, workout_id=workout_id, name=name, exc=exc)
@@ -282,7 +286,7 @@ def _schedule_congrats_cron(tenant, *, name: str, payload: dict) -> None:
     create_typed_cron(
         tenant=tenant,
         pattern=CronPattern.WORKOUT_CONGRATS,
-        typed_payload=payload,
+        typed_payload={**payload, "workout_id": name.removeprefix("_congrats-")},
         name=name,
         schedule={"kind": "at", "at": fire_at.isoformat()},
         source=CronJobSource.SYSTEM,

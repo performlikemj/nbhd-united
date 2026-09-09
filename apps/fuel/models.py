@@ -233,6 +233,7 @@ class Workout(models.Model):
         help_text="Latest acceptable time. Defaults to scheduled_at + 2h if null.",
     )
     status = models.CharField(max_length=16, choices=WorkoutStatus.choices, default=WorkoutStatus.DONE)
+    completed_at = models.DateTimeField(null=True, blank=True)
     source = models.CharField(
         max_length=16,
         choices=WorkoutSource.choices,
@@ -357,6 +358,15 @@ class Workout(models.Model):
 
     def __str__(self) -> str:
         return f"{self.activity} ({self.category}, {self.date})"
+
+    def set_status(self, status, *, completed_at=None):
+        """Keep explicit completion/reversion writes consistent; HK supplies its end time."""
+        from django.utils import timezone
+
+        self.status = status
+        self.completed_at = (
+            (completed_at or self.completed_at or timezone.now()) if status == WorkoutStatus.DONE else None
+        )
 
 
 class OnboardingStatus(models.TextChoices):

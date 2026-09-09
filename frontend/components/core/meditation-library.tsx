@@ -52,6 +52,7 @@ export function MeditationLibrary({
                 <span className="text-[10px] uppercase tracking-[0.16em] text-ink-faint">{m.dateLabel}</span>
                 <span className="h-1 w-1 rounded-full bg-ink-faint/50" />
                 <span className="font-mono text-[10px] text-ink-faint">{m.durationMin} min</span>
+                {m.status === "ready" && <span className="text-[10px] text-signal-text">New</span>}
               </span>
               <span className="block truncate font-display text-lg italic text-ink">{m.title}</span>
               <span className="mt-0.5 block truncate text-xs text-ink-muted">{m.theme}</span>

@@ -318,8 +318,15 @@ class YesterdaysSignalsCoreAndGravityTests(TestCase):
     def test_core_sessions_counted(self):
         from apps.core.models import MeditationSession, MeditationStatus
 
-        MeditationSession.objects.create(tenant=self.tenant, date=self.yesterday, status=MeditationStatus.READY)
-        MeditationSession.objects.create(tenant=self.tenant, date=self.today, status=MeditationStatus.DELIVERED)
+        MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=self.yesterday,
+            status=MeditationStatus.DONE,
+            completed_at=self.now - timedelta(days=1),
+        )
+        MeditationSession.objects.create(
+            tenant=self.tenant, date=self.yesterday, status=MeditationStatus.DONE, completed_at=self.now
+        )
         # A pending sit should not count.
         MeditationSession.objects.create(tenant=self.tenant, date=self.today, status=MeditationStatus.PENDING)
 
@@ -331,7 +338,12 @@ class YesterdaysSignalsCoreAndGravityTests(TestCase):
     def test_core_quiet_gap_flagged(self):
         from apps.core.models import MeditationSession, MeditationStatus
 
-        MeditationSession.objects.create(tenant=self.tenant, date=date(2026, 5, 10), status=MeditationStatus.DELIVERED)
+        MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 5, 10),
+            status=MeditationStatus.DONE,
+            completed_at=self.now - timedelta(days=13),
+        )
         signals = compute(self.tenant, now=self.now)
         gaps = signals["notable_gaps"]
         self.assertTrue(any(g.startswith("core_quiet_") for g in gaps))

@@ -168,6 +168,9 @@ class StoreRegistryTests(SimpleTestCase):
             "core.MeditationSession": (
                 ("title", "theme", "guidance_text", "feedback_note"),
                 (
+                    "lesson.core_teaching",
+                    "lesson.summary",
+                    "lesson.practice",
                     "manifest.title",
                     "manifest.theme",
                     "manifest.phases[].intent",

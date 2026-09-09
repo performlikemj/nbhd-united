@@ -486,6 +486,9 @@ _STORES = (
         model_label="core.MeditationSession",
         flat_fields=("title", "theme", "guidance_text", "feedback_note"),
         json_paths=(
+            "lesson.core_teaching",
+            "lesson.summary",
+            "lesson.practice",
             "manifest.title",
             "manifest.theme",
             "manifest.phases[].intent",

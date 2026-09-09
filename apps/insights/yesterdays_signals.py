@@ -163,19 +163,28 @@ def _journal_signals(tenant: Tenant, *, today: date, yesterday: date) -> dict[st
 
 
 def _core_signals(tenant: Tenant, *, today: date, yesterday: date) -> dict[str, Any]:
-    """Core (mindfulness) day-scoped signals — completed sits by ``date``.
+    """Core (mindfulness) day-scoped signals — completed sits by tenant-local ``completed_at``.
 
     Local import per feedback_local_reimport_pattern.
     """
+    from django.db.models.functions import TruncDate
+
+    from apps.common.tenant_tz import tenant_tz
     from apps.core.models import MeditationSession, MeditationStatus
 
-    done_states = [MeditationStatus.READY, MeditationStatus.DELIVERED]
-    sessions = MeditationSession.objects.filter(tenant=tenant, status__in=done_states)
+    sessions = MeditationSession.objects.filter(tenant=tenant, status=MeditationStatus.DONE).annotate(
+        completion_date=TruncDate("completed_at", tzinfo=tenant_tz(tenant))
+    )
 
-    sessions_yesterday = sessions.filter(date=yesterday).count()
-    sessions_today = sessions.filter(date=today).count()
+    sessions_yesterday = sessions.filter(completion_date=yesterday).count()
+    sessions_today = sessions.filter(completion_date=today).count()
 
-    last_date = sessions.filter(date__lt=today).order_by("-date").values_list("date", flat=True).first()
+    last_date = (
+        sessions.filter(completion_date__lt=today)
+        .order_by("-completion_date")
+        .values_list("completion_date", flat=True)
+        .first()
+    )
     days_since_last = (today - last_date).days if last_date else None
 
     return {

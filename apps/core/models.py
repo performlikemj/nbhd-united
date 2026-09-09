@@ -27,6 +27,7 @@ class MeditationStatus(models.TextChoices):
     RENDERING = "rendering", "Rendering"
     READY = "ready", "Ready"
     DELIVERED = "delivered", "Delivered"
+    DONE = "done", "Done"
     FAILED = "failed", "Failed"
 
 
@@ -99,6 +100,14 @@ class MeditationSession(models.Model):
         max_length=12,
         choices=MeditationStatus.choices,
         default=MeditationStatus.PENDING,
+    )
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the person finished listening; stamped server-side once.",
+    )
+    lesson = models.JSONField(
+        default=dict, blank=True, help_text="Validated meditation teaching and practice; empty for legacy sessions."
     )
     failure_class = models.CharField(
         max_length=12,
@@ -184,6 +193,7 @@ class MeditationSession(models.Model):
         indexes = [
             models.Index(fields=["tenant", "date"]),
             models.Index(fields=["tenant", "status"]),
+            models.Index(fields=["tenant", "completed_at"]),
         ]
 
     def __str__(self) -> str:
