@@ -69,17 +69,18 @@ test("Strategy A: web_fetch URL leak (file:// path) is collapsed", () => {
 test("Strategy A: bare JSON message field outside raw_params is also masked", () => {
   // Hypothetical: a logger that emits `{... "message":"user text" ...}`
   // outside the raw_params= shape. The JSON_FIELD_RE catches it.
-  const input = 'some prefix: {"event":"x","message":"private user note"}';
+  const input = '[tools] {"event":"x","message":"private user note"}';
   const out = redactor.redactLine(input);
   assert.match(out, /"message":"\*\*\*"/);
   assert.doesNotMatch(out, /private user note/);
 });
 
-test("Strategy A: long enough message gets prefix…suffix mask, not ***", () => {
+test("Strategy A: long message is masked completely", () => {
   const longContent = "x".repeat(40);
-  const input = `prefix: {"message":"${longContent}"}`;
+  const input = `[tools] {"message":"${longContent}"}`;
   const out = redactor.redactLine(input);
-  assert.match(out, /"message":"x{6}…x{4}"/, "Long values should mask first 6 + … + last 4");
+  assert.match(out, /"message":"\*\*\*"/);
+  assert.doesNotMatch(out, /xxxx/);
 });
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -136,28 +137,12 @@ for (const line of gatewayFatalCases) {
   });
 }
 
-// A gateway-fatal line that echoes resolved config values must still pass
-// through (it's the only diagnostic), but any embedded secret is masked
-// before it reaches Log Analytics.
-test("gateway-fatal passthrough masks an embedded provider key", () => {
-  const line =
-    'Invalid config: {"gateway":{"auth":{"token":"sk-or-v1-abcdef1234567890"}}}';
-  const out = redactor.redactLine(line);
-  // Line survives (not dropped as non-operational) and keeps its context.
-  assert.doesNotMatch(out, /non-operational line dropped/);
-  assert.match(out, /^Invalid config:/);
-  // The raw token is gone.
-  assert.doesNotMatch(out, /sk-or-v1-abcdef1234567890/);
-});
-
-test("gateway-fatal passthrough masks a bearer credential", () => {
-  const line =
-    "Gateway failed to start: upstream rejected Bearer abcdefgh12345678 handshake";
-  const out = redactor.redactLine(line);
-  assert.doesNotMatch(out, /non-operational line dropped/);
-  // Scheme word kept, credential masked.
-  assert.match(out, /Bearer /);
-  assert.doesNotMatch(out, /abcdefgh12345678/);
+// Config echoes and arbitrary fatal-message suffixes are not diagnostics.
+test("gateway-fatal prose and config echoes fail closed", () => {
+  for (const line of [
+    'Invalid config: {"gateway":{"auth":{"token":"synthetic-credential"}}}',
+    'Gateway failed to start: upstream rejected Bearer abcdefgh12345678 handshake',
+  ]) assert.match(redactor.redactLine(line), /non-operational line dropped/);
 });
 
 test("gateway-fatal passthrough leaves a secret-free Zod verdict unchanged", () => {
@@ -287,4 +272,150 @@ test("wrap is idempotent: second --require run doesn't double-patch", () => {
   // wrapping artefacts.
   const lines = result.stdout.split("\n").filter((l) => l.length > 0);
   assert.deepEqual(lines, ["[gateway] hello"]);
+});
+
+// Synthetic regression table: every prefix in the supplied seven-day oc-*
+// survey, plus runtime call sites. No tenant log content is used.
+const shapeCases = [
+  ['Here is your update', false],
+  ['Still working on your request', false],
+  ['Ping! Your update is ready', false],
+  ['Got your message', false],
+  ['🏡 Your neighborhood update', false],
+  ['3am is a good time', false],
+  ['[tool policy] private reply', false],
+  ['[Tool-policy] private reply', false],
+  ['[gateway]private reply', false],
+  ['[25:0x35216ABC] private reply', false],
+  [`[a${'b'.repeat(41)}] private reply`, false],
+  [`[a${'b'.repeat(40)}] status=ok`, true],
+  ['[agents/tool-policy] visible_tools=12 policy=chat', true],
+  ['[tasks/registry] registered=4', true],
+  ['[shutdown] signal=SIGTERM', true],
+  ['[gmail-watcher] status=disabled', true],
+  ['[entrypoint] starting gateway', true],
+  ['[tools-invoke] status=ok', true],
+  ['[agent/embedded] run started', true],
+  ['[health-monitor] status=healthy', true],
+  ['[heartbeat] interval=30s', true],
+  ['[diagnostic] queue_depth=0', true],
+  ['[nbhd:redact] non-operational line dropped (12 chars)', true],
+  ['[ws] connected', true],
+  ['[tools] registered=12', true],
+  ['- openrouter/synthetic-model model configured, enabled automatically.', true],
+  ['curl: (7) Failed to connect to localhost port 8080', true],
+  ['rm: cannot remove /tmp/synthetic: Permission denied', true],
+  ['cp: cannot stat /tmp/synthetic: No such file or directory', true],
+  ['[25:0x35216000] allocation failure', true],
+  ...['mv', 'mkdir', 'chmod', 'ln', 'sh', 'bash'].map((name) => [`${name}: synthetic startup error`, true]),
+  ['- Rent $2,500 due tomorrow', false],
+  ['Rent: $2,500 due tomorrow', false],
+  ['[Note] your balance is $100', false],
+  ['[Label] private reply', false],
+  ['label: private reply', false],
+  ['2026-09-08T11:48:49Z private reply', false],
+  ['- Health/private diagnosis', false],
+  ['I saw Invalid config in your notes', false],
+  ['Gateway failed to start: private reply', false],
+  ['Invalid config private reply', false],
+  ['Read /home/node/.openclaw/openclaw.json for my private note', false],
+  ['{"message":"private reply","balance":2500}', false],
+  ['{"level":"info","logger":"unknown","message":"private reply"}', false],
+  ['{"level":"info","logger":"gateway","extra":"private reply"}', false],
+  ['{"level":"info","logger":"gateway","time":"private reply"}', false],
+  ['{"level":"info","logger":"gateway","message":{"private":"reply"}}', false],
+  ['[{"level":"info","message":"private reply"}]', false],
+  ['{"level":"info",', false],
+  ['Prose {"message":"private reply"} still private', false],
+  ['prose raw_params={"message":"private reply"}', false],
+  ['[gateway] listening on :18789', true],
+  ['[proxy]   /telegram-webhook -> :8080', true],
+  ['[nbhd:tools] registered tool=nbhd_send_to_user plugin=journal', true],
+  ['[nbhd:tools] call nbhd_send_to_user id=synthetic', true],
+  ['[nbhd:tools] ok nbhd_send_to_user id=synthetic duration=10ms', true],
+  ['[nbhd:tools] error nbhd_send_to_user id=synthetic duration=10ms', true],
+  ['[nbhd] chmod EPERM handler registered via OpenClaw plugin SDK', true],
+  ['[subagent-bridge] delivered_by=parent status=ok runId=synthetic', true],
+  ['[plugins] NBHD usage reporter plugin registered', true],
+  ['[plugins] nbhd-routing-context: before_tool_call guard error: Error', true],
+  ['2026-09-08T11:48:49Z [ws] connected', true],
+  ['2026-09-08T11:48:49Z [Note] private reply', false],
+  ['INFO httpx HTTP Request: POST https://example.invalid/health "HTTP/1.1 200 OK"', true],
+  ['2026-09-08 11:48:49,123 INFO httpx HTTP Request: GET https://example.invalid/health "HTTP/1.1 200 OK"', true],
+  ['INFO:     127.0.0.1:12345 - "GET /health HTTP/1.1" 200 OK', true],
+  ['{"level":"info","logger":"gateway","time":123,"message":"private reply"}', true],
+  ['{"level":30,"component":"plugins","event":"registered","msg":"private reply"}', true],
+];
+for (const [line, pass] of shapeCases) {
+  test(`synthetic allowlist ${pass ? 'pass' : 'drop'}: ${line}`, () => {
+    const out = redactor.redactLine(line);
+    assert.equal(out === `[nbhd:redact] non-operational line dropped (${line.length} chars)`, !pass);
+    assert.ok(!out.includes('private reply'));
+  });
+}
+
+test('every survey prefix still masks content and credentials', () => {
+  for (const [line, pass] of shapeCases) {
+    if (!pass || !/^(\[|curl:|rm:|cp:|mv:|mkdir:|chmod:|ln:|sh:|bash:)/.test(line)) continue;
+    const out = redactor.redactLine(line + ' {"message":"private reply","token":"private credential"}');
+    assert.ok(!out.includes('private'));
+    assert.ok(out.includes('"message":"***"'));
+    assert.ok(out.includes('"token":"***"'));
+  }
+});
+
+test('classifier exceptions drop the line and preserve its length counter', () => {
+  const pattern = redactor.OPERATIONAL_LINE_PATTERNS[0];
+  const original = pattern.test;
+  try {
+    pattern.test = () => { throw new Error('synthetic'); };
+    assert.equal(redactor.redactLine('[gateway] private reply'),
+      '[nbhd:redact] non-operational line dropped (23 chars)');
+  } finally { pattern.test = original; }
+});
+
+test('stream decoding exceptions and unsupported chunks never echo input', () => {
+  const writes = [];
+  const stream = { write: (...args) => { writes.push(args); return true; } };
+  redactor.wrapStream(stream);
+  const cb = () => {};
+  const chunk = { toString() { throw new Error('private reply'); } };
+  assert.equal(stream.write(chunk, cb), true);
+  stream.write(123);
+  assert.equal(writes.length, 2);
+  for (const [out] of writes) assert.match(out, /non-operational line dropped/);
+  assert.equal(writes[0][2], cb);
+});
+
+test('deep or malformed tool parameters never leave a tail', () => {
+  for (const suffix of ['{"nested":{"a":{"b":{"c":"private reply"}}}}', '{"message":"private reply"']) {
+    assert.equal(redactor.redactLine('[tools] failed raw_params=' + suffix),
+      '[tools] failed raw_params=<redacted>');
+  }
+});
+
+test('JSON escaped content keys are masked after parsing', () => {
+  const line = '{"level":"info","logger":"gateway","mess\\u0061ge":"private reply"}';
+  assert.equal(JSON.parse(redactor.redactLine(line)).message, '***');
+});
+
+test('embedded JSON fields mask entire values, including escaped keys and containers', () => {
+  for (const value of ['"private reply"', '["private reply"]', '{"nested":"private reply"}', '123', 'null']) {
+    const line = '[tools] {"mess\\u0061ge":' + value + ',"status":500}';
+    assert.equal(redactor.redactLine(line), '[tools] {"message":"***","status":500}');
+  }
+});
+
+test('decoder returning a non-string cannot bypass classification', () => {
+  let written;
+  const stream = { write: (chunk) => { written = chunk; } };
+  redactor.wrapStream(stream);
+  stream.write({ toString: () => Buffer.from('private reply') });
+  assert.match(written, /non-operational line dropped/);
+});
+
+test('credential fields retain no short values or quoted suffixes', () => {
+  assert.equal(redactor.redactLine('[tools] {"password":"private phrase with spaces"}'),
+    '[tools] {"password":"***"}');
+  assert.equal(redactor.redactLine('[tools] token=abc'), '[tools] token=***');
 });
