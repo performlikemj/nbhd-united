@@ -1275,17 +1275,24 @@ class NotifySautaiPlanReadyTests(TestCase):
         self.assertEqual(mock_record.call_args.kwargs["channel"], "eval")
         self.assertEqual(mock_record.call_args.kwargs["channel_user_id"], str(self.tenant.user_id))
 
-    def test_no_channel_linked_does_not_send(self):
+    def test_no_transport_delivers_to_app_feed(self):
+        from apps.router.models import ProactiveOutbound
+
         from .sautai_notify import notify_sautai_plan_ready
 
         self.tenant.user.telegram_chat_id = None
         self.tenant.user.save(update_fields=["telegram_chat_id"])
         job = self._job()
 
-        with patch("apps.router.services.send_telegram_message") as mock_send:
+        with (
+            patch("apps.router.services.send_telegram_message") as mock_send,
+            patch("apps.router.proactive_context._dispatch_ios_push") as mock_push,
+        ):
             delivered = notify_sautai_plan_ready(job)
-        self.assertFalse(delivered)
+        self.assertTrue(delivered)
+        self.assertEqual(ProactiveOutbound.objects.get(tenant=self.tenant).channel, "app")
         mock_send.assert_not_called()
+        mock_push.assert_not_called()
 
     def test_inactive_tenant_does_not_send(self):
         from .sautai_notify import notify_sautai_plan_ready

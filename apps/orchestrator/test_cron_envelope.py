@@ -656,15 +656,14 @@ class RenderProfileSectionTest(TestCase):
         self.assertIn("Delivery channel: NBHD app", out)
         self.assertNotIn("Telegram", out)
 
-    def test_no_delivery_surface_omits_the_channel_line(self):
-        # No device, no Telegram, no LINE → resolve_user_channel returns None and
-        # the line is dropped. Printing nothing beats printing a falsehood.
+    def test_no_transport_profile_describes_the_app_feed(self):
+        # App feed access does not require notification permission.
         tenant = create_tenant(display_name="Friend", telegram_chat_id=910104)
         tenant.user.telegram_chat_id = None
         tenant.user.save()
 
         out = render_profile_section(tenant)
-        self.assertNotIn("Delivery channel", out)
+        self.assertIn("Delivery channel: NBHD app", out)
         self.assertNotIn("Preferred channel", out)
 
     def test_includes_set_fields_only(self):

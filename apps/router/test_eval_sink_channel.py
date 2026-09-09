@@ -54,9 +54,9 @@ class ResolveUserChannelSinkTest(TestCase):
         tenant = _make(synthetic=True, eval_sink=True, username="eval-nochan")
         self.assertEqual(resolve_user_channel(tenant.user), "eval")
 
-    def test_real_tenant_with_no_channel_still_has_none(self):
+    def test_real_tenant_with_no_transport_has_app_feed(self):
         tenant = _make(synthetic=False, username="real-nochan")
-        self.assertIsNone(resolve_user_channel(tenant.user))
+        self.assertEqual(resolve_user_channel(tenant.user), "app")
 
     def test_synthetic_demo_tenant_keeps_normal_channel_behavior(self):
         tenant = _make(synthetic=True, username="app-store-demo", telegram=4242)
@@ -64,7 +64,7 @@ class ResolveUserChannelSinkTest(TestCase):
 
     def test_synthetic_demo_without_a_channel_is_not_an_eval_sink(self):
         tenant = _make(synthetic=True, username="app-store-demo-nochan")
-        self.assertIsNone(resolve_user_channel(tenant.user))
+        self.assertEqual(resolve_user_channel(tenant.user), "app")
 
     def test_eval_sink_preempts_a_linked_channel(self):
         tenant = _make(synthetic=True, eval_sink=True, username="eval-tg", telegram=4242)
@@ -85,7 +85,7 @@ class ResolveUserChannelMatrixTest(TestCase):
     sink gate precedes the DeviceToken/app check, so no stale registration
     (a leftover APNs token, a linked Telegram/LINE id) can make an eval target
     emit on a real transport. Eval-sink OFF must reproduce the app-first order
-    exactly: app → telegram → line → None; ``preferred_channel`` stays dead.
+    exactly: app device → telegram → line → app feed; ``preferred_channel`` stays dead.
     """
 
     def _combo(self, *, idx: int, eval_sink: bool, device: bool, telegram: bool, line: bool):
@@ -122,7 +122,7 @@ class ResolveUserChannelMatrixTest(TestCase):
 
     def test_without_the_flag_the_app_first_order_holds(self):
         expected = {
-            (False, False, False): None,
+            (False, False, False): "app",
             (False, False, True): "line",
             (False, True, False): "telegram",
             (False, True, True): "telegram",
@@ -180,7 +180,7 @@ class CronDeliveryToTheSinkTest(TestCase):
         line.assert_not_called()
         push.assert_not_called()
 
-    def test_a_REAL_tenant_with_no_channel_still_422s(self):
+    def test_real_tenant_without_transport_gets_app_feed_not_eval_storage(self):
         """Regression guard for the safety property. Left unguarded, a bug here routes
         a paying subscriber's proactive messages into eval storage instead of to them."""
         real = _make(synthetic=False, username="real-delivery")
@@ -192,9 +192,9 @@ class CronDeliveryToTheSinkTest(TestCase):
             HTTP_X_NBHD_INTERNAL_KEY="test-key",
             HTTP_X_NBHD_TENANT_ID=str(real.id),
         )
-        self.assertEqual(resp.status_code, 422)
-        self.assertEqual(resp.data["error"], "no_channel_linked")
-        self.assertFalse(ProactiveOutbound.objects.filter(tenant=real).exists())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["delivered_to"], ["app_feed"])
+        self.assertEqual(ProactiveOutbound.objects.get(tenant=real).channel, "app")
 
 
 class EvalSinkTenantsGetNoProactiveContextTest(TestCase):

@@ -442,8 +442,8 @@ class ProfileDeliveryChannelTests(TestCase):
         self.assertIn("- Delivery channel: LINE", body)
         self.assertNotIn("Telegram", body)
 
-    def test_no_delivery_surface_omits_the_line_entirely(self):
-        # Printing nothing beats printing a falsehood.
+    def test_no_transport_profile_describes_the_app_feed(self):
+        # App feed access does not require notification permission.
         from apps.tenants.envelope import render_profile
 
         t = self._tenant(suffix=4)
@@ -452,7 +452,7 @@ class ProfileDeliveryChannelTests(TestCase):
         t.user.save()
 
         body = render_profile(t)
-        self.assertNotIn("Delivery channel", body)
+        self.assertIn("Delivery channel: NBHD app", body)
         self.assertNotIn("Telegram", body)
 
     def test_ios_only_managed_region_asserts_no_telegram(self):

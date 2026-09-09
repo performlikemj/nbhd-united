@@ -1091,14 +1091,21 @@ class NotifyMeditationReadyTests(TestCase):
         self.assertIn("Alice", text)
         self.assertNotIn("[PERSON_0]", text)
 
-    def test_no_channel_linked_does_not_send(self):
+    def test_no_transport_delivers_to_app_feed(self):
+        from apps.router.models import ProactiveOutbound
+
         self.tenant.user.telegram_chat_id = None
         self.tenant.user.save(update_fields=["telegram_chat_id"])
         session = self._session()
-        with patch("apps.router.services.send_telegram_message") as mock_send:
+        with (
+            patch("apps.router.services.send_telegram_message") as mock_send,
+            patch("apps.router.proactive_context._dispatch_ios_push") as mock_push,
+        ):
             delivered = services.notify_meditation_ready(session)
-        self.assertFalse(delivered)
+        self.assertTrue(delivered)
+        self.assertEqual(ProactiveOutbound.objects.get(tenant=self.tenant).channel, "app")
         mock_send.assert_not_called()
+        mock_push.assert_not_called()
 
     def test_app_only_user_delivered_via_app_channel(self):
         # iOS-only user (no Telegram/LINE, has a registered device) → delivered

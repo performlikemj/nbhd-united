@@ -417,11 +417,37 @@ class ResolveUserChannelTest(TestCase):
 
         self.assertEqual(resolve_user_channel(self.user), "telegram")
 
-    def test_no_surface_resolves_to_none(self):
+    def test_no_transport_resolves_to_app_feed(self):
         from apps.router.cron_delivery import resolve_user_channel
 
-        # No Telegram, no LINE, no device → genuinely nowhere to deliver.
-        self.assertIsNone(resolve_user_channel(self.user))
+        # No notification permission is required to read the app feed.
+        self.assertEqual(resolve_user_channel(self.user), "app")
+
+    def test_revoked_token_does_not_override_linked_messaging(self):
+        from django.utils import timezone
+
+        from apps.router.cron_delivery import resolve_user_channel
+
+        self._add_token()
+        DeviceToken.objects.filter(user=self.user).update(revoked_at=timezone.now())
+        for channel in ("telegram", "line"):
+            self.user.telegram_chat_id = 999 if channel == "telegram" else None
+            self.user.line_user_id = "U" + "1" * 32
+            self.user.save()
+            self.assertEqual(resolve_user_channel(self.user), channel)
+
+    def test_inactive_user_or_tenant_has_no_eligible_device(self):
+        from apps.router.push_views import eligible_device_tokens
+
+        self._add_token()
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+        self.assertFalse(eligible_device_tokens(self.user).exists())
+        self.user.is_active = True
+        self.user.save(update_fields=["is_active"])
+        self.tenant.status = Tenant.Status.SUSPENDED
+        self.tenant.save(update_fields=["status"])
+        self.assertFalse(eligible_device_tokens(self.user).exists())
 
 
 @override_settings(
@@ -575,13 +601,75 @@ class CronDeliveryAppOnlyTest(TestCase):
         self.assertIsNone(ProactiveOutbound.objects.get(tenant=self.tenant).thread_id)
         self.assertEqual(mock_send.call_args.kwargs["thread_id"], str(self.main.id))
 
-    def test_no_surface_at_all_still_422(self):
-        # No Telegram, no LINE, AND no device token → nothing to deliver to.
-        with patch("apps.common.apns.send_push") as mock_send:
-            resp = self.client.post(self.url, {"message": "hello"}, format="json", **self._headers())
-        self.assertEqual(resp.status_code, 422)
-        mock_send.assert_not_called()
-        self.assertFalse(ProactiveOutbound.objects.filter(tenant=self.tenant).exists())
+    def test_no_token_persists_requested_thread_without_push_attempt(self):
+        self._assert_feed_without_push()
+
+    def test_revoked_token_persists_requested_thread_without_push_attempt(self):
+        from django.utils import timezone
+
+        DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token=_VALID_TOKEN,
+            environment="sandbox",
+            revoked_at=timezone.now(),
+        )
+        self._assert_feed_without_push()
+
+    def _assert_feed_without_push(self):
+        from apps.router.chat_history import build_since_page
+
+        requested = ChatThread.objects.create(tenant=self.tenant, user=self.user, title="Research")
+        with (
+            patch("apps.router.proactive_context._dispatch_ios_push") as dispatch,
+            patch("apps.common.apns.send_push") as send,
+            patch("apps.router.cron_delivery.httpx.Client") as transport,
+        ):
+            response = self.client.post(
+                self.url,
+                {"message": "Synthetic briefing", "thread_id": str(requested.id)},
+                format="json",
+                **self._headers(),
+            )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["delivered_to"], ["app_feed"])
+        row = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertEqual(row.channel, "app")
+        self.assertEqual(row.thread_id, requested.id)
+        self.assertEqual(row.message_text, "Synthetic briefing")
+        messages, _ = build_since_page(self.tenant, str(requested.id), cursor=None, limit=100)
+        self.assertIn(f"cron:{row.id}", [message["id"] for message in messages])
+        dispatch.assert_not_called()
+        send.assert_not_called()
+        transport.assert_not_called()
+
+    def test_inactive_tenant_and_user_reject_with_one_content_free_log(self):
+        for inactive in ("tenant", "user"):
+            with self.subTest(inactive=inactive):
+                self.tenant.status = Tenant.Status.SUSPENDED if inactive == "tenant" else Tenant.Status.ACTIVE
+                self.tenant.save(update_fields=["status"])
+                self.user.is_active = inactive != "user"
+                self.user.save(update_fields=["is_active"])
+                with (
+                    self.assertLogs("apps.router.cron_delivery", level="WARNING") as logs,
+                    patch("apps.router.proactive_context._dispatch_ios_push") as dispatch,
+                ):
+                    response = self.client.post(
+                        self.url,
+                        {"message": "private synthetic content"},
+                        format="json",
+                        HTTP_X_NBHD_JOB_NAME="private synthetic job name",
+                        **self._headers(),
+                    )
+                reason = "tenant_not_active" if inactive == "tenant" else "user_inactive"
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"status": "blocked", "reason": reason})
+                self.assertEqual(len(logs.output), 1)
+                self.assertIn(f"cron_delivery: rejected tenant={str(self.tenant.id)[:8]} job=", logs.output[0])
+                self.assertIn(f"reason={reason} status=200", logs.output[0])
+                self.assertNotIn("private synthetic", logs.output[0])
+                self.assertFalse(ProactiveOutbound.objects.filter(tenant=self.tenant).exists())
+                dispatch.assert_not_called()
 
 
 class AppChannelReachesSinceFeedTest(TestCase):

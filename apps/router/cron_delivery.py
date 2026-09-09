@@ -356,87 +356,28 @@ def _is_morning_briefing_send(*, tenant, job_name: str) -> bool:
 
 
 def resolve_user_channel(user) -> str | None:
-    """Determine which channel to use for outbound / proactive messages to ``user``.
+    """Prefer eligible app devices, then linked Telegram/LINE, then the app feed.
 
-    Order (MJ direction — keep Telegram/LINE, but push toward the app when it's
-    installed):
-
-    0. explicit eval-sink tenant (``Tenant.is_eval_sink``) → ``"eval"``,
-       regardless of every other linked surface. No real transport — the
-       ``ProactiveOutbound`` evidence row IS the delivery (see
-       ``CronDeliveryView``).
-    1. iOS device token registered → ``"app"``. Proactive content lands in the
-       app feed as the PRIMARY surface: the APNs push + the ``?since=`` feed row
-       (both produced by ``record_proactive_outbound``) ARE the delivery, so the
-       same content no longer ALSO arrives in Telegram/LINE for token-holders.
-    2. else Telegram linked → ``"telegram"``.
-    3. else LINE linked → ``"line"``.
-    4. else ``None`` (no delivery surface at all).
-
-    Telegram-before-LINE in the messaging fallback (mirroring
-    ``_resolve_gate_channel``) preserves prior behavior for the only both-linked
-    cohort in production. The old resolver honoured ``preferred_channel``
-    (universally the "telegram" schema default), so a user with BOTH channels
-    linked has always received proactive/outbound messages on Telegram — a
-    line-first fallback would silently move their delivery surface to LINE and
-    split it from where their interactive gates land.
-
-    ``preferred_channel`` is deliberately NOT honoured. In production all rows
-    carry the schema default ``"telegram"`` (nobody ever chose it — the frontend
-    hook is dead code and iOS never shipped the control), so reading it would
-    honour noise, not intent. The column is left in place but vestigial; see the
-    PR description.
-
-    Linked Telegram/LINE users WITHOUT the app are unaffected — they keep full
-    two-way delivery via their linked channel. Only token-holders flip from
-    telegram/line to the app.
-
-    Module-level so backend proactive senders (e.g. Core notify-on-ready) route
-    identically to ``CronDeliveryView`` without duplicating the logic.
+    An active user always has an app feed, even without notification permission.
+    Eval sinks retain their explicit transport-free delivery mode. The legacy
+    preferred_channel default is not user intent; linked messaging fallbacks
+    retain Telegram-before-LINE ordering.
     """
-    # 0. Explicit eval-sink tenants FIRST — before the DeviceToken check, so a
-    # stale or accidentally registered real transport (an APNs token, a linked
-    # Telegram/LINE id) can never make an eval target emit. Eval-sink is an
-    # explicit operational mode, independent of the broader ``is_synthetic``
-    # business-aggregate flag.
+    # This selector also labels profiles during provisioning. Delivery callers
+    # enforce tenant/user entitlement; selecting a surface is not authorization.
     tenant = getattr(user, "tenant", None)
     if getattr(tenant, "is_eval_sink", False):
         return "eval"
 
-    # 1. Prefer the app whenever an iOS device is registered.
-    from apps.router.models import DeviceToken
+    from apps.router.push_views import eligible_device_tokens
 
-    if DeviceToken.objects.filter(user=user).exists():
+    if eligible_device_tokens(user).exists():
         return "app"
-
-    # 2/3. No device — fall back to whichever messaging channel is linked so
-    # linked users without the app keep working. Telegram before LINE so a
-    # both-linked user keeps the delivery surface they've always had (see
-    # docstring); line-only users still resolve to LINE.
-    line_user_id = getattr(user, "line_user_id", None)
-    telegram_chat_id = getattr(user, "telegram_chat_id", None)
-    if telegram_chat_id:
+    if getattr(user, "telegram_chat_id", None):
         return "telegram"
-    if line_user_id:
+    if getattr(user, "line_user_id", None):
         return "line"
-
-    # No linked surface and not an explicitly configured eval sink.
-    #
-    # A synthetic tenant has no phone and no chat account, so it used to fall
-    # through to None → HTTP 422 no_channel_linked → CronDeliveryView returned
-    # before record_proactive_outbound, and NOTHING was written. The consequence
-    # was green theater: the eval-behavior tenant has zero ProactiveOutbound rows
-    # ever recorded, and even its one PASSING reminder scenario delivered nothing —
-    # the cron fired, 422'd, and no assertion could have caught it.
-    #
-    # The journey probe worked around this by planting a FAKE APNs DeviceToken
-    # before every run so the "app" branch would resolve. That hack is
-    # self-destroying: a successful delivery pushes to the fabricated token, APNs
-    # rejects it as BadDeviceToken, and push_views PRUNES the row — so every pass
-    # destroyed the channel for the next fire (prod runs 8→9 alternated
-    # pass/fail forever). The sink removes the need for it entirely.
-    #
-    return None
+    return "app"
 
 
 class SendToUserSerializer(serializers.Serializer):
@@ -462,6 +403,42 @@ class CronDeliveryView(APIView):
     authentication_classes = []
     permission_classes = []
 
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        data = getattr(response, "data", {})
+        blocked = isinstance(data, dict) and data.get("status") == "blocked"
+        if response.status_code != 200 or blocked:
+            reason = data.get("reason" if blocked else "error") if isinstance(data, dict) else None
+            allowed_reasons = {
+                "internal_auth_failed",
+                "tenant_not_found",
+                "tenant_not_active",
+                "user_inactive",
+                "no_channel_linked",
+                "rate_limited",
+                "app_delivery_not_recorded",
+                "eval_delivery_not_recorded",
+                "telegram_not_configured",
+                "telegram_send_failed",
+                "line_not_configured",
+                "line_send_failed",
+            }
+            if not isinstance(reason, str) or reason not in allowed_reasons:
+                reason = "invalid_payload" if response.status_code == 400 else "delivery_failed"
+            # The job header is agent-supplied. Only known scheduler names may
+            # appear as text; hash custom names so they cannot disclose content.
+            job = request.headers.get("X-NBHD-Job-Name", "")
+            known_jobs = {"morning-briefing", "evening-check-in", "weekly-reflection", "_subagent_result"}
+            safe_job = job if job in known_jobs else hashlib.sha256(job.encode()).hexdigest()[:8] if job else "-"
+            logger.warning(
+                "cron_delivery: rejected tenant=%s job=%s reason=%s status=%s",
+                str(kwargs.get("tenant_id", ""))[:8],
+                safe_job,
+                reason,
+                response.status_code,
+            )
+        return response
+
     def post(self, request, tenant_id):
         received_at = timezone.now()
 
@@ -483,30 +460,21 @@ class CronDeliveryView(APIView):
         if tenant is None:
             return Response({"error": "tenant_not_found"}, status=http_status.HTTP_404_NOT_FOUND)
 
-        # Block delivery for suspended/inactive tenants (trial expired, payment lapsed)
-        if tenant.status != Tenant.Status.ACTIVE:
-            logger.info(
-                "Cron delivery blocked: tenant %s status=%s (not active)",
-                tenant_id,
-                tenant.status,
-            )
-            # Return 200 to prevent QStash/cron retries — this is expected, not an error
+        # A feed exists without a linked transport, but requires an entitled user.
+        if tenant.status != Tenant.Status.ACTIVE or not tenant.user.is_active:
+            # Return 200 to prevent QStash/cron retries: expected non-delivery.
             return Response(
                 {
                     "status": "blocked",
-                    "reason": "tenant_not_active",
-                    "tenant_status": tenant.status,
-                }
+                    "reason": "tenant_not_active" if tenant.status != Tenant.Status.ACTIVE else "user_inactive",
+                },
+                status=http_status.HTTP_200_OK,
             )
 
-        # Determine channel
         channel = self._resolve_channel(tenant.user)
         if channel is None:
             return Response(
-                {
-                    "error": "no_channel_linked",
-                    "detail": "User has no Telegram/LINE link and no registered device.",
-                },
+                {"error": "no_channel_linked"},
                 status=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
@@ -723,7 +691,7 @@ class CronDeliveryView(APIView):
                 _resolve_delivery_attempt(delivery_attempt, state="failed", response=response)
                 return response
             _record_send(tid)
-            response = Response({"status": "sent", "channel": "app"})
+            response = Response({"status": "sent", "channel": "app", "delivered_to": ["app_feed"]})
             _resolve_delivery_attempt(delivery_attempt, state="sent", response=response)
             return response
         elif channel == "eval":

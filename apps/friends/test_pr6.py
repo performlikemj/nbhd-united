@@ -349,6 +349,24 @@ class DigestTest(TestCase):
         self.assertEqual(row.message_text, "\U0001f331 crew digest")
         self.assertEqual(row.channel_user_id, str(self.a.user_id))
 
+    def test_no_transport_digest_reaches_feed_without_push(self):
+        from apps.router.models import ProactiveOutbound
+
+        self.a.user.telegram_chat_id = None
+        self.a.user.line_user_id = None
+        self.a.user.save(update_fields=["telegram_chat_id", "line_user_id"])
+        with (
+            mock.patch("apps.router.proactive_context._dispatch_ios_push") as push,
+            mock.patch("apps.router.services.send_telegram_message") as telegram,
+            mock.patch("apps.core.services._send_line_text") as line,
+        ):
+            delivered = digest._deliver_text(self.a, "Synthetic digest")
+        self.assertTrue(delivered)
+        self.assertEqual(ProactiveOutbound.objects.get(tenant=self.a).channel, "app")
+        push.assert_not_called()
+        telegram.assert_not_called()
+        line.assert_not_called()
+
     def test_eval_sink_does_not_fall_through_to_telegram(self):
         """An eval-sink member's digest never touches a real transport — it is
         recorded as an internal ``eval`` evidence row (no APNs, no Telegram),

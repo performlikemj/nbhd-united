@@ -259,6 +259,14 @@ def record_proactive_outbound(
     if suppresses_real_transport(tenant):
         return row
 
+    # The app feed does not depend on notifications. Avoid even scheduling a
+    # push worker when no eligible device exists; dispatch rechecks eligibility.
+    if channel == "app":
+        from apps.router.push_views import eligible_device_tokens
+
+        if not eligible_device_tokens(tenant.user).exists():
+            return row
+
     # Ping the user's iPhone(s) that a proactive / cron message just landed — the
     # missing leg that left crons silent on iOS (Telegram/LINE delivered, but the
     # APNs push only ever fired for app-originated turns). The push is a
