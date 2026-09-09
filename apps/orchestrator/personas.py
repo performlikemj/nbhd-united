@@ -537,6 +537,21 @@ def _rules_template_dir() -> str:
     )
 
 
+_SUBAGENT_CHAT_INSTRUCTIONS = (
+    "## Slow tasks\n\n"
+    "Delegate only work likely to take more than about 30 seconds: multi-step research, "
+    "long-document analysis, or large generation. Answer simple questions directly. "
+    "Call `sessions_spawn` BEFORE starting the work, then reply immediately: "
+    '"On it — I\'ll let you know when it\'s ready." Never pass `context: "fork"`; '
+    "give only bounded context. The helper is read-only, reports back to you, and must not "
+    "send, create, publish, or act outward. On an `[Internal task completion event]`, "
+    "send exactly one `nbhd_send_to_user` update to the requester's `thread_id`, in your "
+    "normal voice, without raw run/session/delivery metadata. The bridge backstops delivery; "
+    "do not duplicate its sends. Never use `NO_REPLY`, `no_reply`, or `ANNOUNCE_SKIP` for "
+    "completion. On timeout/failure, send a brief honest reason and offer to retry."
+)
+
+
 _SUBAGENT_RULE_FILENAME = "subagents.md"
 _SUBAGENT_MESSAGING_ADDENDUM = (
     "\n\nIf `rules/subagents.md` is present in your workspace, follow it for "
@@ -688,6 +703,9 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         "NBHD_SOUL_MD": render_soul_managed(persona_key, tenant),
         "NBHD_IDENTITY_MD": render_identity_managed(persona_key, tenant),
     }
+    if _subagent_workspace_surfaces_enabled(tenant):
+        result["NBHD_AGENTS_MD"] += "\n\n" + _SUBAGENT_CHAT_INSTRUCTIONS
+
     # Profile onboarding gate — use the same omission predicate as USER.md's
     # managed Profile section. UTC is the platform default, so it does not count
     # as a confirmed timezone; an empty city likewise omits Home location.

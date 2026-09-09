@@ -202,14 +202,15 @@ class MaximalTenantBudgetTest(TestCase):
         )
 
     def test_rules_delivery_r0_all_gates_budget(self):
-        md = _agents_md(self._tenant(all_gates=True))
-        # KSE-9 (2026-08-30): approval-code Website edit gate; measured maximal shape is 23,505 chars.
-        self.assertLessEqual(
-            len(md),
-            23_505,
-            "the reviewed all-gates shape, including Website edit, grew beyond its "
-            "measured 23,505-char pin; fund further growth with a trim",
-        )
+        tenant = self._tenant(all_gates=True)
+        with override_settings(SUBAGENT_TENANT_IDS=""):
+            ungated = _agents_md(tenant)
+        self.assertLessEqual(len(ungated), 23_505)
+        with override_settings(SUBAGENT_TENANT_IDS=str(tenant.id)):
+            md = _agents_md(tenant)
+        self.assertIn("`sessions_spawn` BEFORE starting", md)
+        self.assertLessEqual(len(md), _ALL_GATES_CEILING)
+        self.assertLessEqual(len(md), BOOTSTRAP_MAX_CHARS)
 
     def test_an_mj_shaped_tenant_fits_under_the_cap(self):
         """The shape actually shipping today: MJ's four gates + his ~1.5K of extras."""

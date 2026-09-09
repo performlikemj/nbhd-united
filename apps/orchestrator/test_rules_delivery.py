@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.orchestrator.config_generator import _prepare_cron_prompt
 from apps.orchestrator.personas import PERSONAS, render_workspace_files
 from apps.orchestrator.test_reminder_capability import MaximalTenantBudgetTest
+from apps.tenants.models import Tenant, User
 from apps.tenants.services import create_tenant
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -64,14 +67,49 @@ class RulesDeliveryTest(TestCase):
         for path, load_for in _CRON_INDEX_ROWS:
             with self.subTest(path=path):
                 self.assertIn(f"| `{path}` | {load_for} |", cron_prompt)
-        self.assertIn(
-            "| `rules/subagents.md` | Slow-task delegation and app completion delivery |",
-            cron_prompt,
-        )
+        self.assertNotIn("rules/subagents.md", cron_prompt)
         self.assertNotIn("| `rules/memory.md` |", cron_prompt)
         self.assertNotIn("| `rules/document-ingestion.md` |", cron_prompt)
         self.assertNotIn("| `rules/reply-markers.md` |", cron_prompt)
         self.assertNotIn("| `rules/onboarding.md` |", cron_prompt)
+
+    def test_gated_chat_contains_inline_delegation_contract(self):
+        tenant = create_tenant(display_name="Inline delegation", telegram_chat_id=920102)
+        with override_settings(SUBAGENT_TENANT_IDS=str(tenant.id)):
+            for persona_key in PERSONAS:
+                prompt = render_workspace_files(persona_key, tenant=tenant)["NBHD_AGENTS_MD"]
+                for marker in (
+                    "more than about 30 seconds",
+                    "multi-step research",
+                    "long-document analysis",
+                    "large generation",
+                    "`sessions_spawn` BEFORE starting",
+                    "reply immediately",
+                    "On it — I'll let you know when it's ready.",
+                    'Never pass `context: "fork"`',
+                    "helper is read-only, reports back",
+                    "exactly one `nbhd_send_to_user`",
+                    "requester's `thread_id`",
+                    "bridge backstops delivery",
+                    "timeout/failure",
+                ):
+                    with self.subTest(persona=persona_key, marker=marker):
+                        self.assertIn(marker, prompt)
+                self.assertIsNone(_CHAT_FILE_POINTER.search(prompt))
+
+    def test_ungated_chat_is_byte_identical_to_pre_change_render(self):
+        # Hash captured from the base implementation, before the inline block.
+        tenant = Tenant(user=User(username="synthetic", timezone="Asia/Tokyo", location_city="Tokyo"))
+        for allowlist in ("", "00000000-0000-0000-0000-000000000001", "*"):
+            with (
+                override_settings(SUBAGENT_TENANT_IDS=allowlist),
+                patch("apps.orchestrator.personas.render_templates_md", return_value=""),
+            ):
+                prompt = render_workspace_files("neighbor", tenant=tenant)["NBHD_AGENTS_MD"]
+            self.assertEqual(
+                hashlib.sha256(prompt.encode()).hexdigest(),
+                "f34fe78edc990166db28379286d19178e4e34e62d025073c7a0bc09eeb280ddc",
+            )
 
     def test_all_gates_render_within_pin(self):
         prompt = render_workspace_files("neighbor", tenant=self._all_gates_tenant())["NBHD_AGENTS_MD"]
