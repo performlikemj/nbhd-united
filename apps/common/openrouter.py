@@ -25,6 +25,34 @@ logger = logging.getLogger(__name__)
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
+class NoUsableChoicesError(RuntimeError):
+    """HTTP succeeded, but the provider returned no usable assistant answer."""
+
+
+def _response_diagnostics(data: object) -> dict:
+    """Only operational metadata; omit messages, reasoning and raw error bodies."""
+    if not isinstance(data, dict):
+        return {}
+    diagnostics = {}
+    sources = [data]
+    choices = data.get("choices")
+    if isinstance(choices, list):
+        sources.extend(choice for choice in choices if isinstance(choice, dict))
+    for source in sources:
+        for field in ("finish_reason", "provider"):
+            value = source.get(field)
+            if isinstance(value, str):
+                diagnostics[field] = value[:120]
+        if source.get("error") is not None:
+            error = source["error"]
+            diagnostics["error"] = (
+                {key: str(error[key])[:120] for key in ("code", "type") if key in error}
+                if isinstance(error, dict)
+                else {"present": True}
+            )
+    return diagnostics
+
+
 def normalize_model_id(model_id: str) -> str:
     """Strip OpenClaw's ``openrouter/`` routing prefix for the HTTP API.
 
@@ -45,10 +73,13 @@ def _looks_usable(data: dict) -> bool:
     if data.get("error"):
         return False
     choices = data.get("choices")
-    if not choices:
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         return False
-    content = (choices[0] or {}).get("message", {}).get("content")
-    return bool(content)
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    return isinstance(content, str) and bool(content.strip())
 
 
 def chat_completion(
@@ -105,7 +136,10 @@ def chat_completion(
             resp.raise_for_status()
             data = resp.json()
             if not _looks_usable(data):
-                raise RuntimeError(f"OpenRouter returned no usable choices for {model_id}: {str(data)[:200]}")
+                logger.warning(
+                    "OpenRouter no usable choices model=%s metadata=%s", model_id, _response_diagnostics(data)
+                )
+                raise NoUsableChoicesError(f"OpenRouter returned no usable choices for {model_id}")
         except Exception as exc:  # noqa: BLE001 — record + try the next candidate
             last_error = exc
             if record_health:

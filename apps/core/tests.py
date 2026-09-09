@@ -1903,11 +1903,12 @@ class ComposeAuthoringTests(ComposeSchemaCacheMixin, SimpleTestCase):
             self.assertRaises(compose.ComposeError),
         ):
             compose.author_manifest({}, model="some/model")
-        cc.assert_called_once()
+        self.assertEqual(cc.call_count, 2)  # schema -> JSON mode, still pinned to one model
+        self.assertEqual({c.args[0] for c in cc.call_args_list}, {"some/model"})
 
     def test_falls_back_when_primary_truncates_json(self):
         # Primary drifts to truncated (here, non-English) JSON — the live 06-25
-        # failure; the next candidate returns a valid manifest → compose succeeds.
+        # failure; JSON-mode fallback returns a valid manifest → compose succeeds.
         truncated = '{"schema_version": 1, "title": "轻放责备", "theme": "温柔'
         with patch(
             "apps.core.compose.chat_completion",
@@ -1922,22 +1923,28 @@ class ComposeAuthoringTests(ComposeSchemaCacheMixin, SimpleTestCase):
         # raises ComposeError; it must fall through, not abort the chain.
         with patch(
             "apps.core.compose.chat_completion",
-            side_effect=[self._ok("[1, 2, 3]"), self._ok(json.dumps(_valid_manifest()))],
+            side_effect=[self._ok("[1, 2, 3]"), self._ok("[1, 2, 3]"), self._ok(json.dumps(_valid_manifest()))],
         ) as cc:
             out = compose.author_manifest({})
         self.assertEqual(render.validate_manifest(out), [])
-        self.assertEqual(cc.call_count, 2)
+        self.assertEqual(cc.call_count, 3)
+        self.assertNotEqual(cc.call_args_list[1].args[0], cc.call_args_list[2].args[0])
 
     def test_falls_back_when_primary_over_produces_segments(self):
         over = _over_segmented_manifest()
         self.assertTrue(any("too many spoken" in e for e in render.validate_manifest(over)))
         with patch(
             "apps.core.compose.chat_completion",
-            side_effect=[self._ok(json.dumps(over)), self._ok(json.dumps(_valid_manifest()))],
+            side_effect=[
+                self._ok(json.dumps(over)),
+                self._ok(json.dumps(over)),
+                self._ok(json.dumps(_valid_manifest())),
+            ],
         ) as cc:
             out = compose.author_manifest({})
         self.assertEqual(render.validate_manifest(out), [])
-        self.assertEqual(cc.call_count, 2)
+        self.assertEqual(cc.call_count, 3)
+        self.assertNotEqual(cc.call_args_list[1].args[0], cc.call_args_list[2].args[0])
 
     def test_falls_back_when_primary_transport_errors(self):
         # Primary transport-errors on BOTH its attempt and its one transient
@@ -1974,9 +1981,10 @@ class ComposeAuthoringTests(ComposeSchemaCacheMixin, SimpleTestCase):
         sleep.assert_called_once()  # backoff before the retry
 
     def test_content_failure_is_not_retried(self):
-        # A non-transient failure (unparseable content) must NOT trigger the
-        # same-model retry — it falls straight through to the next candidate.
+        # After schema fallback, unparseable JSON-mode content goes straight to
+        # the next candidate without a corrective or transient retry.
         with (
+            patch("apps.core.compose._SCHEMA_REJECTED_MODELS", {compose._compose_models()[0]}),
             patch("apps.core.compose.time.sleep") as sleep,
             patch(
                 "apps.core.compose.chat_completion",
@@ -1998,7 +2006,14 @@ class ComposeAuthoringTests(ComposeSchemaCacheMixin, SimpleTestCase):
             patch("apps.core.compose.time.sleep"),
             patch(
                 "apps.core.compose.chat_completion",
-                side_effect=[self._ok(over), self._ok("not json"), RuntimeError("503"), RuntimeError("503")],
+                side_effect=[
+                    self._ok(over),
+                    self._ok(over),  # invalid + corrective retry
+                    self._ok("not json"),
+                    self._ok("not json"),  # schema + JSON mode
+                    RuntimeError("503"),
+                    RuntimeError("503"),  # transient + backed-off retry
+                ],
             ),
             self.assertRaises(compose.ComposeError) as ctx,
         ):

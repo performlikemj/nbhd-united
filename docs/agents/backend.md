@@ -77,6 +77,9 @@ only the player reports completion; the server does not measure listening.
 schemas. Compose requests `json_schema`, caching per-model schema rejection for
 process-lifetime `json_object` fallback; local lesson/render validation always
 applies. Lesson prose passes through the PII authoring registry before storage.
+Non-JSON schema answers also trigger JSON-mode fallback. Invalid manifests/lessons
+and variety clashes share one corrective retry per model, with redacted feedback.
+HTTP 200 empty/unusable choices are transient and get the existing backed-off retry.
 
 The latest 20 playable sits supply history (2,600 characters, whole entries).
 Reject normalized teaching-slug repeats and either of the two latest known

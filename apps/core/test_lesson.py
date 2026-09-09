@@ -8,10 +8,11 @@ import requests
 from django.test import SimpleTestCase, override_settings
 from pydantic import ValidationError
 
-from apps.core import compose
+from apps.common.openrouter import NoUsableChoicesError, chat_completion
+from apps.core import compose, render
 from apps.core.lesson import LESSON_JSON_SCHEMA, TRADITIONS, MeditationLesson, Tradition
 from apps.core.test_utils import ComposeSchemaCacheMixin
-from apps.core.tests import _valid_manifest
+from apps.core.tests import _over_segmented_manifest, _valid_manifest
 
 
 def answer(slug="wu-wei", tradition="taoist"):
@@ -73,7 +74,7 @@ class LessonTests(ComposeSchemaCacheMixin, SimpleTestCase):
         self.assertIn("wu-wei", prompt)
         self.assertIn("2026-09-07", prompt)
         self.assertIn("zen", prompt)
-        self.assertIn("accepted_after_retry", " ".join(logs.output))
+        self.assertIn("accepted_after_retry reason=variety_clash", " ".join(logs.output))
         schema = calls[0].kwargs["response_format"]
         self.assertEqual(schema["type"], "json_schema")
         self.assertIn("lesson", schema["json_schema"]["schema"]["required"])
@@ -163,12 +164,180 @@ class LessonTests(ComposeSchemaCacheMixin, SimpleTestCase):
     @patch("apps.core.compose.chat_completion")
     def test_invalid_lesson_skips_model_and_does_not_log_private_input(self, completion):
         private = answer(tradition="PRIVATE_SENTINEL")
-        completion.side_effect = [private, answer("open-awareness", "buddhist")]
+        completion.side_effect = [private, private, answer("open-awareness", "buddhist")]
         with self.assertLogs("apps.core.compose", level="WARNING") as logs:
             result = compose.author_manifest({})
         self.assertEqual(result["lesson"]["tradition"], "buddhist")
         self.assertNotIn("PRIVATE_SENTINEL", " ".join(logs.output))
-        self.assertNotEqual(completion.call_args_list[0].args[0], completion.call_args_list[1].args[0])
+        self.assertEqual(completion.call_args_list[0].args[0], completion.call_args_list[1].args[0])
+        self.assertNotEqual(completion.call_args_list[1].args[0], completion.call_args_list[2].args[0])
+
+    @patch("apps.core.compose.chat_completion")
+    def test_invalid_manifest_retry_carries_verbatim_errors_then_accepts(self, completion):
+        one_phase = _valid_manifest()
+        one_phase["phases"] = one_phase["phases"][:1]
+        for invalid in (one_phase, _over_segmented_manifest()):
+            with self.subTest(phases=len(invalid["phases"])):
+                completion.reset_mock()
+                previous = json.dumps(invalid)
+                completion.side_effect = [
+                    ({"choices": [{"message": {"content": previous}}]}, "first"),
+                    answer("open-awareness", "buddhist"),
+                ]
+                with self.assertLogs("apps.core.compose", level="INFO") as logs:
+                    result = compose.author_manifest(self.signals, model="first")
+                self.assertEqual(render.validate_manifest(result), [])
+                self.assertEqual(completion.call_count, 2)
+                self.assertEqual(len(completion.call_args_list[0].args[1]), 2)
+                messages = completion.call_args_list[1].args[1]
+                self.assertEqual(messages[-2], {"role": "assistant", "content": previous})
+                self.assertEqual(
+                    messages[-1]["content"],
+                    "Rejected: "
+                    + "; ".join(render.validate_manifest(invalid)[:3])
+                    + ". Return the corrected JSON object only.",
+                )
+                self.assertIn("accepted_after_retry reason=invalid_manifest", " ".join(logs.output))
+
+    @patch("apps.core.compose.chat_completion")
+    def test_pydantic_lesson_and_manifest_errors_get_redacted_correction(self, completion):
+        invalid_lesson = _valid_manifest()
+        invalid_lesson["lesson"]["tradition"] = "PRIVATE_SENTINEL"
+        invalid_manifest = _valid_manifest()
+        invalid_manifest["PRIVATE_SENTINEL"] = "private extra field"
+        for invalid in (invalid_lesson, invalid_manifest):
+            with self.subTest(lesson=invalid["lesson"]["tradition"]):
+                completion.reset_mock()
+                completion.side_effect = [
+                    ({"choices": [{"message": {"content": json.dumps(invalid)}}]}, "first"),
+                    answer(),
+                ]
+                with (
+                    patch(
+                        "apps.pii.egress.redact_known_values",
+                        side_effect=lambda tenant, text, **kw: text.replace("PRIVATE_SENTINEL", "[PERSON_1]"),
+                    ) as redact,
+                    self.assertLogs("apps.core.compose", level="INFO") as logs,
+                ):
+                    compose.author_manifest({}, model="first")
+                retry = completion.call_args_list[1].args[1][-2:]
+                self.assertNotIn("PRIVATE_SENTINEL", json.dumps(retry))
+                self.assertIn("[PERSON_1]", retry[0]["content"])
+                self.assertIn("Rejected: ", retry[1]["content"])
+                self.assertIn("Return the corrected JSON object only.", retry[1]["content"])
+                self.assertEqual(sum(c.kwargs["seam"] == "meditation_compose_retry" for c in redact.call_args_list), 2)
+                self.assertNotIn("PRIVATE_SENTINEL", " ".join(logs.output))
+                self.assertIn("accepted_after_retry reason=invalid_manifest", " ".join(logs.output))
+
+    @patch("apps.core.compose.chat_completion")
+    def test_invalid_then_clash_uses_only_one_corrective_retry(self, completion):
+        invalid = _valid_manifest()
+        invalid["phases"] = []
+        bad = ({"choices": [{"message": {"content": json.dumps(invalid)}}]}, "first")
+        for first, second in ((bad, answer()), (answer(), bad)):
+            with self.subTest(first_invalid=first == bad):
+                completion.reset_mock()
+                completion.side_effect = [first, second, answer("open-awareness", "buddhist")]
+                with self.assertLogs("apps.core.compose", level="WARNING"):
+                    result = compose.author_manifest(self.signals)
+                self.assertEqual(result["lesson"]["tradition"], "buddhist")
+                calls = completion.call_args_list
+                self.assertEqual(len(calls), 3)
+                self.assertEqual(calls[0].args[0], calls[1].args[0])
+                self.assertNotEqual(calls[1].args[0], calls[2].args[0])
+                self.assertEqual(len(calls[2].args[1]), 2)
+
+    @patch("apps.core.compose.time.sleep")
+    @patch("apps.core.compose.chat_completion")
+    def test_empty_choices_is_transient_once_then_next_model(self, completion, sleep):
+        error = NoUsableChoicesError("OpenRouter returned no usable choices for first")
+        completion.side_effect = [error, error, answer("open-awareness", "buddhist")]
+        result = compose.author_manifest(self.signals)
+        self.assertEqual(result["lesson"]["tradition"], "buddhist")
+        calls = completion.call_args_list
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0].args[0], calls[1].args[0])
+        self.assertNotEqual(calls[1].args[0], calls[2].args[0])
+        sleep.assert_called_once_with(compose._RETRY_BACKOFF_S)
+
+    @patch("apps.common.openrouter.requests.post")
+    def test_empty_choices_raises_typed_error_without_response_content(self, post):
+        for choices in ([], None, [None], [{"message": None}], [{"message": {"content": "  "}}]):
+            with self.subTest(choices=choices):
+                response = requests.Response()
+                response.status_code = 200
+                response._content = json.dumps(
+                    {
+                        "choices": choices,
+                        "provider": "test-provider",
+                        "finish_reason": "error",
+                        "reasoning": "PRIVATE_SENTINEL",
+                    }
+                ).encode()
+                post.return_value = response
+                with (
+                    self.assertLogs("apps.common.openrouter", level="WARNING") as logs,
+                    self.assertRaises(NoUsableChoicesError) as caught,
+                ):
+                    chat_completion("first", [], record_health=False)
+                self.assertTrue(compose._is_transient(caught.exception))
+                text = " ".join(logs.output)
+                self.assertIn("test-provider", text)
+                self.assertIn("finish_reason", text)
+                self.assertNotIn("PRIVATE_SENTINEL", text + str(caught.exception))
+
+        response._content = json.dumps(
+            {
+                "choices": [{"message": {"content": "PRIVATE_SENTINEL"}, "finish_reason": "error"}],
+                "error": {"code": 502, "message": "PRIVATE_SENTINEL", "metadata": {"raw": "PRIVATE_SENTINEL"}},
+            }
+        ).encode()
+        with (
+            self.assertLogs("apps.common.openrouter", level="WARNING") as logs,
+            self.assertRaises(NoUsableChoicesError),
+        ):
+            chat_completion("first", [], record_health=False)
+        text = " ".join(logs.output)
+        self.assertIn("502", text)
+        self.assertIn("finish_reason", text)
+        self.assertNotIn("PRIVATE_SENTINEL", text)
+
+    @patch("apps.core.compose.chat_completion")
+    def test_correction_limits_feedback_to_first_three_errors(self, completion):
+        invalid = _over_segmented_manifest()
+        # Keep the arc valid, with independent errors in four phases.
+        for phase in invalid["phases"][:4]:
+            phase["segments"] = []
+        errors = render.validate_manifest(invalid)
+        self.assertGreater(len(errors), 3)
+        completion.side_effect = [
+            ({"choices": [{"message": {"content": json.dumps(invalid)}}]}, "first"),
+            answer(),
+        ]
+        with self.assertLogs("apps.core.compose", level="WARNING"):
+            compose.author_manifest({}, model="first")
+        correction = completion.call_args_list[1].args[1][-1]["content"]
+        self.assertEqual(correction, "Rejected: " + "; ".join(errors[:3]) + ". Return the corrected JSON object only.")
+
+    @patch("apps.core.compose.chat_completion")
+    def test_schema_non_json_fallback_is_cached_and_bounded(self, completion):
+        non_json = ({"choices": [{"message": {"content": "PRIVATE_SENTINEL"}}]}, "first")
+        completion.side_effect = [non_json, answer(), answer(), answer()]
+        with self.assertLogs("apps.core.compose", level="INFO") as logs:
+            compose.author_manifest({}, model="first")
+            compose.author_manifest({}, model="first")
+            compose.author_manifest({}, model="second")
+        self.assertEqual(
+            [c.kwargs["response_format"]["type"] for c in completion.call_args_list],
+            ["json_schema", "json_object", "json_object", "json_schema"],
+        )
+        self.assertEqual(sum("schema rejected" in line for line in logs.output), 1)
+        self.assertNotIn("PRIVATE_SENTINEL", " ".join(logs.output))
+        completion.reset_mock()
+        completion.side_effect = [non_json, non_json]
+        with self.assertRaises(compose.ComposeError):
+            compose.author_manifest({}, model="third")
+        self.assertEqual(completion.call_count, 2)
 
     def test_lookback_lines_are_whole_and_include_lesson(self):
         entries = self.signals["recent_meditations"]
