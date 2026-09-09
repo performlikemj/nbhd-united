@@ -59,11 +59,13 @@ class SystemNotifyAppBranchTest(TestCase):
         tg.assert_not_called()
         line.assert_not_called()
 
-    def test_no_channel_notice_skipped(self):
+    def test_no_transport_notice_reaches_feed_without_push(self):
         tenant = self._tenant("sysnotify_none")
-        ok = send_system_notification(tenant, "nobody home")
-        self.assertFalse(ok)
-        self.assertFalse(ProactiveOutbound.objects.filter(tenant=tenant).exists())
+        with mock.patch("apps.router.proactive_context._dispatch_ios_push") as push:
+            ok = send_system_notification(tenant, "Synthetic notice")
+        self.assertTrue(ok)
+        self.assertEqual(ProactiveOutbound.objects.get(tenant=tenant).message_text, "Synthetic notice")
+        push.assert_not_called()
 
     def test_telegram_notice_does_not_record_row(self):
         # Linked Telegram user without a device: still delivered over Telegram,

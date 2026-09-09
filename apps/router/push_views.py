@@ -344,6 +344,16 @@ def _compute_unread_count(user) -> int | None:
         return None
 
 
+def eligible_device_tokens(user):
+    """The shared entitlement/revocation filter for routing and push dispatch."""
+    return DeviceToken.objects.filter(
+        user=user,
+        revoked_at__isnull=True,
+        user__is_active=True,
+        tenant__status=Tenant.Status.ACTIVE,
+    )
+
+
 def _push_to_user_devices(
     user,
     *,
@@ -372,13 +382,7 @@ def _push_to_user_devices(
     if suppresses_real_transport(tenant):
         return {"token_count": 0, "used_fallback": False}
 
-    token_rows = DeviceToken.objects.filter(
-        user=user,
-        revoked_at__isnull=True,
-        user__is_active=True,
-        # Only ACTIVE tenants can produce entitled user-visible replies.
-        tenant__status=Tenant.Status.ACTIVE,
-    )
+    token_rows = eligible_device_tokens(user)
     used_fallback = False
     if installation_id:
         rows = list(token_rows.filter(installation_id=installation_id).values("token", "environment"))

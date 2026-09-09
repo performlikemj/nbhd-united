@@ -80,6 +80,54 @@ class CronDeliveryViewTest(TestCase):
         resp = self.client.post(self.url, {"message": "hello"}, format="json")
         self.assertEqual(resp.status_code, 401)
 
+    def test_unknown_tenant_returns_404_with_one_content_free_log(self):
+        from uuid import uuid4
+
+        tenant_id = str(uuid4())
+        url = self.url.replace(str(self.tenant.id), tenant_id)
+        with (
+            patch("apps.router.cron_delivery.validate_internal_runtime_request"),
+            self.assertLogs("apps.router.cron_delivery", level="WARNING") as logs,
+            patch("apps.router.proactive_context._dispatch_ios_push") as push,
+            patch("apps.router.cron_delivery.httpx.Client") as transport,
+        ):
+            response = self.client.post(url, {"message": "private synthetic content"}, format="json")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), {"error": "tenant_not_found"})
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn(f"tenant={tenant_id[:8]} job=- reason=tenant_not_found status=404", logs.output[0])
+        self.assertNotIn("private", logs.output[0])
+        push.assert_not_called()
+        transport.assert_not_called()
+
+    def test_reject_logging_covers_auth_payload_throttle_and_transport(self):
+        from rest_framework.response import Response
+
+        from apps.router.cron_delivery import CronDeliveryView
+
+        for code, error, reason in (
+            (401, "internal_auth_failed", "internal_auth_failed"),
+            (400, "private payload", "invalid_payload"),
+            (404, "tenant_not_found", "tenant_not_found"),
+            (429, "rate_limited", "rate_limited"),
+            (502, "telegram_send_failed", "telegram_send_failed"),
+            (502, "line_send_failed", "line_send_failed"),
+            (503, "app_delivery_not_recorded", "app_delivery_not_recorded"),
+            (503, "eval_delivery_not_recorded", "eval_delivery_not_recorded"),
+            (503, "telegram_not_configured", "telegram_not_configured"),
+            (503, "line_not_configured", "line_not_configured"),
+        ):
+            with self.subTest(code=code, error=error):
+                with (
+                    patch.object(CronDeliveryView, "post", return_value=Response({"error": error}, status=code)),
+                    self.assertLogs("apps.router.cron_delivery", level="WARNING") as logs,
+                ):
+                    resp = self.client.post(self.url, {"message": "private body"}, format="json")
+                self.assertEqual(resp.status_code, code)
+                self.assertEqual(len(logs.output), 1)
+                self.assertIn(f"reason={reason} status={code}", logs.output[0])
+                self.assertNotIn("private", logs.output[0])
+
     def test_missing_message(self):
         resp = self.client.post(self.url, {}, format="json", **self._headers())
         self.assertEqual(resp.status_code, 400)

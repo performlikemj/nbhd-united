@@ -188,16 +188,25 @@ class TestRunExtractionForTenant(TestCase):
     )
     @patch("apps.journal.extraction._deliver_summary_telegram")
     @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "test-token", create=True)
-    def test_runs_without_channel_no_delivery(self, mock_summary, mock_llm):
-        """No Telegram/LINE/app surface: the extraction + reconciliation still
-        run (so tasks stay accurate) — only the summary delivery is skipped."""
+    def test_no_transport_summary_reaches_feed_without_push(self, mock_summary, mock_llm):
+        from apps.router.models import ProactiveOutbound
+
         self.tenant.user.telegram_chat_id = None
         self.tenant.user.line_user_id = None
         self.tenant.user.save(update_fields=["telegram_chat_id", "line_user_id"])
-        result = run_extraction_for_tenant(self.tenant)
+        with (
+            patch("apps.router.proactive_context._dispatch_ios_push") as push,
+            patch("apps.journal.extraction._deliver_summary_line") as line,
+        ):
+            result = run_extraction_for_tenant(self.tenant)
         self.assertIsNone(result["skipped"])
         self.assertEqual(result["lessons"], 1)
         mock_summary.assert_not_called()
+        line.assert_not_called()
+        push.assert_not_called()
+        row = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertEqual(row.channel, "app")
+        self.assertIn("From today", row.message_text)
 
     @patch(
         "apps.journal.extraction._call_extraction_llm",

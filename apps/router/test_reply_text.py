@@ -142,6 +142,12 @@ class ReplyTextStorePathTest(TestCase):
 
     @patch("apps.router.proactive_context._dispatch_ios_push")
     def test_proactive_outbound_is_clamped_before_store(self, mock_dispatch):
+        from apps.router.models import DeviceToken
+        from apps.tenants.models import Tenant
+
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.save(update_fields=["status"])
+        DeviceToken.objects.create(tenant=self.tenant, user=self.user, token="a" * 64)
         row = record_proactive_outbound(
             tenant=self.tenant,
             channel="app",

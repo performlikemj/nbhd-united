@@ -230,11 +230,6 @@ _CRON_DOC_ROWS = (
 
 def _cron_rule_index(tenant: Tenant) -> str:
     rows = list(_CRON_RULE_ROWS)
-    if subagents_enabled(tenant):
-        rows.insert(
-            5,
-            ("rules/subagents.md", "Slow-task delegation and app completion delivery"),
-        )
     rows.extend(_CRON_DOC_ROWS)
     table = "\n".join(f"| `{path}` | {load_for} |" for path, load_for in rows)
     return (

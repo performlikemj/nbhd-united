@@ -129,7 +129,7 @@ class SubagentWorkspaceRulesTest(TestCase):
         self.assertNotIn("| `rules/subagents.md` |", agents_md)
         self.assertNotIn("| `rules/subagents.md` |", cron_prompt)
 
-    def test_enabled_tenant_gets_subagent_rule_and_cron_index_but_no_chat_index(self):
+    def test_enabled_tenant_gets_inline_chat_contract_without_cron_index(self):
         with override_settings(SUBAGENT_TENANT_IDS=str(self.tenant.id)):
             rules = render_workspace_rules(tenant=self.tenant)
             agents_md = render_workspace_files("neighbor", tenant=self.tenant)["NBHD_AGENTS_MD"]
@@ -141,10 +141,8 @@ class SubagentWorkspaceRulesTest(TestCase):
             rules["messaging.md"],
         )
         self.assertNotIn("| `rules/subagents.md` |", agents_md)
-        self.assertIn(
-            "| `rules/subagents.md` | Slow-task delegation and app completion delivery |",
-            cron_prompt,
-        )
+        self.assertNotIn("rules/subagents.md", cron_prompt)
+        self.assertIn("`sessions_spawn` BEFORE starting", agents_md)
 
 
 class UpdateTenantConfigUploadsRulesTest(TestCase):
