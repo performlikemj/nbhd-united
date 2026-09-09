@@ -40,10 +40,13 @@ class LessonBackfillTests(SimpleTestCase):
         self.tenant_get = self.enterContext(patch.object(Tenant.objects, "get", return_value=self.tenant))
         self.tenant_filter = self.enterContext(patch.object(Tenant.objects, "filter"))
         self.session_filter = self.enterContext(patch.object(MeditationSession.objects, "filter"))
+        self.session_get = self.enterContext(patch.object(MeditationSession.objects, "get"))
+        self.rows_by_id = {}
+        self.session_get.side_effect = lambda *, id, tenant: self.rows_by_id[id]
 
     def session(self, **fields):
         session = MeditationSession(
-            tenant=self.tenant,
+            tenant=fields.pop("tenant", self.tenant),
             date=date(2026, 9, 9),
             **{
                 "title": "Release",
@@ -56,8 +59,12 @@ class LessonBackfillTests(SimpleTestCase):
         session.save = Mock()
         return session
 
+    def candidate_ids(self, rows):
+        self.rows_by_id.update({row.id: row for row in rows})
+        return (row.id for row in rows)
+
     def run_command(self, rows, *args):
-        self.session_filter.return_value.order_by.return_value.iterator.return_value = iter(rows)
+        self.session_filter.return_value.order_by.return_value.values_list.return_value = self.candidate_ids(rows)
         call_command("backfill_meditation_lessons", "--tenant", str(self.tenant.id), *args, stdout=self.output)
         return self.output.getvalue()
 
@@ -65,7 +72,7 @@ class LessonBackfillTests(SimpleTestCase):
         session = self.session(pii_receipts={"title": {"state": "bypass"}})
         with patch.object(backfill, "author_store_fields") as author:
             output = self.run_command([session], "--dry-run")
-        self.assertIn("scanned=1 written=0 skipped=1 failed=0", output)
+        self.assertIn("scanned=1 written=0 skipped=0 failed=0 eligible=1", output)
         self.assertEqual(session.lesson, {})
         self.assertEqual(session.pii_receipts, {"title": {"state": "bypass"}})
         session.save.assert_not_called()
@@ -149,6 +156,33 @@ class LessonBackfillTests(SimpleTestCase):
         self.assertEqual(self.completion.call_count, 2)
         self.assertIn("failed=1", output)
 
+    def test_empty_text_fields_skip_without_retry_or_write(self):
+        for field in MeditationLesson.model_fields:
+            for empty in ("", "  "):
+                with self.subTest(field=field, empty=empty):
+                    self.output = StringIO()
+                    self.completion.reset_mock()
+                    self.completion.return_value = answer(**{field: empty})
+                    session = self.session()
+                    with patch.object(backfill, "author_store_fields") as author:
+                        output = self.run_command([session])
+                    self.completion.assert_called_once()
+                    author.assert_not_called()
+                    session.save.assert_not_called()
+                    self.assertEqual(session.lesson, {})
+                    self.assertIn("written=0 skipped=0 failed=0 eligible=1 skipped_unsupported=1", output)
+
+    def test_unnamed_practice_is_supported_by_prompt_and_schema(self):
+        self.completion.return_value = answer(tradition="other", teaching_slug="unnamed-practice")
+        session = self.session()
+        output = self.run_command([session])
+        prompt = self.completion.call_args.args[1][0]["content"]
+        self.assertIn("tradition: other and teaching_slug: unnamed-practice", prompt)
+        self.assertIn("using only the narration", prompt)
+        self.assertNotIn("empty string", prompt)
+        self.assertEqual(session.lesson["teaching_slug"], "unnamed-practice")
+        self.assertIn("written=1", output)
+
     def test_schema_4xx_fallback_is_memoized_per_model(self):
         response = requests.Response()
         response.status_code = 400
@@ -164,10 +198,49 @@ class LessonBackfillTests(SimpleTestCase):
 
     def test_transport_failure_skips_without_content_or_extra_retry(self):
         self.completion.side_effect = RuntimeError("PRIVATE_SENTINEL")
-        output = self.run_command([self.session()])
+        with self.assertLogs(backfill.logger, level="WARNING") as logs:
+            output = self.run_command([self.session()])
         self.completion.assert_called_once()
         self.assertIn("written=0 skipped=0 failed=1", output)
         self.assertNotIn("PRIVATE_SENTINEL", output)
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("error=RuntimeError", logs.output[0])
+        self.assertNotIn("PRIVATE_SENTINEL", logs.output[0])
+
+    def test_materializes_ids_before_refetch_and_honours_eligible_limit(self):
+        rows = [self.session() for _ in range(3)]
+        materialized = []
+
+        def ids():
+            for row in rows:
+                materialized.append(row.id)
+                yield row.id
+
+        def get_row(*, id, tenant):
+            self.assertEqual(materialized, [row.id for row in rows])
+            self.assertEqual(tenant, self.tenant)
+            return next(row for row in rows if row.id == id)
+
+        qs = self.session_filter.return_value.order_by.return_value
+        qs.values_list.return_value = ids()
+        self.session_get.side_effect = get_row
+        call_command("backfill_meditation_lessons", "--tenant", str(self.tenant.id), "--limit", "1", stdout=self.output)
+        qs.values_list.assert_called_once_with("id", flat=True)
+        qs.iterator.assert_not_called()
+        self.session_get.assert_called_once_with(id=rows[0].id, tenant=self.tenant)
+        self.completion.assert_called_once()
+        self.assertIn("eligible=1", self.output.getvalue())
+
+    def test_refetch_failure_is_logged_and_next_row_runs(self):
+        first, second = self.session(), self.session()
+        self.session_get.side_effect = [MeditationSession.DoesNotExist("PRIVATE_SENTINEL"), second]
+        with self.assertLogs(backfill.logger, level="WARNING") as logs:
+            output = self.run_command([first, second])
+        self.assertIn("scanned=2 written=1 skipped=0 failed=1 eligible=1", output)
+        self.assertIn("error=DoesNotExist", logs.output[0])
+        self.assertNotIn("PRIVATE_SENTINEL", logs.output[0])
+        self.completion.assert_called_once()
+        second.save.assert_called_once()
 
     def test_manifest_fallback_ignores_non_speech_and_limit_counts_eligible_rows(self):
         empty = self.session(guidance_text="", manifest={})
@@ -207,10 +280,10 @@ class LessonBackfillTests(SimpleTestCase):
             answer(tradition="zen"),
             answer(),
             answer(practice=""),
-            answer(practice=""),
         ]
         output = self.run_command([self.session() for _ in range(4)])
-        self.assertIn("scanned=4 written=3 skipped=0 failed=1", output)
+        self.assertIn("scanned=4 written=3 skipped=0 failed=0 eligible=4 skipped_unsupported=1", output)
+        self.assertEqual(self.completion.call_count, 4)
         self.assertEqual(
             output.splitlines()[1],
             f"backfill_meditation_lessons tenant={self.tenant.id} traditions "
@@ -220,9 +293,9 @@ class LessonBackfillTests(SimpleTestCase):
     def test_all_iterates_core_enabled_tenants_and_applies_limit_per_tenant(self):
         other = Tenant(core_enabled=True)
         self.tenant_filter.return_value.order_by.return_value = [self.tenant, other]
-        self.session_filter.return_value.order_by.return_value.iterator.side_effect = [
-            iter([self.session(), self.session()]),
-            iter([self.session(), self.session()]),
+        self.session_filter.return_value.order_by.return_value.values_list.side_effect = [
+            self.candidate_ids([self.session(), self.session()]),
+            self.candidate_ids([self.session(), self.session()]),
         ]
         call_command("backfill_meditation_lessons", "--all", "--limit", "1", stdout=self.output)
         self.tenant_filter.assert_called_once_with(core_enabled=True)
@@ -231,6 +304,26 @@ class LessonBackfillTests(SimpleTestCase):
         self.assertEqual(self.completion.call_count, 2)
         for tenant in (self.tenant, other):
             self.assertIn(f"tenant={tenant.id} scanned=1 written=1 skipped=0 failed=0", self.output.getvalue())
+        self.assertIn("tenants_failed=0", self.output.getvalue())
+
+    def test_all_continues_after_tenant_selection_raises(self):
+        other = Tenant(core_enabled=True)
+        session = self.session(tenant=other)
+        self.tenant_filter.return_value.order_by.return_value = [self.tenant, other]
+        self.session_filter.return_value.order_by.return_value.values_list.side_effect = [
+            RuntimeError("PRIVATE_SENTINEL"),
+            self.candidate_ids([session]),
+        ]
+        with self.assertLogs(backfill.logger, level="WARNING") as logs:
+            call_command("backfill_meditation_lessons", "--all", stdout=self.output)
+        self.assertEqual([call.kwargs["tenant"] for call in self.session_filter.call_args_list], [self.tenant, other])
+        self.completion.assert_called_once()
+        session.save.assert_called_once()
+        self.assertIn(f"tenant={other.id} scanned=1 written=1", self.output.getvalue())
+        self.assertIn("tenants_failed=1", self.output.getvalue())
+        self.assertIn("error=RuntimeError", logs.output[0])
+        self.assertNotIn("PRIVATE_SENTINEL", logs.output[0])
+        self.assertNotIn("PRIVATE_SENTINEL", self.output.getvalue())
 
     def test_scope_and_positive_limit_are_required(self):
         for args in (

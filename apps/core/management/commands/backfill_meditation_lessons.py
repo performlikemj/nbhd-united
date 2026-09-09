@@ -1,5 +1,7 @@
 """Extract structured lessons from legacy sits without regenerating narration."""
 
+import json
+import logging
 import time
 from collections import Counter
 from uuid import UUID
@@ -17,6 +19,8 @@ from apps.pii.egress import redact_known_values
 from apps.pii.store_authoring import author_store_fields
 from apps.tenants.models import Tenant
 
+logger = logging.getLogger(__name__)
+
 _SCHEMA_REJECTED_MODELS: set[str] = set()
 _CALL_INTERVAL_SECONDS = 0.25
 _SEAM = "meditation_lesson_backfill"
@@ -31,8 +35,11 @@ Return a JSON object with exactly these fields:
 - core_teaching: the central teaching, at most 200 characters.
 - summary: what this sit taught, at most 400 characters.
 - practice: the practice actually offered, at most 200 characters.
-Preserve all placeholders verbatim. If the narration cannot support a field,
-return an empty string for it rather than inventing content.
+Every sit has a practice, so core_teaching, summary, and practice must all be
+nonempty and grounded in the narration. If no named teaching is present, use
+tradition: other and teaching_slug: unnamed-practice, and describe what the sit
+actually did in core_teaching, summary, and practice, using only the narration.
+Preserve all placeholders verbatim.
 """
 
 
@@ -46,7 +53,7 @@ def _narration(session: MeditationSession) -> str:
         return ""
 
 
-def _extract_lesson(tenant: Tenant, session: MeditationSession, narration: str, model: str) -> MeditationLesson:
+def _extract_lesson(tenant: Tenant, session: MeditationSession, narration: str, model: str) -> MeditationLesson | None:
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {
@@ -88,6 +95,16 @@ def _extract_lesson(tenant: Tenant, session: MeditationSession, narration: str, 
             _SCHEMA_REJECTED_MODELS.add(model)
             response_format = {"type": "json_object"}
             content = call()
+        if attempt == 0:
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict) and any(
+                isinstance(parsed.get(field), str) and not parsed[field].strip()
+                for field in MeditationLesson.model_fields
+            ):
+                return None
         try:
             return MeditationLesson.model_validate_json(content)
         except ValidationError as exc:
@@ -125,56 +142,71 @@ class Command(BaseCommand):
             except Tenant.DoesNotExist:
                 raise CommandError(f"Tenant {options['tenant']} not found") from None
 
+        tenants_failed = 0
         for tenant in tenants:
-            self._backfill_tenant(tenant, options)
+            try:
+                self._backfill_tenant(tenant, options)
+            except Exception as exc:
+                if not options["all"]:
+                    raise
+                tenants_failed += 1
+                logger.warning("backfill_meditation_lessons tenant=%s error=%s", tenant.id, type(exc).__name__)
+        if options["all"]:
+            self.stdout.write(f"backfill_meditation_lessons tenants_failed={tenants_failed}")
 
     def _backfill_tenant(self, tenant: Tenant, options: dict) -> None:
-        rows = (
-            MeditationSession.objects.filter(
-                tenant=tenant,
-                status__in=(MeditationStatus.READY, MeditationStatus.DELIVERED, MeditationStatus.DONE),
-                lesson={},
-            )
-            .order_by("-date", "-created_at", "-id")
-            .iterator(chunk_size=40)
-        )
-        scanned = written = skipped = failed = eligible = 0
+        qs = MeditationSession.objects.filter(
+            tenant=tenant,
+            status__in=(MeditationStatus.READY, MeditationStatus.DELIVERED, MeditationStatus.DONE),
+            lesson={},
+        ).order_by("-date", "-created_at", "-id")
+        # Exhaust the query before any slow LLM calls can invalidate a DB cursor.
+        candidate_ids = list(qs.values_list("id", flat=True))
+        scanned = written = skipped = skipped_unsupported = failed = eligible = 0
         histogram = Counter()
-        for session in rows:
+        for session_id in candidate_ids:
             scanned += 1
-            narration = _narration(session)
-            if session.lesson or not narration:
-                skipped += 1
-                continue
-            eligible += 1
-            if options["dry_run"]:
-                skipped += 1
-            else:
-                try:
+            try:
+                session = MeditationSession.objects.get(id=session_id, tenant=tenant)
+                narration = _narration(session)
+                if session.lesson or not narration:
+                    skipped += 1
+                    continue
+                eligible += 1
+                if not options["dry_run"]:
                     lesson = _extract_lesson(tenant, session, narration, options["model"])
-                    authored, receipts = author_store_fields(
-                        tenant,
-                        {"lesson": lesson.model_dump()},
-                        model_label="core.MeditationSession",
-                        seam=_SEAM,
-                        writer="background",
-                        receipts=session.pii_receipts,
-                    )
-                    session.lesson = authored["lesson"]
-                    session.pii_receipts = receipts
-                    _save_session(session, ["lesson", "pii_receipts", "updated_at"])
-                except Exception:
-                    # Never log narration, validation input, or provider error bodies.
-                    failed += 1
-                else:
-                    written += 1
-                    histogram[lesson.tradition] += 1
+                    if lesson is None:
+                        skipped_unsupported += 1
+                    else:
+                        authored, receipts = author_store_fields(
+                            tenant,
+                            {"lesson": lesson.model_dump()},
+                            model_label="core.MeditationSession",
+                            seam=_SEAM,
+                            writer="background",
+                            receipts=session.pii_receipts,
+                        )
+                        session.lesson = authored["lesson"]
+                        session.pii_receipts = receipts
+                        _save_session(session, ["lesson", "pii_receipts", "updated_at"])
+                        written += 1
+                        histogram[lesson.tradition] += 1
+            except Exception as exc:
+                # Never log narration, validation input, or provider error bodies.
+                failed += 1
+                logger.warning(
+                    "backfill_meditation_lessons tenant=%s session=%s error=%s",
+                    tenant.id,
+                    session_id,
+                    type(exc).__name__,
+                )
             if eligible >= options["limit"]:
                 break
 
         self.stdout.write(
             f"backfill_meditation_lessons tenant={tenant.id} "
-            f"scanned={scanned} written={written} skipped={skipped} failed={failed}"
+            f"scanned={scanned} written={written} skipped={skipped} failed={failed} "
+            f"eligible={eligible} skipped_unsupported={skipped_unsupported}"
         )
         counts = " ".join(f"{tradition}={histogram[tradition]}" for tradition in TRADITIONS)
         self.stdout.write(f"backfill_meditation_lessons tenant={tenant.id} traditions {counts}")
