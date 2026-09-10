@@ -17,7 +17,16 @@ test_env_file="${NBHD_TEST_ENV:-$HOME/.config/nbhd-united/test.env}"
 if [[ -f "$test_env_file" ]]; then
   # Bash quotes export -p for replay, preserving even empty/multiline values.
   # Restore the caller's exports after loading machine-local defaults.
-  caller_exports="$(export -p)"
+  caller_exports="$(
+    # Readonly values cannot be overwritten; exclude them from replay.
+    # Clear only the subshell's export attributes, keeping Bash's safe quoting.
+    while IFS= read -r export_name; do
+      if [[ "$(declare -p "$export_name")" =~ ^declare\ -[^[:space:]]*r ]]; then
+        export -n "$export_name"
+      fi
+    done < <(compgen -e)
+    export -p
+  )"
   set -a
   # shellcheck disable=SC1090
   source "$test_env_file"
@@ -43,8 +52,8 @@ if [[ -z "${DJANGO_TEST_DB_NAME+x}" ]]; then
   worktree_name="$(printf '%s' "$worktree_name" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -c 'a-z0-9_' '_')"
   export DJANGO_TEST_DB_NAME="test_nbhd_${worktree_name:0:53}"
 fi
-if [[ -z "$DJANGO_TEST_DB_NAME" || "$DJANGO_TEST_DB_NAME" == test_nbhd_united_train ]]; then
-  printf 'DJANGO_TEST_DB_NAME must be non-empty and must not be test_nbhd_united_train.\n' >&2
+if [[ ! "$DJANGO_TEST_DB_NAME" =~ ^test_nbhd_[a-z0-9_]+$ || ${#DJANGO_TEST_DB_NAME} -gt 63 || "$DJANGO_TEST_DB_NAME" == test_nbhd_united_train ]]; then
+  printf 'DJANGO_TEST_DB_NAME must match ^test_nbhd_[a-z0-9_]+$, be at most 63 characters, and must not be test_nbhd_united_train: Django --noinput can drop an existing database on this shared Postgres server.\n' >&2
   exit 1
 fi
 
