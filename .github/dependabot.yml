@@ -3,7 +3,10 @@ updates:
   - package-ecosystem: "npm"
     directory: "/frontend"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Tokyo"
     open-pull-requests-limit: 10
     # @tiptap packages MUST bump together — they peer-depend on one shared
     # version, so individual bumps land a mixed 3.27/3.28 tree that npm ci
@@ -35,6 +38,10 @@ updates:
           - "react-dom"
           - "@types/react"
           - "@types/react-dom"
+      npm-minor-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     ignore:
       - dependency-name: "next"
         update-types: ["version-update:semver-major"]
@@ -53,8 +60,16 @@ updates:
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Tokyo"
     open-pull-requests-limit: 10
+    groups:
+      pip-minor-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     ignore:
       # transformers majors lag a release behind upstream PII model checkpoints
       # we depend on (lakshyakh93/deberta_finetuned_pii); pin majors so a
