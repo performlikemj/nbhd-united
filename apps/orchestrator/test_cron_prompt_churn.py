@@ -68,19 +68,24 @@ def _oc_stored_payload(desired_job: dict) -> dict:
 def _list_response(jobs: list[dict]) -> dict:
     """Wrap a job list in OpenClaw's ``cron.list`` envelope shape.
 
-    OC 5.7 returns ``{ jobs: [...], total, offset, limit, hasMore,
-    nextOffset, deliveryPreviews }`` (see ``server-cron-CM4aws4s.js``
-    ``listPage`` and ``server-methods-DStUV8Sh.js`` ``cron.list``).
+    Model the no-limit first page from OpenClaw v2026.5.28:
+    https://github.com/openclaw/openclaw/blob/v2026.5.28/src/cron/service/ops.ts#L388-L400
+    Include the snapshot and delivery metadata carried by the public envelope.
     Django unwraps via ``list_result.get("details", list_result)`` then
     pulls ``.jobs`` — works for both raw and ``details``-wrapped shapes.
     """
+    total = len(jobs)
+    limit = max(1, min(200, total if total else 50))
+    page = jobs[:limit]
+    next_offset = len(page)
     return {
-        "jobs": jobs,
-        "total": len(jobs),
+        "jobs": page,
+        "total": total,
         "offset": 0,
-        "limit": len(jobs),
-        "hasMore": False,
-        "nextOffset": None,
+        "limit": limit,
+        "hasMore": next_offset < total,
+        "nextOffset": next_offset if next_offset < total else None,
+        "snapshotRevision": "test-snapshot",
         "deliveryPreviews": [],
     }
 

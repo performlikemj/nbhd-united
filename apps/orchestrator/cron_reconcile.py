@@ -90,6 +90,11 @@ def _complete_cron_observation(result: object) -> list[dict] | None:
     post_reconcile.py). A full page is conservatively unknown, even if its
     metadata claims completeness. Older unpaginated envelopes are accepted
     below that limit. Never discard malformed entries when proving absence.
+
+    OpenClaw v2026.5.28 defaults limit to the job count (50 when empty):
+    https://github.com/openclaw/openclaw/blob/v2026.5.28/src/cron/service/ops.ts#L388-L400
+    Thus limit == len(jobs) is normal; total, offset, hasMore and nextOffset
+    provide completeness evidence at every envelope level present.
     """
     from .services import _extract_cron_jobs
 
@@ -118,8 +123,6 @@ def _complete_cron_observation(result: object) -> list[dict] | None:
         if "hasMore" in envelope and envelope["hasMore"] is not False:
             return None
         if "offset" in envelope and (type(envelope["offset"]) is not int or envelope["offset"] != 0):
-            return None
-        if "limit" in envelope and (type(envelope["limit"]) is not int or len(jobs) >= envelope["limit"]):
             return None
         if envelope.get("nextOffset") is not None:
             return None
@@ -192,9 +195,16 @@ def _schedule_remove_recovery(tenant: Tenant) -> None:
         )
         return
     try:
-        # A follow-up must not be swallowed by the triggering task's debounce
-        # key. Existing publishers and their deduplication remain unchanged.
-        publish_task("regenerate_tenant_crons", str(tenant.id), delay_seconds=30)
+        # Coalesce concurrent losers independently of the signal debounce.
+        # The marker bounds recovery to one generation; QStash must not retry it.
+        publish_task(
+            "regenerate_tenant_crons",
+            str(tenant.id),
+            recovery=True,
+            idempotency_key=f"regen-cron-recovery-{tenant.id}",
+            delay_seconds=30,
+            retries=0,
+        )
     except Exception:
         logger.exception("regenerate_tenant_crons: failed to schedule removal recovery for tenant %s", tenant.id)
 
@@ -402,7 +412,7 @@ def _row_to_cron_dict(row) -> dict:
     return job
 
 
-def regenerate_tenant_crons(tenant: Tenant) -> dict:
+def regenerate_tenant_crons(tenant: Tenant, *, recovery: bool = False) -> dict:
     """Reconcile container managed crons against the Postgres CronJob table.
 
     Postgres rows where ``managed=True`` are the desired set. The container's
@@ -419,6 +429,7 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
     Returns a dict with ``{added, removed, unchanged, errors, capped}`` for telemetry.
     No-op if the tenant is not on the Postgres-canonical flow (returns
     zeros without touching the gateway).
+    Recovery passes still count unresolved removals but never enqueue recovery.
     """
     from django.utils import timezone as django_tz
 
@@ -707,10 +718,10 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
                 removed_here = _remove_cron_or_verify(tenant, gateway_job_id, replacement=desired)
             except GatewayError as exc:
                 logger.warning(
-                    "regenerate_tenant_crons: recreate removal unresolved for '%s' on tenant %s; "
-                    "deferring to a fresh reconciliation",
+                    "regenerate_tenant_crons: recreate removal unresolved for '%s' on tenant %s (recovery=%s)",
                     name,
                     tenant.id,
+                    recovery,
                     exc_info=True,
                 )
                 summary["errors"] += 1
@@ -734,7 +745,7 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
             )
             summary["errors"] += 1
 
-    if retry_recreation:
+    if retry_recreation and not recovery:
         _schedule_remove_recovery(tenant)
 
     reaped_ids: set[str] = set()

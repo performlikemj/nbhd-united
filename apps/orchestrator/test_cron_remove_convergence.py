@@ -10,7 +10,8 @@ from django.utils import timezone
 
 from apps.cron.gateway_client import GatewayError
 from apps.cron.models import CronJob
-from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
+from apps.orchestrator.cron_reconcile import _complete_cron_observation, regenerate_tenant_crons
+from apps.orchestrator.test_cron_prompt_churn import _list_response
 from apps.orchestrator.test_cron_reconcile_caps import _desired_row, _gateway_job
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -50,6 +51,16 @@ class CronRemoveConvergenceTests(TestCase):
         self.invoke = self.enterContext(patch(INVOKE))
         self.publish = self.enterContext(patch(PUBLISH))
         self.cap_log = self.enterContext(patch(f"{RECONCILE}._log_at_cron_cap_breach"))
+
+    def _assert_recovery_published(self):
+        self.publish.assert_called_once_with(
+            "regenerate_tenant_crons",
+            str(self.tenant.id),
+            recovery=True,
+            idempotency_key=f"regen-cron-recovery-{self.tenant.id}",
+            delay_seconds=30,
+            retries=0,
+        )
 
     def _cleanup_fixture(self, site):
         if site == "removed":
@@ -109,8 +120,11 @@ class CronRemoveConvergenceTests(TestCase):
                 "next offset": _page([], nextOffset=1),
                 "nonzero offset": _page([], offset=1),
                 "invalid total": _page([], total="unknown"),
-                "smaller page limit reached": {"jobs": full_page[:50], "limit": 50},
-                "invalid limit": _page([], limit="unknown"),
+                "production truncated page": _list_response([_gateway_job(f"job-{i}") for i in range(250)]),
+                "total exceeds count without hasMore": _page(full_page[:50], total=51),
+                "boolean total": _page([], total=False),
+                "boolean offset": _page([], offset=False),
+                "nonboolean hasMore": _page([], hasMore=0),
             }
             for label, observation in observations.items():
                 with (
@@ -144,6 +158,49 @@ class CronRemoveConvergenceTests(TestCase):
                 self.assertEqual(result["removed"], 1)
                 self.assertEqual(result["errors"], 0)
                 self._assert_verified()
+
+    def test_production_envelopes_prove_absence_and_record_lost_race_convergence(self):
+        for count in (0, 1, 25, 199):
+            jobs = [_gateway_job(f"unrelated-{i}") for i in range(count)]
+            page = _list_response(jobs)
+            self.assertEqual(
+                page,
+                {
+                    "jobs": jobs,
+                    "total": count,
+                    "offset": 0,
+                    "limit": count if count else 50,
+                    "hasMore": False,
+                    "nextOffset": None,
+                    "snapshotRevision": "test-snapshot",
+                    "deliveryPreviews": [],
+                },
+            )
+            for wrapped in (False, True):
+                with self.subTest(count=count, wrapped=wrapped):
+                    observation = {"details": page} if wrapped else page
+                    self.assertEqual(_complete_cron_observation(observation), jobs)
+                    self.invoke.reset_mock()
+                    self.invoke.side_effect = [
+                        _list_response([_gateway_job("obsolete")]),
+                        _remove_error(),
+                        observation,
+                    ]
+                    with self.assertLogs(RECONCILE, level="INFO") as logs:
+                        result = regenerate_tenant_crons(self.tenant)
+                    self.assertEqual(result["removed"], 1)
+                    self.assertEqual(result["errors"], 0)
+                    self.assertIn("converged after live verification", "\n".join(logs.output))
+                    self._assert_verified()
+        self.publish.assert_not_called()
+
+    def test_every_envelope_level_must_prove_completeness(self):
+        page = _list_response([_gateway_job("unrelated")])
+        for metadata in ({"total": 2}, {"offset": 1}, {"hasMore": True}, {"nextOffset": 1}):
+            for outer in (False, True):
+                with self.subTest(metadata=metadata, outer=outer):
+                    observation = {"details": page, **metadata} if outer else {"details": {**page, **metadata}}
+                    self.assertIsNone(_complete_cron_observation(observation))
 
     def test_stale_absence_excludes_snapshot_id_and_prevents_false_hard_cap_alert(self):
         pending = [_at_job(f"pending-{i}") for i in range(50)]
@@ -182,14 +239,14 @@ class CronRemoveConvergenceTests(TestCase):
         self.assertEqual(first["recreated"], 0)
         self._assert_verified()
         self.assertIn("replacement is missing", "\n".join(logs.output))
-        self.publish.assert_called_once_with("regenerate_tenant_crons", str(self.tenant.id), delay_seconds=30)
+        self._assert_recovery_published()
         row.refresh_from_db()
         self.assertIsNone(row.last_pushed_to_container_at)
 
         # Model delivery of that scheduled pass: it plans from a fresh list.
         self.invoke.reset_mock()
         self.invoke.side_effect = [_page([]), {"ok": True}]
-        second = regenerate_tenant_crons(self.tenant)
+        second = regenerate_tenant_crons(self.tenant, recovery=True)
         self.assertEqual(second["added"], 1)
         self.assertEqual(second["errors"], 0)
         self.assertEqual([call.args[1] for call in self.invoke.call_args_list], ["cron.list", "cron.add"])
@@ -219,7 +276,7 @@ class CronRemoveConvergenceTests(TestCase):
                 self.assertEqual(result["errors"], 1)
                 self.assertEqual(result["recreated"], 0)
                 self._assert_verified()
-                self.publish.assert_called_once_with("regenerate_tenant_crons", str(self.tenant.id), delay_seconds=30)
+                self._assert_recovery_published()
                 row.refresh_from_db()
                 self.assertIsNone(row.last_pushed_to_container_at)
 
@@ -236,7 +293,30 @@ class CronRemoveConvergenceTests(TestCase):
         result = regenerate_tenant_crons(self.tenant)
         self.assertEqual(result["errors"], 2)
         self.assertEqual(result["recreated"], 0)
-        self.publish.assert_called_once_with("regenerate_tenant_crons", str(self.tenant.id), delay_seconds=30)
+        self._assert_recovery_published()
+
+    def test_recovery_pass_counts_and_logs_unresolved_removal_without_publishing(self):
+        _, stale = self._make_recreation()
+        self.invoke.side_effect = [_list_response([stale]), _remove_error(), _list_response([])]
+        with self.assertLogs(RECONCILE, level="WARNING") as logs:
+            result = regenerate_tenant_crons(self.tenant, recovery=True)
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(result["recreated"], 0)
+        self.assertIn("recovery=True", "\n".join(logs.output))
+        self._assert_verified()
+        self.publish.assert_not_called()
+
+    def test_independent_passes_use_identical_recovery_deduplication_key(self):
+        _, stale = self._make_recreation()
+        keys = []
+        for _ in range(2):
+            self.publish.reset_mock()
+            self.invoke.side_effect = [_list_response([stale]), _remove_error(), _list_response([])]
+            result = regenerate_tenant_crons(self.tenant)
+            self.assertEqual(result["errors"], 1)
+            self._assert_recovery_published()
+            keys.append(self.publish.call_args.kwargs["idempotency_key"])
+        self.assertEqual(keys[0], keys[1])
 
     def test_retry_publication_failure_remains_visible_without_claiming_recreation(self):
         row, stale = self._make_recreation()
