@@ -1429,7 +1429,7 @@ class RegenerateTenantCronsTest(TestCase):
 
         # No CronJob rows = empty desired. Container has one job that we
         # consider managed (no underscore prefix).
-        mock_invoke.side_effect = lambda tenant, tool, args: (
+        mock_invoke.side_effect = lambda tenant, tool, args, **kwargs: (
             {"details": {"jobs": [{"name": "Old Task", "id": "j1"}]}} if tool == "cron.list" else None
         )
         result = regenerate_tenant_crons(self.tenant)
@@ -1503,7 +1503,7 @@ class RegenerateTenantCronsTest(TestCase):
         stale_ms = int(time.time() * 1000) - 2 * 60 * 60 * 1000  # 2h ago
         calls: list[tuple[str, dict]] = []
 
-        def _stub(tenant, tool, args):
+        def _stub(tenant, tool, args, **kwargs):
             calls.append((tool, args))
             if tool == "cron.list":
                 return {
@@ -1643,7 +1643,7 @@ class RegenerateTenantCronsTest(TestCase):
         ]
         remove_calls: list[str] = []
 
-        def _stub(tenant, tool, args):
+        def _stub(tenant, tool, args, **kwargs):
             if tool == "cron.list":
                 return {"details": {"jobs": jobs}}
             if tool == "cron.remove":

@@ -39,6 +39,31 @@ class InvokeGatewayToolRetryTests(SimpleTestCase):
         self.post = self.enterContext(mock.patch("apps.cron.gateway_client.requests.post"))
         self.sleep = self.enterContext(mock.patch("apps.cron.gateway_client.time.sleep"))
 
+    def test_http_200_non_json_body_is_gateway_error(self):
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b"not JSON: private gateway response"
+        self.post.return_value = response
+        with self.assertRaisesMessage(GatewayError, "Gateway returned invalid JSON") as raised:
+            invoke_gateway_tool(self.tenant, "cron.list", {})
+        self.assertEqual(raised.exception.status_code, 200)
+        self.assertIsInstance(raised.exception.__cause__, ValueError)
+        self.assertNotIn("private", str(raised.exception))
+        self.post.assert_called_once()
+
+    def test_http_200_non_object_json_is_gateway_error(self):
+        for body in (b"[]", b"null", b'"text"', b"42", b"true"):
+            with self.subTest(body=body):
+                self.post.reset_mock()
+                response = requests.Response()
+                response.status_code = 200
+                response._content = body
+                self.post.return_value = response
+                with self.assertRaisesMessage(GatewayError, "Gateway returned a non-object JSON envelope") as raised:
+                    invoke_gateway_tool(self.tenant, "cron.list", {})
+                self.assertEqual(raised.exception.status_code, 200)
+                self.post.assert_called_once()
+
     def test_proxy_502_retries_then_succeeds(self):
         self.post.side_effect = [self.bad_gateway, self.bad_gateway, self.success]
         with self.assertLogs("apps.cron.gateway_client", level="WARNING") as logs:

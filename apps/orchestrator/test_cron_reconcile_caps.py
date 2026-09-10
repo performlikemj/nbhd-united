@@ -115,7 +115,7 @@ class CronReconcileOperationCapTests(TestCase):
         gateway_jobs = [_gateway_job(f"stale-{i:02d}") for i in reversed(range(10))]
         mutation_order: list[tuple[str, str]] = []
 
-        def _invoke(tenant, tool, args):
+        def _invoke(tenant, tool, args, **kwargs):
             if tool == "cron.list":
                 return {"jobs": [dict(job) for job in gateway_jobs]}
             if tool == "cron.add":
@@ -175,7 +175,7 @@ class CronReconcileOperationCapTests(TestCase):
         gateway_jobs = [_gateway_job(f"stale-{i:02d}") for i in reversed(range(15))]
         removed_names: list[str] = []
 
-        def _invoke(tenant, tool, args):
+        def _invoke(tenant, tool, args, **kwargs):
             if tool == "cron.list":
                 return {"details": {"jobs": [dict(job) for job in gateway_jobs]}}
             if tool == "cron.remove":

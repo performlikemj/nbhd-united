@@ -1219,7 +1219,7 @@ def complete_elapsed_plans_task() -> dict:
     return totals
 
 
-def regenerate_tenant_crons_task(tenant_id: str) -> dict:
+def regenerate_tenant_crons_task(tenant_id: str, *, recovery: bool = False) -> dict:
     """Reconcile a tenant's managed crons against the Postgres CronJob table.
 
     Enqueued (debounced 30s) by ``apps/cron/signals.py`` on CronJob writes
@@ -1238,7 +1238,7 @@ def regenerate_tenant_crons_task(tenant_id: str) -> dict:
     tenant = Tenant.objects.filter(id=tenant_id).select_related("user").first()
     if not tenant or not tenant.container_fqdn:
         return {"added": 0, "removed": 0, "unchanged": 0, "errors": 0}
-    return regenerate_tenant_crons(tenant)
+    return regenerate_tenant_crons(tenant, recovery=recovery)
 
 
 def reconcile_tenant_crons_task() -> dict:

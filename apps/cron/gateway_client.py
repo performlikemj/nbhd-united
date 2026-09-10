@@ -305,7 +305,12 @@ def invoke_gateway_tool(
             status_code=resp.status_code,
         )
 
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise GatewayError("Gateway returned invalid JSON", status_code=resp.status_code) from exc
+    if not isinstance(data, dict):
+        raise GatewayError("Gateway returned a non-object JSON envelope", status_code=resp.status_code)
     if not data.get("ok"):
         raise GatewayError(data.get("error", "Unknown gateway error"))
 
