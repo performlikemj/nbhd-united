@@ -47,20 +47,40 @@ export DEBUG="${DEBUG-True}"
 export AZURE_MOCK="${AZURE_MOCK-true}"
 export NBHD_DISABLE_BACKGROUND_THREADS="${NBHD_DISABLE_BACKGROUND_THREADS-True}"
 
+check_override=1
 if [[ -z "${DJANGO_TEST_DB_NAME+x}" ]]; then
-  worktree_name="$(basename "$(git rev-parse --show-toplevel)")"
+  check_override=0
+  worktree_path="$(git rev-parse --show-toplevel)"
+  worktree_hash="$("$PY" -c 'import hashlib, os, sys; print(hashlib.sha256(os.fsencode(sys.argv[1])).hexdigest()[:6])' "$worktree_path")"
+  worktree_name="$(basename "$worktree_path")"
   worktree_name="$(printf '%s' "$worktree_name" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -c 'a-z0-9_' '_')"
-  export DJANGO_TEST_DB_NAME="test_nbhd_${worktree_name:0:53}"
+  # 10-character prefix + 41-character basename + separator + 6 hex digits.
+  export DJANGO_TEST_DB_NAME="test_nbhd_${worktree_name:0:41}_${worktree_hash}"
 fi
-if [[ ! "$DJANGO_TEST_DB_NAME" =~ ^test_nbhd_[a-z0-9_]+$ || ${#DJANGO_TEST_DB_NAME} -gt 63 || "$DJANGO_TEST_DB_NAME" == test_nbhd_united_train ]]; then
-  printf 'DJANGO_TEST_DB_NAME must match ^test_nbhd_[a-z0-9_]+$, be at most 63 characters, and must not be test_nbhd_united_train: Django --noinput can drop an existing database on this shared Postgres server.\n' >&2
+if [[ ! "$DJANGO_TEST_DB_NAME" =~ ^test_nbhd_[a-z0-9_]+$ || ${#DJANGO_TEST_DB_NAME} -gt 58 || "$DJANGO_TEST_DB_NAME" == test_nbhd_united_train ]]; then
+  printf 'DJANGO_TEST_DB_NAME must match ^test_nbhd_[a-z0-9_]+$, be at most 58 characters (leaving room for Django parallel clone suffixes _NNNN), and must not be test_nbhd_united_train: Django --noinput can drop an existing database on this shared Postgres server.\n' >&2
   exit 1
 fi
 
-"$PY" - <<'PY'
+"$PY" - "$check_override" <<'PY'
 import os
 import sys
 from urllib.parse import urlsplit
+
+if sys.argv[1] == "1":
+    try:
+        import psycopg
+
+        with psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=5) as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s",
+                (os.environ["DJANGO_TEST_DB_NAME"],),
+            ).fetchone() is not None
+    except Exception:
+        # Connection errors can contain credentials; never echo their details.
+        sys.exit("Refusing DJANGO_TEST_DB_NAME override: safety could not be verified (psycopg import, connection, or existence query failed).")
+    if exists and os.environ.get("NBHD_TEST_DB_REUSE") != "1":
+        sys.exit("Refusing DJANGO_TEST_DB_NAME override: database already exists. Django --noinput can drop it; set NBHD_TEST_DB_REUSE=1 only to explicitly allow reuse.")
 
 try:
     database = urlsplit(os.environ["DATABASE_URL"])
