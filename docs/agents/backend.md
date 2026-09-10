@@ -29,7 +29,8 @@ Read before writing Django code. `docs/agents/invariants.md` holds the platform-
 
 ## Testing
 
-- `make test` = `python manage.py test apps/`. Prefer targeted runs (`python manage.py test apps.<app>.<module> --noinput`) while iterating.
+- Use `make test-local` for DB-backed tests from any worktree; narrow iteration with `make test-local TESTS=apps.cron`. Set `DATABASE_URL` in the environment or `~/.config/nbhd-united/test.env` (exported values win). The runner isolates the test DB per worktree because Postgres may be shared.
+- Pre-push CI parity still requires `make docker-gate` per [workflow.md](workflow.md). `make test` remains `python manage.py test apps/`.
 - Tests that patch gateway/network functions rely on the local re-import pattern above.
 - Query-count regressions: pin with `assertNumQueries` (see `apps/fuel/tests.py`, `apps/orchestrator/test_azure_client.py` for idempotency-shape examples).
 

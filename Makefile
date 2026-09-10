@@ -1,4 +1,4 @@
-.PHONY: setup migrate run test lint harness integrate-gate docker-gate compile-deps sync-deps docker-up docker-down superuser tenants health \
+.PHONY: setup migrate run test test-local lint harness integrate-gate docker-gate compile-deps sync-deps docker-up docker-down superuser tenants health \
 	provision deprovision \
 	canary canary-build canary-deploy canary-logs canary-health canary-rollback canary-prune
 
@@ -24,6 +24,10 @@ run:
 
 test:
 	python manage.py test apps/
+
+# Local iteration loop — NOT a substitute for make docker-gate or CI.
+test-local:
+	./scripts/test-local.sh $(TESTS)
 
 lint:
 	ruff check .
