@@ -3730,9 +3730,9 @@ class RuntimeSituationUpdateView(APIView):
                 source="assistant",
             )
         if changed:
-            from apps.orchestrator.workspace_envelope import push_user_md_in_background
+            from apps.orchestrator.workspace_envelope import TRIGGER_PLACE_OBSERVATION, push_user_md_in_background
 
-            push_user_md_in_background(tenant)
+            push_user_md_in_background(tenant, trigger=TRIGGER_PLACE_OBSERVATION)
 
         guidance = _SITUATION_CAPTURE_GUIDANCE
         home_city = str(getattr(tenant.user, "location_city", "") or "").strip()

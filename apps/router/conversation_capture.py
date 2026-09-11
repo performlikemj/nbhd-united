@@ -196,9 +196,9 @@ def schedule_user_md_refresh(tenant) -> None:
 
     def _push() -> None:
         try:
-            from apps.orchestrator.workspace_envelope import push_user_md
+            from apps.orchestrator.workspace_envelope import TRIGGER_CONVERSATION, push_user_md
 
-            push_user_md(tenant_id, debounce_seconds=_REFRESH_DEBOUNCE_SECONDS)
+            push_user_md(tenant_id, debounce_seconds=_REFRESH_DEBOUNCE_SECONDS, trigger=TRIGGER_CONVERSATION)
         except Exception:
             logger.warning(
                 "conversation_capture: USER.md refresh failed for tenant %s",

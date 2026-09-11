@@ -660,9 +660,9 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
     # 4d. Seed USER.md with the platform-managed envelope so the container
     # picks up profile + state on first boot. force=True bypasses debounce.
     try:
-        from .workspace_envelope import push_user_md
+        from .workspace_envelope import TRIGGER_PROVISION, push_user_md
 
-        push_user_md(tenant, force=True)
+        push_user_md(tenant, force=True, trigger=TRIGGER_PROVISION)
     except Exception:
         logger.warning("Could not seed USER.md for tenant %s", tenant_id, exc_info=True)
 
@@ -958,9 +958,9 @@ def update_tenant_config(tenant_id: str) -> None:
     # agent-written content). force=True so config refresh always pushes
     # current state regardless of debounce window.
     try:
-        from .workspace_envelope import push_user_md
+        from .workspace_envelope import TRIGGER_CONFIG_UPDATE, push_user_md
 
-        push_user_md(tenant, force=True)
+        push_user_md(tenant, force=True, trigger=TRIGGER_CONFIG_UPDATE)
     except Exception:
         logger.exception("Failed to refresh USER.md for tenant %s (non-fatal)", tenant_id)
 
@@ -2399,9 +2399,9 @@ def update_system_cron_prompts(tenant: Tenant | str) -> dict:
     # management command and HTTP refresh paths always emit a current
     # envelope, not gated by the post-save signal debounce window.
     try:
-        from .workspace_envelope import push_user_md
+        from .workspace_envelope import TRIGGER_CRON_PROMPTS, push_user_md
 
-        push_user_md(tenant, force=True)
+        push_user_md(tenant, force=True, trigger=TRIGGER_CRON_PROMPTS)
     except Exception:
         logger.warning(
             "update_system_cron_prompts: USER.md refresh failed for tenant %s (non-fatal)",

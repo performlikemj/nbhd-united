@@ -827,9 +827,9 @@ def push_visibility_refresh(tenant_id: str) -> None:
 
     def _run() -> None:
         try:
-            from apps.orchestrator.workspace_envelope import push_user_md
+            from apps.orchestrator.workspace_envelope import TRIGGER_HEALTHKIT, push_user_md
 
-            push_user_md(tenant_id, debounce_seconds=0)
+            push_user_md(tenant_id, debounce_seconds=0, trigger=TRIGGER_HEALTHKIT)
         except Exception:
             logger.warning("Post-sync USER.md push failed for tenant %s", str(tenant_id)[:8], exc_info=True)
 

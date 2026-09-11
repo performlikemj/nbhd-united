@@ -937,31 +937,47 @@ def refresh_user_md_fleet_task() -> dict:
     """
     import logging
 
-    from apps.orchestrator.workspace_envelope import push_user_md
+    from apps.orchestrator.workspace_envelope import TRIGGER_FLEET_SWEEP, push_user_md
     from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
 
     tenants = Tenant.objects.filter(status=Tenant.Status.ACTIVE).exclude(container_id="").select_related("user")
 
-    pushed = 0
-    failed = 0
+    attempted = returned_true = returned_false = raised = 0
     for tenant in tenants:
+        attempted += 1
         try:
             # Keep the sweep on the public single-flight seam so it coalesces
             # safely with signal-driven pushes for the same tenant.
-            push_user_md(tenant, force=True, debounce_seconds=0)
-            pushed += 1
+            result = push_user_md(tenant, force=True, debounce_seconds=0, trigger=TRIGGER_FLEET_SWEEP)
+            if result:
+                returned_true += 1
+            else:
+                returned_false += 1
         except Exception:
             logger.warning(
                 "refresh_user_md_fleet: USER.md push failed for tenant %s",
                 str(tenant.id)[:8],
                 exc_info=True,
             )
-            failed += 1
+            raised += 1
 
-    logger.info("refresh_user_md_fleet: pushed=%d failed=%d", pushed, failed)
-    return {"pushed": pushed, "failed": failed}
+    logger.info(
+        "refresh_user_md_fleet: attempted=%d returned_true=%d returned_false=%d raised=%d",
+        attempted,
+        returned_true,
+        returned_false,
+        raised,
+    )
+    return {
+        "attempted": attempted,
+        "returned_true": returned_true,
+        "returned_false": returned_false,
+        "raised": raised,
+        "pushed": returned_true,
+        "failed": raised,
+    }
 
 
 NIGHTLY_EXTRACTION_LOCAL_HOUR = 21

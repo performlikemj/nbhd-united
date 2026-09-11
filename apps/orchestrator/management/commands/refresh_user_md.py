@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from django.core.management.base import BaseCommand
 
-from apps.orchestrator.workspace_envelope import push_user_md
+from apps.orchestrator.workspace_envelope import TRIGGER_MANUAL, push_user_md
 from apps.tenants.models import Tenant
 
 
@@ -44,7 +44,7 @@ class Command(BaseCommand):
         failed = 0
         for tenant in tenants:
             try:
-                push_user_md(tenant, force=True)
+                push_user_md(tenant, force=True, trigger=TRIGGER_MANUAL)
                 pushed += 1
                 self.stdout.write(f"  ✅ {str(tenant.id)[:8]}")
             except Exception as exc:

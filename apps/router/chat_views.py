@@ -1084,9 +1084,9 @@ class ChatMessageView(APIView):
                     "ios_chat",
                 )
             if situation_changed:
-                from apps.orchestrator.workspace_envelope import push_user_md_in_background
+                from apps.orchestrator.workspace_envelope import TRIGGER_PLACE_OBSERVATION, push_user_md_in_background
 
-                push_user_md_in_background(tenant)
+                push_user_md_in_background(tenant, trigger=TRIGGER_PLACE_OBSERVATION)
 
         turn, created = enqueue_tenant_turn(
             tenant=tenant,

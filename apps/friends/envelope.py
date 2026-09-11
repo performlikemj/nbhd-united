@@ -164,10 +164,10 @@ def _schedule_recipient_push(tenant_id) -> None:
         return
 
     def _push() -> None:
-        from apps.orchestrator.workspace_envelope import push_user_md
+        from apps.orchestrator.workspace_envelope import TRIGGER_FRIENDS, push_user_md
 
         try:
-            push_user_md(str(tenant_id), debounce_seconds=0)
+            push_user_md(str(tenant_id), debounce_seconds=0, trigger=TRIGGER_FRIENDS)
         except Exception:
             logger.warning("friends recipient USER.md push failed for %s", str(tenant_id)[:8], exc_info=True)
 
