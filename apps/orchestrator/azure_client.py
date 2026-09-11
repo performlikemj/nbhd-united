@@ -792,6 +792,39 @@ def sanitize_share_text(content: str) -> str:
     return content.translate(_SHARE_TEXT_STRIP)
 
 
+def _upload_with_parent_repair(
+    file_client, payload, *, account_url, share_name, file_path, credential, known_dirs=None
+) -> None:
+    """Upload first, repairing missing parents before exactly one retry."""
+    from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+    from azure.storage.fileshare import ShareDirectoryClient, StorageErrorCode
+
+    try:
+        file_client.upload_file(payload, length=len(payload))
+    except ResourceNotFoundError as exc:
+        if getattr(exc, "error_code", None) != StorageErrorCode.PARENT_NOT_FOUND:
+            raise
+        parts = file_path.split("/")
+        for i in range(1, len(parts)):
+            dir_path = "/".join(parts[:i])
+            if known_dirs is not None and dir_path in known_dirs:
+                continue
+            dir_client = ShareDirectoryClient(
+                account_url=account_url,
+                share_name=share_name,
+                directory_path=dir_path,
+                credential=credential,
+            )
+            try:
+                dir_client.create_directory()
+            except ResourceExistsError as conflict:
+                if getattr(conflict, "error_code", None) != StorageErrorCode.RESOURCE_ALREADY_EXISTS:
+                    raise
+            if known_dirs is not None:
+                known_dirs.add(dir_path)
+        file_client.upload_file(payload, length=len(payload))
+
+
 def _put_share_file(
     tenant_id: str,
     file_path: str,
@@ -823,8 +856,8 @@ def _put_share_file(
     if not account_name:
         raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
 
-    from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
-    from azure.storage.fileshare import ShareDirectoryClient, ShareFileClient, StorageErrorCode
+    from azure.core.exceptions import ResourceNotFoundError
+    from azure.storage.fileshare import ShareFileClient
 
     storage_client = get_storage_client()
     keys = storage_client.storage_accounts.list_keys(settings.AZURE_RESOURCE_GROUP, account_name)
@@ -847,24 +880,16 @@ def _put_share_file(
     file_client = ShareFileClient(
         account_url=account_url, share_name=share_name, file_path=file_path, credential=account_key
     )
-    try:
-        file_client.upload_file(payload, length=len(payload))
-    except ResourceNotFoundError as exc:
-        if not ensure_dirs or getattr(exc, "error_code", None) != StorageErrorCode.PARENT_NOT_FOUND:
-            raise
-        parts = file_path.split("/")
-        for i in range(1, len(parts)):
-            dir_client = ShareDirectoryClient(
-                account_url=account_url,
-                share_name=share_name,
-                directory_path="/".join(parts[:i]),
-                credential=account_key,
-            )
-            try:
-                dir_client.create_directory()
-            except ResourceExistsError as conflict:
-                if getattr(conflict, "error_code", None) != StorageErrorCode.RESOURCE_ALREADY_EXISTS:
-                    raise
+    if ensure_dirs:
+        _upload_with_parent_repair(
+            file_client,
+            payload,
+            account_url=account_url,
+            share_name=share_name,
+            file_path=file_path,
+            credential=account_key,
+        )
+    else:
         file_client.upload_file(payload, length=len(payload))
     logger.info("Uploaded %s (%d bytes) to file share %s", file_path, len(payload), share_name)
 

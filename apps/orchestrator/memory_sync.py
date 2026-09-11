@@ -128,9 +128,9 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
         raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
 
     from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
-    from azure.storage.fileshare import ShareClient, ShareDirectoryClient, ShareFileClient
+    from azure.storage.fileshare import ShareClient, ShareFileClient
 
-    from apps.orchestrator.azure_client import get_storage_client, sanitize_share_text
+    from apps.orchestrator.azure_client import _upload_with_parent_repair, get_storage_client, sanitize_share_text
 
     storage_client = get_storage_client()
     keys = storage_client.storage_accounts.list_keys(
@@ -162,44 +162,6 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
     created_dirs: set[str] = set()
 
     for rel_path, content in files.items():
-        # Ensure parent directories exist
-        parts = rel_path.split("/")
-        for depth in range(1, len(parts)):
-            dir_path = "/".join(parts[:depth])
-            if dir_path not in created_dirs:
-                try:
-                    dir_client = ShareDirectoryClient(
-                        account_url=account_url,
-                        share_name=share_name,
-                        directory_path=dir_path,
-                        credential=account_key,
-                    )
-                    dir_client.create_directory()
-                except ResourceExistsError as exc:
-                    if getattr(exc, "error_code", None) != "ResourceAlreadyExists":
-                        logger.warning(
-                            "memory_sync: directory conflict creating %s/%s: type=%s code=%s",
-                            share_name,
-                            dir_path,
-                            type(exc).__name__,
-                            getattr(exc, "error_code", None),
-                        )
-                except ResourceNotFoundError:
-                    logger.warning(
-                        "memory_sync: share or parent dir not found creating %s/%s",
-                        share_name,
-                        dir_path,
-                        exc_info=True,
-                    )
-                except Exception:
-                    logger.warning(
-                        "memory_sync: failed to create directory %s/%s",
-                        share_name,
-                        dir_path,
-                        exc_info=True,
-                    )
-                created_dirs.add(dir_path)
-
         file_client = ShareFileClient(
             account_url=account_url,
             share_name=share_name,
@@ -230,13 +192,31 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
             )
 
         try:
-            file_client.upload_file(encoded, length=len(encoded))
+            _upload_with_parent_repair(
+                file_client,
+                encoded,
+                account_url=account_url,
+                share_name=share_name,
+                file_path=rel_path,
+                credential=account_key,
+                known_dirs=created_dirs,
+            )
             written += 1
-        except ResourceNotFoundError:
+        except ResourceNotFoundError as exc:
             logger.warning(
-                "memory_sync: parent directory missing for %s/%s — skipping file",
+                "memory_sync: upload failed for %s/%s: type=%s code=%s — skipping file",
                 share_name,
                 rel_path,
+                type(exc).__name__,
+                getattr(exc, "error_code", None),
+            )
+        except ResourceExistsError as exc:
+            logger.warning(
+                "memory_sync: directory conflict for %s/%s: type=%s code=%s — skipping file",
+                share_name,
+                rel_path,
+                type(exc).__name__,
+                getattr(exc, "error_code", None),
             )
 
     logger.info(
