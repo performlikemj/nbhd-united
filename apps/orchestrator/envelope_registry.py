@@ -189,10 +189,10 @@ def _universal_refresh_receiver(sender, instance, **kwargs) -> None:
 
     def _push() -> None:
         # Lazy import — avoids circular imports at module load.
-        from apps.orchestrator.workspace_envelope import push_user_md
+        from apps.orchestrator.workspace_envelope import TRIGGER_REGISTRY_SIGNAL, push_user_md
 
         try:
-            push_user_md(tenant_id, debounce_seconds=0)
+            push_user_md(tenant_id, debounce_seconds=0, trigger=TRIGGER_REGISTRY_SIGNAL, sender_model=sender.__name__)
         except Exception:
             logger.warning(
                 "USER.md refresh from registry failed for tenant %s (sender=%s)",

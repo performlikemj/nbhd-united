@@ -137,7 +137,7 @@ class RuntimeSituationUpdateViewTest(TestCase):
         situation = UserSituation.objects.get(tenant=self.tenant)
         self.assertEqual(situation.current_place_label, "Osaka")
         self.assertEqual(situation.current_place_source, "assistant")
-        mock_push.assert_called_once_with(self.tenant)
+        mock_push.assert_called_once_with(self.tenant, trigger="place_observation")
 
     @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
     def test_same_label_repeat_is_unchanged_and_does_not_push(self, mock_push):
@@ -188,7 +188,7 @@ class RuntimeSituationUpdateViewTest(TestCase):
             response.json(),
             {"ok": True, "changed": True, "guidance": _SITUATION_CAPTURE_GUIDANCE},
         )
-        mock_push.assert_called_once_with(self.tenant)
+        mock_push.assert_called_once_with(self.tenant, trigger="place_observation")
 
     @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
     def test_changed_away_label_with_ready_tour_appends_new_trip_guidance(self, mock_push):
@@ -213,7 +213,7 @@ class RuntimeSituationUpdateViewTest(TestCase):
             },
         )
         self.assertIn(_TOUR_QUICK_REPLY_MARKER, response.json()["guidance"])
-        mock_push.assert_called_once_with(self.tenant)
+        mock_push.assert_called_once_with(self.tenant, trigger="place_observation")
 
     @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
     def test_changed_away_label_with_basic_ready_tour_appends_new_trip_guidance(self, mock_push):
@@ -238,7 +238,7 @@ class RuntimeSituationUpdateViewTest(TestCase):
             },
         )
         self.assertIn(_TOUR_QUICK_REPLY_MARKER, response.json()["guidance"])
-        mock_push.assert_called_once_with(self.tenant)
+        mock_push.assert_called_once_with(self.tenant, trigger="place_observation")
 
     @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
     def test_changed_away_label_with_unverified_tour_omits_new_trip_guidance(self, mock_push):
@@ -257,7 +257,7 @@ class RuntimeSituationUpdateViewTest(TestCase):
             response.json(),
             {"ok": True, "changed": True, "guidance": _SITUATION_CAPTURE_GUIDANCE},
         )
-        mock_push.assert_called_once_with(self.tenant)
+        mock_push.assert_called_once_with(self.tenant, trigger="place_observation")
 
     @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
     def test_invalid_label_is_rejected_without_write_or_push(self, mock_push):
@@ -348,7 +348,7 @@ class RuntimeSituationUpdateViewTest(TestCase):
         self.assertEqual(self.tenant.user.location_lat, original_lat)
         self.assertEqual(self.tenant.user.location_lon, original_lon)
         self.assertEqual(UserSituation.objects.get(tenant=self.tenant).current_place_label, "Kyoto")
-        mock_push.assert_called_once_with(self.tenant)
+        mock_push.assert_called_once_with(self.tenant, trigger="place_observation")
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")

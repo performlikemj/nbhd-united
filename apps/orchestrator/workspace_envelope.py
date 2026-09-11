@@ -28,8 +28,11 @@ History:
 from __future__ import annotations
 
 import logging
+import re
 import threading
+import time
 import zoneinfo
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from django.conf import settings
@@ -376,11 +379,189 @@ _PUSHES_IN_FLIGHT: set[str] = set()
 _PUSHES_DIRTY: set[str] = set()
 
 
+TRIGGER_UNCLASSIFIED = "unclassified"
+TRIGGER_REGISTRY_SIGNAL = "registry_signal"
+TRIGGER_FRIENDS = "friends"
+TRIGGER_HEALTHKIT = "healthkit"
+TRIGGER_DATEBOOK = "datebook"
+TRIGGER_CONVERSATION = "conversation"
+TRIGGER_PLACE_OBSERVATION = "place_observation"
+TRIGGER_PROVISION = "provision"
+TRIGGER_CONFIG_UPDATE = "config_update"
+TRIGGER_CRON_PROMPTS = "cron_prompts"
+TRIGGER_FLEET_SWEEP = "fleet_sweep"
+TRIGGER_MANUAL = "manual"
+_TRIGGER_VOCABULARY = frozenset(
+    {
+        TRIGGER_UNCLASSIFIED,
+        TRIGGER_REGISTRY_SIGNAL,
+        TRIGGER_FRIENDS,
+        TRIGGER_HEALTHKIT,
+        TRIGGER_DATEBOOK,
+        TRIGGER_CONVERSATION,
+        TRIGGER_PLACE_OBSERVATION,
+        TRIGGER_PROVISION,
+        TRIGGER_CONFIG_UPDATE,
+        TRIGGER_CRON_PROMPTS,
+        TRIGGER_FLEET_SWEEP,
+        TRIGGER_MANUAL,
+    }
+)
+_FORCED_FRESHNESS_TRIGGERS = frozenset(
+    {
+        TRIGGER_PROVISION,
+        TRIGGER_CONFIG_UPDATE,
+        TRIGGER_CRON_PROMPTS,
+        TRIGGER_FLEET_SWEEP,
+        TRIGGER_MANUAL,
+    }
+)
+_MAX_PUSH_SOURCES = 16
+_PUSH_SUMMARY_INTERVAL_SECONDS = 600
+_PUSH_SUMMARY_AT = time.monotonic()
+# Process-wide residual counters, drained by a write or the periodic summary.
+_PUSH_UNREPORTED = {"debounced": 0, "coalesced": 0}
+
+
+def _push_source(trigger, sender_model) -> tuple[str, str]:
+    """Only code-owned trigger and registered model tokens may reach logs."""
+    trigger = trigger if type(trigger) is str and trigger in _TRIGGER_VOCABULARY else TRIGGER_UNCLASSIFIED
+    sender = "none"
+    if type(sender_model) is str:
+        try:
+            model_names = {model.__name__ for section in all_sections() for model in section.refresh_on}
+            if sender_model in model_names:
+                sender = sender_model
+        except Exception:
+            pass  # Attribution must not stop an otherwise valid push.
+    return trigger, sender
+
+
+@dataclass
+class _PushMetadata:
+    primary: tuple[str, str]
+    sources: set[tuple[str, str]] = field(default_factory=set)
+    coalesced: int = 0
+    rerun: int = 0
+    forced_freshness: bool = False
+    unclassified: bool = False
+
+    def add(self, source: tuple[str, str]) -> None:
+        # Called under _PUSH_STATE_LOCK. Flags survive even if the pair set fills.
+        self.forced_freshness |= source[0] in _FORCED_FRESHNESS_TRIGGERS
+        self.unclassified |= source[0] == TRIGGER_UNCLASSIFIED
+        if len(self.sources) < _MAX_PUSH_SOURCES:
+            self.sources.add(source)
+
+
+_PUSH_PENDING: dict[str, _PushMetadata] = {}
+
+
+def _push_counter_summary() -> None:
+    """Opportunistic per-process summary; never log inside the state lock."""
+    global _PUSH_SUMMARY_AT
+    now = time.monotonic()
+    with _PUSH_STATE_LOCK:
+        if now - _PUSH_SUMMARY_AT < _PUSH_SUMMARY_INTERVAL_SECONDS or not any(_PUSH_UNREPORTED.values()):
+            return
+        counts = _PUSH_UNREPORTED.copy()
+        _PUSH_UNREPORTED.update(debounced=0, coalesced=0)
+        _PUSH_SUMMARY_AT = now
+    logger.info(
+        "USER.md push summary debounced=%d coalesced=%d",
+        counts["debounced"],
+        counts["coalesced"],
+    )
+
+
+def _user_md_header(payload: bytes) -> tuple[bytes, str]:
+    """Validate one header, masking only timestamp record bodies, not newlines.
+
+    CRLF is recognizable but retained byte-for-byte, including on the two
+    timestamp records. No other whitespace or file bytes are normalized.
+    """
+    if b"\xef\xbf\xbd" in payload:
+        raise ValueError
+    for marker, prefix in (
+        (BEGIN_MARKER.encode("utf-8"), b"<!-- BEGIN: NBHD-managed user state"),
+        (END_MARKER.encode("utf-8"), b"<!-- END: NBHD-managed user state"),
+    ):
+        if payload.count(marker) != 1 or payload.count(prefix) != 1:
+            raise ValueError
+    lines = payload.splitlines(keepends=True)
+
+    def body(line):
+        return line[:-2] if line.endswith(b"\r\n") else line[:-1] if line.endswith(b"\n") else line
+
+    begin = next(i for i, line in enumerate(lines) if body(line) == BEGIN_MARKER.encode("utf-8"))
+    end = next(i for i, line in enumerate(lines) if body(line) == END_MARKER.encode("utf-8"))
+    if end <= begin + 7:
+        raise ValueError
+    header = [body(line) for line in lines[begin : begin + 8]]
+    if header[1:4] != [b"", b"# Pre-loaded user state", b""] or header[6] != b"":
+        raise ValueError
+    if header[7] != _SYNTHESIS_HINT.encode("utf-8"):
+        raise ValueError
+    if not re.fullmatch(
+        rb"_Current local time: (?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), "
+        rb"(?:January|February|March|April|May|June|July|August|September|October|November|December) "
+        rb"[0-9]{2}, [0-9]{4} at [0-9]{2}:[0-9]{2} \([A-Za-z0-9_+./:-]+\)_",
+        header[4],
+    ):
+        raise ValueError
+    refreshed = re.fullmatch(rb"_Last refreshed: ([^\s]+)_", header[5])
+    if refreshed is None:
+        raise ValueError
+    stamp = refreshed[1].decode("ascii")
+    datetime.fromisoformat(stamp)  # Invalid generated records are an unknown comparison.
+    for offset in (4, 5):
+        # Preserve the record's exact line ending; mask only its body.
+        lines[begin + offset] = lines[begin + offset][len(header[offset]) :]
+    return b"".join(lines), stamp
+
+
+def _compare_user_md(existing: bytes, proposed: bytes) -> str:
+    """Pure, fail-open comparison of the read and the actual upload bytes."""
+    try:
+        old, _ = _user_md_header(existing)
+        new, _ = _user_md_header(proposed)
+        return "equal" if old == new else "different"
+    except Exception:
+        return "unknown"
+
+
+def _user_md_age_s(existing: bytes, now: datetime) -> int:
+    """Age of a valid aware, non-future refresh record; no source text leaks."""
+    try:
+        _, stamp = _user_md_header(existing)
+        refreshed = datetime.fromisoformat(stamp)
+        if refreshed.utcoffset() is None or now.utcoffset() is None:
+            return -1
+        age = (now - refreshed).total_seconds()
+        return int(age) if age >= 0 else -1
+    except Exception:
+        return -1
+
+
+def _user_md_shadow(existing: str | None, merged: str) -> tuple[str, int]:
+    try:
+        # Keep this local: the upload chokepoint and tests patch this symbol.
+        from apps.orchestrator.azure_client import sanitize_share_text
+
+        proposed = sanitize_share_text(merged).encode("utf-8")
+        old = existing.encode("utf-8") if existing is not None else b""
+        return _compare_user_md(old, proposed), _user_md_age_s(old, datetime.now(UTC))
+    except Exception:
+        return "unknown", -1
+
+
 def push_user_md(
     tenant: Tenant | str,
     *,
     debounce_seconds: int | None = None,
     force: bool = False,
+    trigger: str = TRIGGER_UNCLASSIFIED,
+    sender_model: str | None = None,
 ) -> bool:
     """Single-flight render and write of USER.md for one tenant.
 
@@ -394,11 +575,21 @@ def push_user_md(
     """
     tenant_id = str(tenant.id) if isinstance(tenant, Tenant) else str(tenant)
 
+    source = _push_source(trigger, sender_model)
     with _PUSH_STATE_LOCK:
-        if tenant_id in _PUSHES_IN_FLIGHT:
+        coalesced = tenant_id in _PUSHES_IN_FLIGHT
+        if coalesced:
             _PUSHES_DIRTY.add(tenant_id)
-            return False
-        _PUSHES_IN_FLIGHT.add(tenant_id)
+            pending = _PUSH_PENDING.setdefault(tenant_id, _PushMetadata(source))
+            pending.add(source)
+            pending.coalesced += 1  # Includes duplicate pairs and overflow.
+        else:
+            _PUSHES_IN_FLIGHT.add(tenant_id)
+            metadata = _PushMetadata(source)
+            metadata.add(source)
+    if coalesced:
+        _push_counter_summary()
+        return False
 
     owns_slot = True
     current_tenant: Tenant | str = tenant
@@ -413,17 +604,29 @@ def push_user_md(
                     current_tenant,
                     debounce_seconds=current_debounce_seconds,
                     force=current_force,
+                    trigger=metadata.primary[0],
+                    sender_model=None if metadata.primary[1] == "none" else metadata.primary[1],
+                    _metadata=metadata,
                 )
             except Exception as exc:
                 attempt_error = exc
                 result = False
 
             with _PUSH_STATE_LOCK:
+                if not result:
+                    _PUSH_UNREPORTED["coalesced"] += metadata.coalesced
+                    metadata.coalesced = 0
                 if tenant_id in _PUSHES_DIRTY:
                     _PUSHES_DIRTY.remove(tenant_id)
+                    # Transfer only here, when coordination selects the existing
+                    # forced follow-up, even after a debounced or failed leader.
+                    pending = _PUSH_PENDING.pop(tenant_id)
+                    pending.rerun = metadata.rerun + 1
+                    metadata = pending
                     run_follow_up = True
                 else:
                     _PUSHES_IN_FLIGHT.remove(tenant_id)
+                    _PUSH_PENDING.pop(tenant_id, None)
                     owns_slot = False
                     run_follow_up = False
 
@@ -450,6 +653,9 @@ def push_user_md(
             with _PUSH_STATE_LOCK:
                 _PUSHES_DIRTY.discard(tenant_id)
                 _PUSHES_IN_FLIGHT.discard(tenant_id)
+                pending = _PUSH_PENDING.pop(tenant_id, None)
+                _PUSH_UNREPORTED["coalesced"] += metadata.coalesced + (pending.coalesced if pending else 0)
+        _push_counter_summary()
 
 
 def _push_user_md_once(
@@ -457,6 +663,9 @@ def _push_user_md_once(
     *,
     debounce_seconds: int | None = None,
     force: bool = False,
+    trigger: str = TRIGGER_UNCLASSIFIED,
+    sender_model: str | None = None,
+    _metadata: _PushMetadata | None = None,
 ) -> bool:
     """Render, merge, and write one USER.md snapshot.
 
@@ -478,10 +687,23 @@ def _push_user_md_once(
         tenant_obj = None
         tenant_id = str(tenant)
 
+    source = _push_source(trigger, sender_model)
+    with _PUSH_STATE_LOCK:
+        metadata = _metadata if _metadata is not None else _PushMetadata(source)
+        if _metadata is None:
+            metadata.add(source)
+        primary = metadata.primary[0]
+        sources = "[" + ",".join(f"{t}:{m}" for t, m in sorted(metadata.sources)) + "]"
+        forced_freshness = metadata.forced_freshness
+        unclassified = metadata.unclassified
+        rerun = metadata.rerun
+
     window = _DEFAULT_DEBOUNCE_SECONDS if debounce_seconds is None else int(debounce_seconds)
     cache_key = f"{_DEBOUNCE_CACHE_PREFIX}{tenant_id}"
 
     if not force and window > 0 and cache.get(cache_key):
+        with _PUSH_STATE_LOCK:
+            _PUSH_UNREPORTED["debounced"] += 1
         logger.debug("USER.md push debounced for tenant %s (window=%ds)", tenant_id, window)
         return False
 
@@ -505,11 +727,32 @@ def _push_user_md_once(
                 tenant_id,
                 type(exc).__name__,
             )
+            logger.info("USER.md push not written tenant=%s trigger=%s outcome=read_failed", tenant_id, primary)
             return False
 
         merged = merge_into_user_md(existing, managed)
+        comparison, age_s = _user_md_shadow(existing, merged)
+        eligible = comparison == "equal" and 0 <= age_s < 3600 and not forced_freshness and not unclassified
         upload_workspace_file(tenant_id, "workspace/USER.md", merged)
-        logger.info("Pushed USER.md for tenant %s (%d chars)", tenant_id, len(merged))
+        with _PUSH_STATE_LOCK:
+            debounced = _PUSH_UNREPORTED["debounced"]
+            coalesced = metadata.coalesced + _PUSH_UNREPORTED["coalesced"]
+            metadata.coalesced = 0
+            _PUSH_UNREPORTED.update(debounced=0, coalesced=0)
+        logger.info(
+            "Pushed USER.md for tenant %s (%d chars) trigger=%s sources=%s "
+            "debounced=%d coalesced=%d rerun=%d cmp=%s age_s=%d eligible=%s",
+            tenant_id,
+            len(merged),
+            primary,
+            sources,
+            debounced,
+            coalesced,
+            rerun,
+            comparison,
+            age_s,
+            "true" if eligible else "false",
+        )
         return True
     except Exception:
         # Clear the debounce flag on failure so the next call can retry.
@@ -518,7 +761,12 @@ def _push_user_md_once(
         raise
 
 
-def push_user_md_in_background(tenant: Tenant | str) -> None:
+def push_user_md_in_background(
+    tenant: Tenant | str,
+    *,
+    trigger: str = TRIGGER_UNCLASSIFIED,
+    sender_model: str | None = None,
+) -> None:
     """Spawn a daemon thread to call ``push_user_md``.
 
     Mirrors the pattern in ``apps/journal/signals.py:queue_memory_sync_on_document_save``
@@ -529,7 +777,7 @@ def push_user_md_in_background(tenant: Tenant | str) -> None:
 
     def _run() -> None:
         try:
-            push_user_md(tenant_id)
+            push_user_md(tenant_id, trigger=trigger, sender_model=sender_model)
         except Exception:
             logger.warning(
                 "Background USER.md push failed for tenant %s",
