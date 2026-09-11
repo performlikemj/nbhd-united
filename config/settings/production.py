@@ -222,6 +222,9 @@ LOGGING = {
             "filters": ["redact_byo_paste_body", "redact_telegram_token"],
         },
     },
+    "loggers": {
+        "azure": {"level": "WARNING"},
+    },
     "root": {
         "handlers": ["console"],
         "level": "INFO",

@@ -5,13 +5,39 @@ If you add a new call into this SDK, extend this file.
 
 import inspect
 
-from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
-from azure.storage.fileshare import ShareClient, ShareDirectoryClient, ShareFileClient
+from azure.core.exceptions import HttpResponseError, ResourceExistsError, ResourceNotFoundError
+from azure.core.pipeline.transport import HttpRequest, RequestsTransportResponse
+from azure.storage.fileshare import ShareClient, ShareDirectoryClient, ShareFileClient, StorageErrorCode
 from azure.storage.fileshare._download import StorageStreamDownloader
+from azure.storage.fileshare._shared.response_handlers import process_storage_error
 from django.test import SimpleTestCase
+from requests import Response
 
 
 class AzureFileShareSdkContractTest(SimpleTestCase):
+    def test_parent_creation_error_codes(self):
+        self.assertEqual(StorageErrorCode.PARENT_NOT_FOUND, "ParentNotFound")
+        self.assertEqual(StorageErrorCode.RESOURCE_ALREADY_EXISTS, "ResourceAlreadyExists")
+
+    def test_storage_error_processing_preserves_header_codes(self):
+        for status, code, error_type in (
+            (404, "ParentNotFound", ResourceNotFoundError),
+            (409, "ResourceAlreadyExists", ResourceExistsError),
+        ):
+            with self.subTest(status=status, code=code):
+                raw_response = Response()
+                raw_response.status_code = status
+                raw_response.headers["x-ms-error-code"] = code
+                raw_response._content = b""
+                response = RequestsTransportResponse(
+                    HttpRequest("PUT", "https://example.file.core.windows.net/share/dir"), raw_response
+                )
+
+                with self.assertRaises(error_type) as caught:
+                    process_storage_error(HttpResponseError(message="storage error", response=response))
+
+                self.assertEqual(caught.exception.error_code, code)
+
     def test_client_constructors_accept_our_keyword_shapes(self):
         common = {
             "account_url": "https://example.file.core.windows.net",
