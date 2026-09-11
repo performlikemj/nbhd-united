@@ -17,6 +17,60 @@ class RenderMemoryFilesTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Sync", telegram_chat_id=808080)
 
+    def _mock_directory_conflict(self, code):
+        from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+
+        self.enterContext(patch("apps.orchestrator.azure_client._is_mock", return_value=False))
+        storage = self.enterContext(patch("apps.orchestrator.azure_client.get_storage_client"))
+        keys = MagicMock()
+        keys.keys = [MagicMock(value="dummy-key")]
+        storage.return_value.storage_accounts.list_keys.return_value = keys
+        self.enterContext(patch("azure.storage.fileshare.ShareClient"))
+        directory_cls = self.enterContext(patch("azure.storage.fileshare.ShareDirectoryClient"))
+        file_cls = self.enterContext(patch("azure.storage.fileshare.ShareFileClient"))
+        error = ResourceExistsError("private response body")
+        error.error_code = code
+        directory_cls.return_value.create_directory.side_effect = error
+        file_cls.return_value.get_file_properties.side_effect = ResourceNotFoundError("missing")
+        return directory_cls, file_cls
+
+    @override_settings(AZURE_STORAGE_ACCOUNT_NAME="storage", AZURE_RESOURCE_GROUP="rg")
+    def test_directory_already_exists_stays_silent(self):
+        directory_cls, file_cls = self._mock_directory_conflict("ResourceAlreadyExists")
+
+        with self.assertNoLogs("apps.orchestrator.memory_sync", level="WARNING"):
+            written = upload_memory_files_to_share(
+                str(self.tenant.id), {"memory/first.md": "first", "memory/second.md": "second"}
+            )
+
+        self.assertEqual(written, 2)
+        directory_cls.return_value.create_directory.assert_called_once_with()
+        self.assertEqual(file_cls.return_value.upload_file.call_count, 2)
+
+    @override_settings(AZURE_STORAGE_ACCOUNT_NAME="storage", AZURE_RESOURCE_GROUP="rg")
+    def test_other_directory_conflicts_warn_and_remain_best_effort(self):
+        for code in ("ShareBeingDeleted", None):
+            with self.subTest(code=code):
+                directory_cls, file_cls = self._mock_directory_conflict(code)
+
+                with self.assertLogs("apps.orchestrator.memory_sync", level="WARNING") as captured:
+                    written = upload_memory_files_to_share(
+                        str(self.tenant.id), {"memory/first.md": "first", "memory/second.md": "second"}
+                    )
+
+                self.assertEqual(
+                    captured.output,
+                    [
+                        "WARNING:apps.orchestrator.memory_sync:memory_sync: directory conflict creating "
+                        f"ws-{str(self.tenant.id)[:20]}/memory: type=ResourceExistsError code={code}"
+                    ],
+                )
+                self.assertIsNone(captured.records[0].exc_info)
+                self.assertEqual(written, 2)
+                # Failed conflicts still enter created_dirs, preserving batch behavior.
+                directory_cls.return_value.create_directory.assert_called_once_with()
+                self.assertEqual(file_cls.return_value.upload_file.call_count, 2)
+
     def test_empty_when_no_documents(self):
         # Tenant creation seeds starter docs; clear them to test empty state.
         Document.objects.filter(tenant=self.tenant).delete()

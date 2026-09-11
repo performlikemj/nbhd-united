@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import ast
 import io
+import json
 import logging
+import subprocess
 import sys
 from pathlib import Path
 
@@ -227,3 +229,30 @@ class ProductionLoggingConfigTests(SimpleTestCase):
         self.assertIn("redact_telegram_token", console_filters)
         # We add, not replace: the pre-existing BYO filter must stay wired.
         self.assertIn("redact_byo_paste_body", console_filters)
+
+    def test_azure_warning_level(self):
+        self.assertEqual(self._production_logging()["loggers"]["azure"], {"level": "WARNING"})
+
+    def test_azure_child_filters_info_and_propagates_warning(self):
+        # dictConfig closes existing handlers: isolate it in a fresh process so
+        # the suite's logging state (including handler registries) is untouched.
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import json, logging.config, sys\n"
+                "logging.config.dictConfig(json.load(sys.stdin))\n"
+                "child = logging.getLogger('azure.core.pipeline.policies.http_logging_policy')\n"
+                "child.info('azure info marker')\n"
+                "child.warning('azure warning marker')\n",
+            ],
+            input=json.dumps(self._production_logging()),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+        self.assertIn("WARNING", result.stderr)
+        self.assertIn("azure.core.pipeline.policies.http_logging_policy azure warning marker", result.stderr)
+        self.assertNotIn("azure info marker", result.stderr + result.stdout)

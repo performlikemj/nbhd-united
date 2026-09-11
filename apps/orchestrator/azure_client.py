@@ -806,7 +806,7 @@ def _put_share_file(
     Pass ``text=`` for text files (auto-sanitized via ``sanitize_share_text``)
     or ``data=`` for binary (passed through untouched). Consolidates the
     client/auth setup, parent-directory creation, skip-if-exists, and the
-    single atomic ``upload_file`` PUT (no tmp+rename — that race produced the
+    ``upload_file`` create file + upload ranges (no tmp+rename — that race produced the
     2026-05-22 null-byte corruption). Routing all writes through here means the
     text sanitize can never be forgotten by a future writer.
     """
@@ -823,8 +823,8 @@ def _put_share_file(
     if not account_name:
         raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
 
-    from azure.core.exceptions import ResourceNotFoundError
-    from azure.storage.fileshare import ShareDirectoryClient, ShareFileClient
+    from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+    from azure.storage.fileshare import ShareDirectoryClient, ShareFileClient, StorageErrorCode
 
     storage_client = get_storage_client()
     keys = storage_client.storage_accounts.list_keys(settings.AZURE_RESOURCE_GROUP, account_name)
@@ -842,24 +842,30 @@ def _put_share_file(
         except ResourceNotFoundError:
             pass  # File missing — fall through and write it
 
-    if ensure_dirs:
-        parts = file_path.split("/")
-        for i in range(1, len(parts)):
-            dir_path = "/".join(parts[:i])
-            dir_client = ShareDirectoryClient(
-                account_url=account_url, share_name=share_name, directory_path=dir_path, credential=account_key
-            )
-            try:
-                dir_client.create_directory()
-            except Exception:
-                pass  # Already exists
-
     payload = sanitize_share_text(text).encode("utf-8") if text is not None else data
 
     file_client = ShareFileClient(
         account_url=account_url, share_name=share_name, file_path=file_path, credential=account_key
     )
-    file_client.upload_file(payload, length=len(payload))
+    try:
+        file_client.upload_file(payload, length=len(payload))
+    except ResourceNotFoundError as exc:
+        if not ensure_dirs or getattr(exc, "error_code", None) != StorageErrorCode.PARENT_NOT_FOUND:
+            raise
+        parts = file_path.split("/")
+        for i in range(1, len(parts)):
+            dir_client = ShareDirectoryClient(
+                account_url=account_url,
+                share_name=share_name,
+                directory_path="/".join(parts[:i]),
+                credential=account_key,
+            )
+            try:
+                dir_client.create_directory()
+            except ResourceExistsError as conflict:
+                if getattr(conflict, "error_code", None) != StorageErrorCode.RESOURCE_ALREADY_EXISTS:
+                    raise
+        file_client.upload_file(payload, length=len(payload))
     logger.info("Uploaded %s (%d bytes) to file share %s", file_path, len(payload), share_name)
 
 

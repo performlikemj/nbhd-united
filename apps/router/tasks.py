@@ -66,8 +66,13 @@ def cleanup_inbound_media_task() -> None:
                 credential=account_key,
             )
             files = list(dir_client.list_directories_and_files())
-        except Exception:
-            # Directory doesn't exist yet — no media uploaded for this tenant
+        except Exception as exc:
+            if getattr(exc, "error_code", None) not in ("ResourceNotFound", "ParentNotFound"):
+                logger.warning(
+                    "Media cleanup listing failed: type=%s code=%s",
+                    type(exc).__name__,
+                    getattr(exc, "error_code", None),
+                )
             continue
 
         for item in files:
@@ -80,8 +85,13 @@ def cleanup_inbound_media_task() -> None:
                 if last_modified and last_modified < cutoff:
                     dir_client.get_file_client(item["name"]).delete_file()
                     total_deleted += 1
-            except Exception:
-                logger.debug("Failed to check/delete %s in %s", item["name"], share_name)
+            except Exception as exc:
+                if getattr(exc, "error_code", None) not in ("ResourceNotFound", "ParentNotFound"):
+                    logger.warning(
+                        "Media cleanup check/delete failed: type=%s code=%s",
+                        type(exc).__name__,
+                        getattr(exc, "error_code", None),
+                    )
 
     logger.info("Media cleanup complete: deleted %d files across %d tenants", total_deleted, tenants.count())
 

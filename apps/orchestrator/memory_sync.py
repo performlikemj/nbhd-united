@@ -175,8 +175,15 @@ def upload_memory_files_to_share(tenant_id: str, files: dict[str, str]) -> int:
                         credential=account_key,
                     )
                     dir_client.create_directory()
-                except ResourceExistsError:
-                    pass  # Directory already exists
+                except ResourceExistsError as exc:
+                    if getattr(exc, "error_code", None) != "ResourceAlreadyExists":
+                        logger.warning(
+                            "memory_sync: directory conflict creating %s/%s: type=%s code=%s",
+                            share_name,
+                            dir_path,
+                            type(exc).__name__,
+                            getattr(exc, "error_code", None),
+                        )
                 except ResourceNotFoundError:
                     logger.warning(
                         "memory_sync: share or parent dir not found creating %s/%s",
