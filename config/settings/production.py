@@ -144,6 +144,11 @@ STEWARD_OPENROUTER_CANARY_TENANT_ID = env(
 # add the canary's id to the Container App to open it for that tenant only.
 TASK_HYGIENE_TENANT_IDS = env("TASK_HYGIENE_TENANT_IDS", default="")
 
+# Storage key cache canary gate. Container App env var names MUST match;
+# empty keeps the existing per-operation listKeys behavior.
+AZURE_STORAGE_KEY_CACHE_TENANT_IDS = env("AZURE_STORAGE_KEY_CACHE_TENANT_IDS", default="")
+AZURE_STORAGE_KEY_CACHE_TTL_SECONDS = env("AZURE_STORAGE_KEY_CACHE_TTL_SECONDS", default="300")
+
 # Dropped-turn retry canary gate. The Azure Container App env var name MUST
 # match RETRY_DROPPED_TENANT_IDS exactly. Comma-separated tenant UUIDs; empty
 # means nobody, preserving the standard error notification path for the fleet.

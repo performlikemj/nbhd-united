@@ -274,6 +274,11 @@ STEWARD_OPENROUTER_CANARY_TENANT_ID = env(
 # Fleet-go is a deliberate follow-up, not a side effect of deploying this code.
 TASK_HYGIENE_TENANT_IDS = env("TASK_HYGIENE_TENANT_IDS", default="")
 
+# Storage key cache canary gate. Container App env var names MUST match;
+# empty keeps the existing per-operation listKeys behavior.
+AZURE_STORAGE_KEY_CACHE_TENANT_IDS = env("AZURE_STORAGE_KEY_CACHE_TENANT_IDS", default="")
+AZURE_STORAGE_KEY_CACHE_TTL_SECONDS = env("AZURE_STORAGE_KEY_CACHE_TTL_SECONDS", default="300")
+
 # OpenClaw native sub-agent offload — canary rollout gate. Comma-separated
 # tenant UUIDs; EMPTY MEANS NOBODY. The generated config keeps sessions_spawn
 # and subagents denied unless a tenant is explicitly listed here.

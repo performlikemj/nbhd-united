@@ -859,38 +859,47 @@ def _put_share_file(
     from azure.core.exceptions import ResourceNotFoundError
     from azure.storage.fileshare import ShareFileClient
 
-    storage_client = get_storage_client()
-    keys = storage_client.storage_accounts.list_keys(settings.AZURE_RESOURCE_GROUP, account_name)
-    account_key = keys.keys[0].value
+    from apps.orchestrator.storage_credentials import acquire_account_key, run_with_lease
+
+    lease = acquire_account_key(tenant_id)
     account_url = f"https://{account_name}.file.core.windows.net"
 
     if skip_if_exists:
-        check_client = ShareFileClient(
-            account_url=account_url, share_name=share_name, file_path=file_path, credential=account_key
-        )
-        try:
-            check_client.get_file_properties()
+
+        def exists(account_key):
+            check_client = ShareFileClient(
+                account_url=account_url, share_name=share_name, file_path=file_path, credential=account_key
+            )
+            try:
+                check_client.get_file_properties()
+            except ResourceNotFoundError:
+                return False
+            return True
+
+        present, lease = run_with_lease(tenant_id, lease, exists)
+        if present:
             logger.info("Skipping upload of %s to file share %s (already exists)", file_path, share_name)
             return
-        except ResourceNotFoundError:
-            pass  # File missing — fall through and write it
 
     payload = sanitize_share_text(text).encode("utf-8") if text is not None else data
 
-    file_client = ShareFileClient(
-        account_url=account_url, share_name=share_name, file_path=file_path, credential=account_key
-    )
-    if ensure_dirs:
-        _upload_with_parent_repair(
-            file_client,
-            payload,
-            account_url=account_url,
-            share_name=share_name,
-            file_path=file_path,
-            credential=account_key,
+    def upload(account_key):
+        file_client = ShareFileClient(
+            account_url=account_url, share_name=share_name, file_path=file_path, credential=account_key
         )
-    else:
-        file_client.upload_file(payload, length=len(payload))
+        if ensure_dirs:
+            _upload_with_parent_repair(
+                file_client,
+                payload,
+                account_url=account_url,
+                share_name=share_name,
+                file_path=file_path,
+                credential=account_key,
+            )
+        else:
+            file_client.upload_file(payload, length=len(payload))
+
+    run_with_lease(tenant_id, lease, upload)
     logger.info("Uploaded %s (%d bytes) to file share %s", file_path, len(payload), share_name)
 
 
@@ -1102,25 +1111,23 @@ def download_workspace_file(tenant_id: str, file_path: str) -> str | None:
     from azure.core.exceptions import ResourceNotFoundError
     from azure.storage.fileshare import ShareFileClient
 
-    storage_client = get_storage_client()
-    keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP,
-        account_name,
-    )
-    account_key = keys.keys[0].value
+    from apps.orchestrator.storage_credentials import run_with_key
 
-    file_client = ShareFileClient(
-        account_url=f"https://{account_name}.file.core.windows.net",
-        share_name=share_name,
-        file_path=file_path,
-        credential=account_key,
-    )
-    try:
-        downloader = file_client.download_file()
-        data = downloader.readall()
-    except ResourceNotFoundError:
-        return None
-    return data.decode("utf-8", errors="replace")
+    def download(account_key):
+        file_client = ShareFileClient(
+            account_url=f"https://{account_name}.file.core.windows.net",
+            share_name=share_name,
+            file_path=file_path,
+            credential=account_key,
+        )
+        try:
+            downloader = file_client.download_file()
+            data = downloader.readall()
+        except ResourceNotFoundError:
+            return None
+        return data.decode("utf-8", errors="replace")
+
+    return run_with_key(tenant_id, download)
 
 
 def register_environment_storage(tenant_id: str) -> None:

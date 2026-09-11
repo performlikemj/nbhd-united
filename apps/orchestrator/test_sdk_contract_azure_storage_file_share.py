@@ -5,7 +5,12 @@ If you add a new call into this SDK, extend this file.
 
 import inspect
 
-from azure.core.exceptions import HttpResponseError, ResourceExistsError, ResourceNotFoundError
+from azure.core.exceptions import (
+    ClientAuthenticationError,
+    HttpResponseError,
+    ResourceExistsError,
+    ResourceNotFoundError,
+)
 from azure.core.pipeline.transport import HttpRequest, RequestsTransportResponse
 from azure.storage.fileshare import ShareClient, ShareDirectoryClient, ShareFileClient, StorageErrorCode
 from azure.storage.fileshare._download import StorageStreamDownloader
@@ -15,12 +20,16 @@ from requests import Response
 
 
 class AzureFileShareSdkContractTest(SimpleTestCase):
+    def test_authentication_error_code(self):
+        self.assertEqual(StorageErrorCode.AUTHENTICATION_FAILED, "AuthenticationFailed")
+
     def test_parent_creation_error_codes(self):
         self.assertEqual(StorageErrorCode.PARENT_NOT_FOUND, "ParentNotFound")
         self.assertEqual(StorageErrorCode.RESOURCE_ALREADY_EXISTS, "ResourceAlreadyExists")
 
     def test_storage_error_processing_preserves_header_codes(self):
         for status, code, error_type in (
+            (403, "AuthenticationFailed", ClientAuthenticationError),
             (404, "ParentNotFound", ResourceNotFoundError),
             (409, "ResourceAlreadyExists", ResourceExistsError),
         ):
