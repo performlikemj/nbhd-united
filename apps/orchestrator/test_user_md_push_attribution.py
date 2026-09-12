@@ -1,4 +1,4 @@
-"""Offline Phase-1 contracts: attribution never changes USER.md write decisions."""
+"""Offline attribution and canary-gated USER.md skip-unchanged contracts."""
 
 import ast
 import io
@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import call, patch
+from uuid import UUID
 
 from django.test import SimpleTestCase, override_settings
 
@@ -144,6 +145,33 @@ class ComparatorTests(SimpleTestCase):
         self.assertEqual(envelope._user_md_shadow(clean, envelope.merge_into_user_md(clean, snapshot()))[0], "equal")
 
 
+class SkipUnchangedGateTests(SimpleTestCase):
+    def test_gate_truth_table(self):
+        other = "00000000-0000-0000-0000-000000000001"
+        for raw, tenant, expected in [
+            ("", TENANT_ID, False),
+            (None, TENANT_ID, False),
+            (" , \t, ", TENANT_ID, False),
+            (TENANT_ID, TENANT_ID, True),
+            (TENANT_ID, UUID(TENANT_ID), True),
+            (other, TENANT_ID, False),
+            ("*", TENANT_ID, True),
+            (" invalid, * , ", other, True),
+            (f" {other}, \t{TENANT_ID.upper()} , ", TENANT_ID, True),
+            (TENANT_ID, TENANT_ID.upper(), True),
+            (f"invalid,{TENANT_ID},148ccf1c", TENANT_ID, True),
+            ("invalid,148ccf1c", TENANT_ID, False),
+            ("invalid", "invalid", False),
+            ("148ccf1c", "148ccf1c", False),
+            (TENANT_ID.replace("-", ""), TENANT_ID.replace("-", ""), False),
+            ("{" + TENANT_ID + "}", "{" + TENANT_ID + "}", False),
+            (TENANT_ID[:-1] + "g", TENANT_ID[:-1] + "g", False),
+        ]:
+            with self.subTest(raw=raw, tenant=tenant), override_settings(USER_MD_SKIP_UNCHANGED_TENANT_IDS=raw):
+                self.assertIs(envelope.user_md_skip_unchanged_enabled(tenant), expected)
+
+
+@override_settings(USER_MD_SKIP_UNCHANGED_TENANT_IDS="")
 class PushAttributionTests(SimpleTestCase):
     def setUp(self):
         self.stack = ExitStack()
@@ -195,6 +223,222 @@ class PushAttributionTests(SimpleTestCase):
         info_count = self.logger.info.call_count
         self.assertFalse(envelope.push_user_md(TENANT_ID, debounce_seconds=0, trigger=trigger, **kwargs))
         self.assertEqual(self.logger.info.call_count, info_count)
+
+    @override_settings(USER_MD_SKIP_UNCHANGED_TENANT_IDS=TENANT_ID)
+    def test_gated_equal_fresh_snapshot_skips(self):
+        for age in (0, 30, 3599):
+            with self.subTest(age=age):
+                self.messages.clear()
+                self.download.return_value = snapshot(stamp=(NOW - timedelta(seconds=age)).isoformat())
+                self.render.return_value = snapshot(stamp=NOW.isoformat(), clock="Friday, September 11, 2026 at 12:01")
+                self.assertFalse(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+                self.assertEqual(
+                    self.messages,
+                    [
+                        f"USER.md push not written tenant={TENANT_ID} trigger=friends "
+                        f"outcome=unchanged age_s={age} debounced=0 coalesced=0"
+                    ],
+                )
+                self.assertEqual(self.writes(), [])
+                self.assert_released()
+        self.upload.assert_not_called()
+
+    @override_settings(USER_MD_SKIP_UNCHANGED_TENANT_IDS=TENANT_ID)
+    def test_gated_false_comparison_or_age_writes(self):
+        for existing, comparison, age in [
+            (snapshot(content="## Tasks\n- Rest"), "different", 30),
+            (snapshot() + "\ufffd", "unknown", -1),
+            (None, "unknown", -1),
+            (snapshot(stamp=NOW.replace(tzinfo=None).isoformat()), "equal", -1),
+            (snapshot(stamp=(NOW + timedelta(seconds=1)).isoformat()), "equal", -1),
+            (snapshot(stamp=(NOW - timedelta(seconds=3600)).isoformat()), "equal", 3600),
+            (snapshot(stamp=(NOW - timedelta(seconds=7200)).isoformat()), "equal", 7200),
+        ]:
+            with self.subTest(comparison=comparison, age=age):
+                self.download.return_value = existing
+                self.assertTrue(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+                self.upload.assert_called_with(
+                    TENANT_ID, "workspace/USER.md", envelope.merge_into_user_md(existing, snapshot())
+                )
+                self.assertIn(f"cmp={comparison} age_s={age} eligible=false", self.writes()[-1])
+        self.download.return_value = snapshot()
+        with patch.object(envelope, "_compare_user_md", return_value="unknown"):
+            self.assertTrue(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+        self.assertIn("cmp=unknown age_s=30 eligible=false", self.writes()[-1])
+        self.assertFalse(any("outcome=unchanged" in line for line in self.messages))
+
+    @override_settings(USER_MD_SKIP_UNCHANGED_TENANT_IDS=TENANT_ID)
+    def test_gated_forced_freshness_and_unclassified_write(self):
+        for trigger in sorted(envelope._FORCED_FRESHNESS_TRIGGERS | {envelope.TRIGGER_UNCLASSIFIED}):
+            with self.subTest(trigger=trigger):
+                self.assertTrue(envelope.push_user_md(self.tenant, trigger=trigger))
+                self.upload.assert_called_with(TENANT_ID, "workspace/USER.md", snapshot())
+                self.assertIn("cmp=equal age_s=30 eligible=false", self.writes()[-1])
+        self.assertFalse(any("outcome=unchanged" in line for line in self.messages))
+
+    def test_ungated_eligible_snapshot_preserves_payload_and_log(self):
+        for allowlist in ("", "00000000-0000-0000-0000-000000000001"):
+            with self.subTest(allowlist=allowlist), override_settings(USER_MD_SKIP_UNCHANGED_TENANT_IDS=allowlist):
+                self.messages.clear()
+                self.upload.reset_mock()
+                existing = snapshot() + "unmanaged note\n"
+                managed = snapshot(stamp=NOW.isoformat())
+                self.download.return_value = existing
+                self.render.return_value = managed
+                merged = envelope.merge_into_user_md(existing, managed)
+                self.assertTrue(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+                self.upload.assert_called_once_with(TENANT_ID, "workspace/USER.md", merged)
+                self.assertEqual(
+                    self.messages,
+                    [
+                        f"Pushed USER.md for tenant {TENANT_ID} ({len(merged)} chars) "
+                        "trigger=friends sources=[friends:none] debounced=0 coalesced=0 "
+                        "rerun=0 cmp=equal age_s=30 eligible=true"
+                    ],
+                )
+
+    @override_settings(USER_MD_SKIP_UNCHANGED_TENANT_IDS=TENANT_ID)
+    def test_forced_or_unclassified_request_coalesced_into_signal_pass_writes(self):
+        for trigger in sorted(envelope._FORCED_FRESHNESS_TRIGGERS | {envelope.TRIGGER_UNCLASSIFIED}):
+            with self.subTest(trigger=trigger):
+                self.messages.clear()
+                self.upload.reset_mock()
+                self.render.reset_mock()
+
+                def render(_tenant, trigger=trigger):
+                    if self.render.call_count == 1:
+                        self.follower(envelope.TRIGGER_REGISTRY_SIGNAL, sender_model="Document")
+                        self.follower(trigger)
+                    return snapshot()
+
+                self.render.side_effect = render
+                self.assertTrue(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+                self.assertIn("outcome=unchanged", self.messages[0])
+                self.assertEqual(self.render.call_count, 2)
+                self.upload.assert_called_once_with(TENANT_ID, "workspace/USER.md", snapshot())
+                self.assertEqual(len(self.writes()), 1)
+                self.assertIn("trigger=registry_signal", self.writes()[0])
+                self.assertIn(f"{trigger}:none", self.writes()[0])
+                self.assertIn("debounced=0 coalesced=2 rerun=1 cmp=equal age_s=30 eligible=false", self.writes()[0])
+                self.assert_released()
+
+    @override_settings(USER_MD_SKIP_UNCHANGED_TENANT_IDS=TENANT_ID)
+    def test_gated_read_failure_preserves_warning_and_retry_marker(self):
+        self.download.side_effect = TimeoutError("private body")
+        self.assertFalse(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+        self.upload.assert_not_called()
+        self.assertEqual(
+            self.messages,
+            [
+                f"Aborted USER.md push for tenant {TENANT_ID} after existing-file read failed with TimeoutError",
+                f"USER.md push not written tenant={TENANT_ID} trigger=friends outcome=read_failed",
+            ],
+        )
+        self.cache.delete.assert_called_once_with(f"{envelope._DEBOUNCE_CACHE_PREFIX}{TENANT_ID}")
+        self.assert_released()
+
+    @override_settings(USER_MD_SKIP_UNCHANGED_TENANT_IDS=TENANT_ID)
+    def test_skip_preserves_debounce_marker(self):
+        self.cache.get.side_effect = [False, True]
+        self.assertFalse(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+        self.assertFalse(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+        self.cache.set.assert_called_once_with(f"{envelope._DEBOUNCE_CACHE_PREFIX}{TENANT_ID}", "1", timeout=60)
+        self.cache.delete.assert_not_called()
+        self.render.assert_called_once()
+        self.upload.assert_not_called()
+        self.assertEqual(envelope._PUSH_UNREPORTED["debounced"], 1)
+
+    @override_settings(USER_MD_SKIP_UNCHANGED_TENANT_IDS=TENANT_ID)
+    def test_dirty_changed_followup_after_skip_writes(self):
+        changed = snapshot(content="## Tasks\n- Rest")
+
+        def render(_tenant):
+            if self.render.call_count == 1:
+                self.follower(envelope.TRIGGER_REGISTRY_SIGNAL)
+                return snapshot()
+            return changed
+
+        self.render.side_effect = render
+        self.assertTrue(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+        self.assertIn("outcome=unchanged", self.messages[0])
+        self.assertEqual(self.render.call_count, 2)
+        self.upload.assert_called_once_with(TENANT_ID, "workspace/USER.md", changed)
+        self.assertIn("coalesced=1 rerun=1 cmp=different", self.writes()[0])
+        self.cache.delete.assert_not_called()
+        self.assert_released()
+
+    def test_skip_and_write_drain_counters_identically(self):
+        for allowlist in ("", TENANT_ID):
+            with self.subTest(allowlist=allowlist), override_settings(USER_MD_SKIP_UNCHANGED_TENANT_IDS=allowlist):
+                self.render.reset_mock()
+
+                def failed_render(_tenant):
+                    if self.render.call_count == 1:
+                        self.follower(envelope.TRIGGER_REGISTRY_SIGNAL)
+                    return snapshot()
+
+                self.render.side_effect = failed_render
+                self.download.side_effect = TimeoutError("private body")
+                self.assertFalse(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+                self.assertEqual(envelope._PUSH_UNREPORTED, {"debounced": 0, "coalesced": 1})
+                self.download.side_effect = None
+                self.messages.clear()
+                self.render.reset_mock()
+                self.cache.get.return_value = True
+                self.assertFalse(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+                self.assertFalse(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+                self.assertEqual(envelope._PUSH_UNREPORTED, {"debounced": 2, "coalesced": 1})
+                self.cache.get.return_value = False
+                consumed = []
+
+                def render(_tenant, consumed=consumed):
+                    if self.render.call_count == 1:
+                        self.follower(envelope.TRIGGER_REGISTRY_SIGNAL)
+                        consumed.append(envelope._PUSH_PENDING[TENANT_ID])
+                    return snapshot()
+
+                self.render.side_effect = render
+                self.assertIs(
+                    envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS),
+                    not bool(allowlist),
+                )
+                self.assertEqual(self.render.call_count, 2)
+                self.assertEqual(consumed[0].coalesced, 0)
+                self.assertEqual(envelope._PUSH_UNREPORTED, {"debounced": 0, "coalesced": 0})
+                if allowlist:
+                    self.assertEqual(
+                        [line for line in self.messages if "outcome=unchanged" in line],
+                        [
+                            f"USER.md push not written tenant={TENANT_ID} trigger=friends "
+                            "outcome=unchanged age_s=30 debounced=2 coalesced=1",
+                            f"USER.md push not written tenant={TENANT_ID} trigger=registry_signal "
+                            "outcome=unchanged age_s=30 debounced=0 coalesced=1",
+                        ],
+                    )
+                    self.assertEqual(self.writes(), [])
+                else:
+                    self.assertIn("debounced=2 coalesced=1 rerun=0", self.writes()[0])
+                    self.assertIn("debounced=0 coalesced=1 rerun=1", self.writes()[1])
+                with patch.object(envelope.time, "monotonic", return_value=1600):
+                    envelope._push_counter_summary()
+                self.assertFalse(any(line.startswith("USER.md push summary") for line in self.messages))
+                self.render.side_effect = None
+                self.assertTrue(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_MANUAL))
+                self.assertIn("debounced=0 coalesced=0", self.writes()[-1])
+                self.assert_released()
+
+    @override_settings(USER_MD_SKIP_UNCHANGED_TENANT_IDS=TENANT_ID)
+    def test_gated_clock_driven_content_changes_write(self):
+        for old, new in [
+            ("Today: Friday", "Today: Saturday"),
+            ("Recent: walk", "Recent: none"),
+        ]:
+            with self.subTest(old=old):
+                self.download.return_value = snapshot(content=old)
+                self.render.return_value = snapshot(content=new)
+                self.assertTrue(envelope.push_user_md(self.tenant, trigger=envelope.TRIGGER_FRIENDS))
+                self.upload.assert_called_with(TENANT_ID, "workspace/USER.md", snapshot(content=new))
+                self.assertIn("cmp=different age_s=30 eligible=false", self.writes()[-1])
 
     def test_debounced_leader_services_zero_debounce_follower(self):
         def marker(_key):
