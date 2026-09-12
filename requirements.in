@@ -1,5 +1,5 @@
 # Core
-Django>=6.1,<6.2
+Django>=6.1.1,<6.2
 djangorestframework>=3.15
 django-cors-headers
 django-environ
@@ -23,11 +23,11 @@ python-telegram-bot>=22.8
 qrcode[pil]
 
 # AI / LLM
-litellm>=1.96.0,<1.96.1  # 1.82.8 compromised — supply chain attack
+litellm>=1.100.0,<1.100.1  # 1.82.8 compromised — supply chain attack
 openai
 tiktoken
 pgvector
-google-genai>=2.17.0    # Gemini TTS — Core pillar meditation render (apps/core/render.py)
+google-genai>=2.22.0    # Gemini TTS — Core pillar meditation render (apps/core/render.py)
 
 # PII redaction (outgoing LLM traffic)
 presidio-analyzer>=2.2.364    # Pattern recognizers only (credit card Luhn, IBAN checksum)
@@ -42,7 +42,7 @@ presidio-analyzer>=2.2.364    # Pattern recognizers only (credit card Luhn, IBAN
 # transformers needs an explicit torch (or TF/JAX) backend; we use the
 # PyTorch path for AutoModelForTokenClassification. Pin to CPU-only torch
 # via the `torch` package — production images don't have CUDA.
-torch>=2.13.0,<3.0
+torch>=2.14.0,<3.0
 transformers>=5.9.0,<5.10.0
 sentencepiece>=0.2.2
 
@@ -54,7 +54,7 @@ httpx[http2]
 django-redis
 
 # Managed OAuth (Composio — Google integrations)
-composio>=0.19.0
+composio>=0.21.1
 
 # Azure SDK (for Container Apps, Key Vault, Managed Identity, Storage, Billing)
 azure-identity
@@ -66,14 +66,14 @@ azure-mgmt-authorization
 azure-mgmt-storage<25  # 25.x: models are Mapping — .keys is a method; see fix/azure-mgmt-storage-pin
 azure-storage-file-share
 azure-keyvault-secrets
-azure-keyvault-keys>=4.9,<5
+azure-keyvault-keys>=4.11.2,<5
 
 # PDF text extraction (async server-side read of app-uploaded documents, so the
 # slow in-turn OpenClaw `pdf` tool no longer blocks the assistant's queue).
 # Pure Python, zero transitive dependencies — pinned exactly, and BOTH this file
 # and requirements.txt are hand-edited: pip-compile on macOS strips the
 # platform-specific pins this Linux-deployed lockfile needs.
-pypdf==6.15.0
+pypdf==6.17.0
 
 # Charts (server-side rendering for chat channels)
 matplotlib
@@ -83,7 +83,7 @@ croniter
 
 # Error / performance monitoring (Django integration ships in the core SDK,
 # auto-enabled. Inert unless SENTRY_DSN is set — see config/settings/base.py).
-sentry-sdk>=2.68.0
+sentry-sdk>=2.68.1
 
 # Utils
 whitenoise
