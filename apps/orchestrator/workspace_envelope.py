@@ -658,6 +658,16 @@ def push_user_md(
         _push_counter_summary()
 
 
+def user_md_skip_unchanged_enabled(tenant_id) -> bool:
+    """Call-time canary allowlist; empty preserves every existing write."""
+    raw = str(getattr(settings, "USER_MD_SKIP_UNCHANGED_TENANT_IDS", "") or "")
+    allowed = {part.strip().lower() for part in raw.split(",")}
+    tenant = str(tenant_id).lower()
+    return "*" in allowed or bool(
+        re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", tenant) and tenant in allowed
+    )
+
+
 def _push_user_md_once(
     tenant: Tenant | str,
     *,
@@ -733,12 +743,24 @@ def _push_user_md_once(
         merged = merge_into_user_md(existing, managed)
         comparison, age_s = _user_md_shadow(existing, merged)
         eligible = comparison == "equal" and 0 <= age_s < 3600 and not forced_freshness and not unclassified
-        upload_workspace_file(tenant_id, "workspace/USER.md", merged)
+        skip_unchanged = user_md_skip_unchanged_enabled(tenant_id) and eligible
+        if not skip_unchanged:
+            upload_workspace_file(tenant_id, "workspace/USER.md", merged)
         with _PUSH_STATE_LOCK:
             debounced = _PUSH_UNREPORTED["debounced"]
             coalesced = metadata.coalesced + _PUSH_UNREPORTED["coalesced"]
             metadata.coalesced = 0
             _PUSH_UNREPORTED.update(debounced=0, coalesced=0)
+        if skip_unchanged:
+            logger.info(
+                "USER.md push not written tenant=%s trigger=%s outcome=unchanged age_s=%d debounced=%d coalesced=%d",
+                tenant_id,
+                primary,
+                age_s,
+                debounced,
+                coalesced,
+            )
+            return False
         logger.info(
             "Pushed USER.md for tenant %s (%d chars) trigger=%s sources=%s "
             "debounced=%d coalesced=%d rerun=%d cmp=%s age_s=%d eligible=%s",

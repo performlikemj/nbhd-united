@@ -149,6 +149,9 @@ TASK_HYGIENE_TENANT_IDS = env("TASK_HYGIENE_TENANT_IDS", default="")
 AZURE_STORAGE_KEY_CACHE_TENANT_IDS = env("AZURE_STORAGE_KEY_CACHE_TENANT_IDS", default="")
 AZURE_STORAGE_KEY_CACHE_TTL_SECONDS = env("AZURE_STORAGE_KEY_CACHE_TTL_SECONDS", default="300")
 
+# USER.md skip-unchanged canary gate. Container App env var name MUST match.
+USER_MD_SKIP_UNCHANGED_TENANT_IDS = env("USER_MD_SKIP_UNCHANGED_TENANT_IDS", default="")
+
 # Dropped-turn retry canary gate. The Azure Container App env var name MUST
 # match RETRY_DROPPED_TENANT_IDS exactly. Comma-separated tenant UUIDs; empty
 # means nobody, preserving the standard error notification path for the fleet.
