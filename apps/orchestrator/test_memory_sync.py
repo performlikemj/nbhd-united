@@ -22,6 +22,7 @@ def _storage_error(error_type, code):
 
 
 @override_settings(AZURE_STORAGE_ACCOUNT_NAME="storage", AZURE_RESOURCE_GROUP="rg")
+@override_settings(AZURE_STORAGE_KEY_CACHE_TENANT_IDS="")
 class UploadMemoryFilesTest(SimpleTestCase):
     tenant_id = "tenant"
     first_path = "memory/journal/daily/first.md"
@@ -243,6 +244,7 @@ class UploadMemoryFilesTest(SimpleTestCase):
         self._assert_no_creates()
 
 
+@override_settings(AZURE_STORAGE_KEY_CACHE_TENANT_IDS="")
 class RenderMemoryFilesTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Sync", telegram_chat_id=808080)

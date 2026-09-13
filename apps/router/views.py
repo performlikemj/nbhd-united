@@ -657,23 +657,20 @@ def serve_chart_image(request, tenant_id, filename):
 
         from azure.storage.fileshare import ShareFileClient
 
-        from apps.orchestrator.azure_client import get_storage_client
+        from apps.orchestrator.storage_credentials import run_with_key
 
-        storage_client = get_storage_client()
-        keys = storage_client.storage_accounts.list_keys(
-            settings.AZURE_RESOURCE_GROUP,
-            account_name,
-        )
-        account_key = keys.keys[0].value
         share_name = f"ws-{str(tenant_id)[:20]}"
 
-        file_client = ShareFileClient(
-            account_url=f"https://{account_name}.file.core.windows.net",
-            share_name=share_name,
-            file_path=f"workspace/charts/{filename}",
-            credential=account_key,
-        )
-        data = file_client.download_file().readall()
+        def operation(account_key):
+            file_client = ShareFileClient(
+                account_url=f"https://{account_name}.file.core.windows.net",
+                share_name=share_name,
+                file_path=f"workspace/charts/{filename}",
+                credential=account_key,
+            )
+            return file_client.download_file().readall()
+
+        data = run_with_key(tenant_id, operation)
 
         response = HttpResponse(data, content_type="image/png")
         response["Cache-Control"] = "public, max-age=3600"
@@ -764,23 +761,20 @@ def serve_meditation_audio(request, tenant_id, filename):
 
         from azure.storage.fileshare import ShareFileClient
 
-        from apps.orchestrator.azure_client import get_storage_client
+        from apps.orchestrator.storage_credentials import run_with_key
 
-        storage_client = get_storage_client()
-        keys = storage_client.storage_accounts.list_keys(
-            settings.AZURE_RESOURCE_GROUP,
-            account_name,
-        )
-        account_key = keys.keys[0].value
         share_name = f"ws-{str(tenant_id)[:20]}"
 
-        file_client = ShareFileClient(
-            account_url=f"https://{account_name}.file.core.windows.net",
-            share_name=share_name,
-            file_path=f"workspace/meditations/{filename}",
-            credential=account_key,
-        )
-        data = file_client.download_file().readall()
+        def operation(account_key):
+            file_client = ShareFileClient(
+                account_url=f"https://{account_name}.file.core.windows.net",
+                share_name=share_name,
+                file_path=f"workspace/meditations/{filename}",
+                credential=account_key,
+            )
+            return file_client.download_file().readall()
+
+        data = run_with_key(tenant_id, operation)
 
         # Range-aware: advertise Accept-Ranges and answer Range probes with a 206
         # so iOS AVPlayer / Safari can discover the true duration and stop at the

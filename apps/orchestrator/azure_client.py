@@ -750,24 +750,21 @@ def download_config_from_file_share(tenant_id: str) -> bytes | None:
     from azure.core.exceptions import ResourceNotFoundError
     from azure.storage.fileshare import ShareFileClient
 
-    storage_client = get_storage_client()
-    keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP,
-        account_name,
-    )
-    account_key = keys.keys[0].value
-    account_url = f"https://{account_name}.file.core.windows.net"
+    from apps.orchestrator.storage_credentials import run_with_key
 
-    file_client = ShareFileClient(
-        account_url=account_url,
-        share_name=share_name,
-        file_path="openclaw.json",
-        credential=account_key,
-    )
-    try:
-        return file_client.download_file().readall()
-    except ResourceNotFoundError:
-        return None
+    def download(account_key):
+        file_client = ShareFileClient(
+            account_url=f"https://{account_name}.file.core.windows.net",
+            share_name=share_name,
+            file_path="openclaw.json",
+            credential=account_key,
+        )
+        try:
+            return file_client.download_file().readall()
+        except ResourceNotFoundError:
+            return None
+
+    return run_with_key(tenant_id, download)
 
 
 # C0 control codepoints to strip from any text written to the file share —
@@ -1016,20 +1013,22 @@ def delete_workspace_file(tenant_id: str, file_path: str) -> None:
     from azure.core.exceptions import ResourceNotFoundError
     from azure.storage.fileshare import ShareFileClient
 
-    storage_client = get_storage_client()
-    keys = storage_client.storage_accounts.list_keys(settings.AZURE_RESOURCE_GROUP, account_name)
-    account_key = keys.keys[0].value
+    from apps.orchestrator.storage_credentials import acquire_account_key, run_with_lease
+
+    lease = acquire_account_key(tenant_id)
     account_url = f"https://{account_name}.file.core.windows.net"
 
-    file_client = ShareFileClient(
-        account_url=account_url,
-        share_name=share_name,
-        file_path=file_path,
-        credential=account_key,
-    )
+    def client(account_key):
+        return ShareFileClient(
+            account_url=account_url,
+            share_name=share_name,
+            file_path=file_path,
+            credential=account_key,
+        )
+
     try:
-        file_client.get_file_properties()
-        file_client.delete_file()
+        _, lease = run_with_lease(tenant_id, lease, lambda key: client(key).get_file_properties())
+        run_with_lease(tenant_id, lease, lambda key: client(key).delete_file())
     except ResourceNotFoundError:
         logger.debug("Workspace file %s is already absent from file share %s", file_path, share_name)
         return
@@ -1071,23 +1070,21 @@ def download_workspace_file_binary(tenant_id: str, file_path: str) -> bytes | No
     from azure.core.exceptions import ResourceNotFoundError
     from azure.storage.fileshare import ShareFileClient
 
-    storage_client = get_storage_client()
-    keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP,
-        account_name,
-    )
-    account_key = keys.keys[0].value
+    from apps.orchestrator.storage_credentials import run_with_key
 
-    file_client = ShareFileClient(
-        account_url=f"https://{account_name}.file.core.windows.net",
-        share_name=share_name,
-        file_path=file_path,
-        credential=account_key,
-    )
-    try:
-        return file_client.download_file().readall()
-    except ResourceNotFoundError:
-        return None
+    def download(account_key):
+        file_client = ShareFileClient(
+            account_url=f"https://{account_name}.file.core.windows.net",
+            share_name=share_name,
+            file_path=file_path,
+            credential=account_key,
+        )
+        try:
+            return file_client.download_file().readall()
+        except ResourceNotFoundError:
+            return None
+
+    return run_with_key(tenant_id, download)
 
 
 def download_workspace_file(tenant_id: str, file_path: str) -> str | None:
@@ -1153,30 +1150,28 @@ def register_environment_storage(tenant_id: str) -> None:
 
     storage_name = f"ws-{str(tenant_id)[:20]}"
 
-    # Get storage account key programmatically
-    storage_client = get_storage_client()
-    keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP,
-        account_name,
-    )
-    account_key = keys.keys[0].value
+    from apps.orchestrator.storage_credentials import run_with_key
 
-    container_client = get_container_client()
-    container_client.managed_environments_storages.create_or_update(
-        resource_group_name=settings.AZURE_RESOURCE_GROUP,
-        environment_name=env_name,
-        storage_name=storage_name,
-        storage_envelope=ManagedEnvironmentStorage(
-            properties=ManagedEnvironmentStorageProperties(
-                azure_file=AzureFileProperties(
-                    account_name=account_name,
-                    account_key=account_key,
-                    access_mode="ReadWrite",
-                    share_name=storage_name,
+    def register(account_key):
+        container_client = get_container_client()
+        container_client.managed_environments_storages.create_or_update(
+            resource_group_name=settings.AZURE_RESOURCE_GROUP,
+            environment_name=env_name,
+            storage_name=storage_name,
+            storage_envelope=ManagedEnvironmentStorage(
+                properties=ManagedEnvironmentStorageProperties(
+                    azure_file=AzureFileProperties(
+                        account_name=account_name,
+                        account_key=account_key,
+                        access_mode="ReadWrite",
+                        share_name=storage_name,
+                    ),
                 ),
             ),
-        ),
-    )
+        )
+
+    run_with_key(tenant_id, register)
+
     logger.info("Registered environment storage %s for tenant %s", storage_name, tenant_id)
 
 

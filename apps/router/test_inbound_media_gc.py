@@ -23,6 +23,7 @@ def _file_item(name: str) -> dict:
 
 
 @override_settings(AZURE_STORAGE_ACCOUNT_NAME="teststorage", AZURE_RESOURCE_GROUP="rg-test")
+@override_settings(AZURE_STORAGE_KEY_CACHE_TENANT_IDS="")
 class InboundMediaGCTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="gc", email="gc@example.com")

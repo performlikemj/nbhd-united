@@ -333,23 +333,20 @@ class TelegramPoller:
 
             from azure.storage.fileshare import ShareFileClient
 
-            from apps.orchestrator.azure_client import get_storage_client
+            from apps.orchestrator.storage_credentials import run_with_key
 
-            storage_client = get_storage_client()
-            keys = storage_client.storage_accounts.list_keys(
-                settings.AZURE_RESOURCE_GROUP,
-                account_name,
-            )
-            account_key = keys.keys[0].value
             share_name = f"ws-{str(tenant.id)[:20]}"
 
-            file_client = ShareFileClient(
-                account_url=f"https://{account_name}.file.core.windows.net",
-                share_name=share_name,
-                file_path=share_path,
-                credential=account_key,
-            )
-            data = file_client.download_file().readall()
+            def operation(account_key):
+                file_client = ShareFileClient(
+                    account_url=f"https://{account_name}.file.core.windows.net",
+                    share_name=share_name,
+                    file_path=share_path,
+                    credential=account_key,
+                )
+                return file_client.download_file().readall()
+
+            data = run_with_key(tenant.id, operation)
 
             # Send via Telegram sendPhoto
             ext = share_path.rsplit(".", 1)[-1].lower() if "." in share_path else "jpg"

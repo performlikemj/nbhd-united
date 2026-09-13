@@ -673,33 +673,30 @@ def _write_gws_credentials_to_file_share(
 
     from azure.storage.fileshare import ShareFileClient
 
-    from apps.orchestrator.azure_client import get_storage_client
+    from apps.orchestrator.storage_credentials import run_with_key
 
-    storage_client = get_storage_client()
-    keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP,
-        account_name,
-    )
-    account_key = keys.keys[0].value
+    def upload(account_key):
+        file_client = ShareFileClient(
+            account_url=f"https://{account_name}.file.core.windows.net",
+            share_name=share_name,
+            file_path="gws-credentials.json",
+            credential=account_key,
+        )
 
-    file_client = ShareFileClient(
-        account_url=f"https://{account_name}.file.core.windows.net",
-        share_name=share_name,
-        file_path="gws-credentials.json",
-        credential=account_key,
-    )
+        # NOTE: ``overwrite=True`` triggers
+        # ``TypeError: Session.request() got an unexpected keyword argument 'overwrite'``
+        # in the current azure-storage-file-share 12.24 / azure-core 1.39 /
+        # requests 2.32 triplet — the kwarg leaks through the pipeline to the
+        # HTTP transport layer. Use the explicit ``length=`` signature that
+        # every other upload_file caller in this codebase already uses
+        # (apps/orchestrator/azure_client.py, apps/orchestrator/memory_sync.py).
+        # ShareFileClient.upload_file is replace-on-write by default, so the
+        # ``overwrite=True`` semantics are preserved.
+        data = creds_json.encode()
+        file_client.upload_file(data, length=len(data))
 
-    # NOTE: ``overwrite=True`` triggers
-    # ``TypeError: Session.request() got an unexpected keyword argument 'overwrite'``
-    # in the current azure-storage-file-share 12.24 / azure-core 1.39 /
-    # requests 2.32 triplet — the kwarg leaks through the pipeline to the
-    # HTTP transport layer. Use the explicit ``length=`` signature that
-    # every other upload_file caller in this codebase already uses
-    # (apps/orchestrator/azure_client.py, apps/orchestrator/memory_sync.py).
-    # ShareFileClient.upload_file is replace-on-write by default, so the
-    # ``overwrite=True`` semantics are preserved.
-    data = creds_json.encode()
-    file_client.upload_file(data, length=len(data))
+    run_with_key(tenant.id, upload)
+
     logger.info("Wrote gws credentials to file share %s/gws-credentials.json", share_name)
 
 
@@ -718,22 +715,18 @@ def _delete_gws_credentials_from_file_share(tenant: Tenant) -> None:
     try:
         from azure.storage.fileshare import ShareFileClient
 
-        from apps.orchestrator.azure_client import get_storage_client
+        from apps.orchestrator.storage_credentials import run_with_key
 
-        storage_client = get_storage_client()
-        keys = storage_client.storage_accounts.list_keys(
-            settings.AZURE_RESOURCE_GROUP,
-            account_name,
-        )
-        account_key = keys.keys[0].value
+        def operation(account_key):
+            file_client = ShareFileClient(
+                account_url=f"https://{account_name}.file.core.windows.net",
+                share_name=share_name,
+                file_path="gws-credentials.json",
+                credential=account_key,
+            )
+            file_client.delete_file()
 
-        file_client = ShareFileClient(
-            account_url=f"https://{account_name}.file.core.windows.net",
-            share_name=share_name,
-            file_path="gws-credentials.json",
-            credential=account_key,
-        )
-        file_client.delete_file()
+        run_with_key(tenant.id, operation)
         logger.info("Deleted gws credentials from file share %s", share_name)
     except Exception:
         logger.debug("gws credentials file not found or delete failed for %s", share_name)

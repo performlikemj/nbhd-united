@@ -39,18 +39,16 @@ def cleanup_inbound_media_task() -> None:
         logger.warning("AZURE_STORAGE_ACCOUNT_NAME not configured, skipping media cleanup")
         return
 
-    from apps.orchestrator.azure_client import _is_mock, get_storage_client
+    from apps.orchestrator.azure_client import _is_mock
+    from apps.orchestrator.storage_credentials import acquire_account_key, run_with_lease, storage_key_cache_enabled
 
     if _is_mock():
         logger.info("[MOCK] Would clean up inbound media for all tenants")
         return
 
-    storage_client = get_storage_client()
-    keys = storage_client.storage_accounts.list_keys(
-        settings.AZURE_RESOURCE_GROUP,
-        account_name,
-    )
-    account_key = keys.keys[0].value
+    # Preserve the original one-fetch-per-task behavior for excluded tenants.
+    # Without a tenant, this baseline lease is cached only under the fleet-wide gate.
+    baseline_lease = acquire_account_key(None)
 
     cutoff = datetime.now(UTC) - MAX_AGE
     total_deleted = 0
@@ -58,14 +56,28 @@ def cleanup_inbound_media_task() -> None:
     tenants = Tenant.objects.filter(status=Tenant.Status.ACTIVE).exclude(container_id="")
     for tenant in tenants:
         share_name = f"ws-{str(tenant.id)[:20]}"
+        lease = baseline_lease
+        dir_client = None
+        directory_key = None
+
+        def directory(account_key, share_name=share_name):
+            nonlocal dir_client, directory_key
+            if dir_client is None or directory_key != account_key:
+                dir_client = ShareDirectoryClient(
+                    account_url=f"https://{account_name}.file.core.windows.net",
+                    share_name=share_name,
+                    directory_path=MEDIA_DIR,
+                    credential=account_key,
+                )
+                directory_key = account_key
+            return dir_client
+
         try:
-            dir_client = ShareDirectoryClient(
-                account_url=f"https://{account_name}.file.core.windows.net",
-                share_name=share_name,
-                directory_path=MEDIA_DIR,
-                credential=account_key,
+            if storage_key_cache_enabled(tenant.id):
+                lease = acquire_account_key(tenant.id)
+            files, lease = run_with_lease(
+                tenant.id, lease, lambda key: list(directory(key).list_directories_and_files())
             )
-            files = list(dir_client.list_directories_and_files())
         except Exception as exc:
             if getattr(exc, "error_code", None) not in ("ResourceNotFound", "ParentNotFound"):
                 logger.warning(
@@ -80,10 +92,18 @@ def cleanup_inbound_media_task() -> None:
                 continue
             # Check last modified time
             try:
-                file_props = dir_client.get_file_client(item["name"]).get_file_properties()
+                file_props, lease = run_with_lease(
+                    tenant.id,
+                    lease,
+                    lambda key, name=item["name"]: directory(key).get_file_client(name).get_file_properties(),
+                )
                 last_modified = file_props.last_modified
                 if last_modified and last_modified < cutoff:
-                    dir_client.get_file_client(item["name"]).delete_file()
+                    _, lease = run_with_lease(
+                        tenant.id,
+                        lease,
+                        lambda key, name=item["name"]: directory(key).get_file_client(name).delete_file(),
+                    )
                     total_deleted += 1
             except Exception as exc:
                 if getattr(exc, "error_code", None) not in ("ResourceNotFound", "ParentNotFound"):
