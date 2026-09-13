@@ -836,6 +836,9 @@ def apply_pending_configs(request):
     all_tasks = config_tasks + image_tasks
     success = enqueued == len(all_tasks) if all_tasks else True
 
+    # A 200 acknowledges this sweep even if publishing exhausted its retries.
+    # Let QStash redeliver a failed sweep: tenant state is advanced by the tasks,
+    # so still-pending work is selected again without waiting for the next hour.
     return JsonResponse(
         {
             "config_enqueued": config_count if success else 0,
@@ -848,7 +851,8 @@ def apply_pending_configs(request):
             "cron_seed_failed": 0 if success else cron_seed_count,
             "batch_total": len(all_tasks),
             "batch_enqueued": enqueued,
-        }
+        },
+        status=200 if success else 503,
     )
 
 

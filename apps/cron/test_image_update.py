@@ -232,9 +232,9 @@ class ApplyPendingConfigsImageTests(TestCase):
 
         response = self.client.post("/api/v1/cron/apply-pending-configs/")
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 503)
         body = response.json()
-        # Batch is all-or-nothing — on failure, all counts go to *_failed.
+        # A failed sweep must remain eligible for QStash delivery retries.
         self.assertEqual(body["config_enqueued"], 0)
         self.assertEqual(body["config_failed"], 1)
         self.assertEqual(body["image_enqueued"], 0)

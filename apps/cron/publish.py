@@ -49,8 +49,10 @@ QSTASH_PUBLISH_RETRIES = 1
 QSTASH_RETRY_BACKOFF_MS = 100
 
 # The SDK sleeps after every failed attempt, including the last. Derive the
-# read allowances so the phase limits and backoff enforce real wall budgets:
+# read allowances from the nominal phase budgets plus backoff:
 # request = 1 * (1 + 2.5 + .25 + .25) = 4s; batch = 2 * (1 + 2.65 + 1 + .25 + .1) = 10s.
+# HTTPX limits individual I/O waits, not total elapsed time; repeated I/O and
+# process scheduling can exceed these sums. These are not hard wall deadlines.
 QSTASH_READ_TIMEOUT_SECONDS = QSTASH_REQUEST_TOTAL_TIMEOUT_SECONDS - (
     QSTASH_CONNECT_TIMEOUT_SECONDS + QSTASH_WRITE_TIMEOUT_SECONDS + QSTASH_POOL_TIMEOUT_SECONDS
 )
