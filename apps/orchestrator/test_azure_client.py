@@ -316,6 +316,7 @@ class CreateTenantFileShareTest(SimpleTestCase):
             create_tenant_file_share("tenant-abc")
 
 
+@override_settings(AZURE_STORAGE_KEY_CACHE_TENANT_IDS="")
 class RegisterEnvironmentStorageTest(SimpleTestCase):
     @patch("apps.orchestrator.azure_client._is_mock", return_value=True)
     def test_mock_mode_skips_azure_call(self, _mock_is_mock):
@@ -704,6 +705,7 @@ _VALID_UPLOAD_CONFIG_JSON = json.dumps(
     AZURE_RESOURCE_GROUP="rg-nbhd-prod",
     AZURE_STORAGE_ACCOUNT_NAME="stnbhdprod",
 )
+@override_settings(AZURE_STORAGE_KEY_CACHE_TENANT_IDS="")
 class DeleteWorkspaceFileTest(SimpleTestCase):
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
     @patch("apps.orchestrator.azure_client.get_storage_client")
@@ -741,6 +743,7 @@ class DeleteWorkspaceFileTest(SimpleTestCase):
     AZURE_RESOURCE_GROUP="rg-nbhd-prod",
     AZURE_STORAGE_ACCOUNT_NAME="stnbhdprod",
 )
+@override_settings(AZURE_STORAGE_KEY_CACHE_TENANT_IDS="")
 class UploadConfigToFileShareTest(SimpleTestCase):
     """Guard against the kwarg-leak class that corrupted canary on 2026-05-22.
 

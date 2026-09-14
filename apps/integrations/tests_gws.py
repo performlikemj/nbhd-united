@@ -44,6 +44,7 @@ GOOGLE_PROVIDER = "google"
     GOOGLE_OAUTH_CLIENT_SECRET="test-client-secret",
 )
 @patch("apps.integrations.services.store_tokens_in_key_vault", return_value="mock-secret")
+@override_settings(AZURE_STORAGE_KEY_CACHE_TENANT_IDS="")
 class GWSCredentialWriteTest(TestCase):
     """Test that Google OAuth tokens get written as gws credentials."""
 
