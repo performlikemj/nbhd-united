@@ -175,7 +175,7 @@ def reap_orphaned_containers(*, hibernate: bool = True, apply: bool = False, ale
 def _alert(summary: dict, *, apply: bool) -> None:
     """Best-effort admin alert. Never raises."""
     try:
-        from apps.cron.views import _send_alert_to_personal_openclaw
+        from apps.cron.views import _send_alert_via_pushover
 
         lines = [
             f"⚠️ Orphaned-container reaper found {len(summary['orphans'])} container(s) with no Tenant row:",
@@ -188,7 +188,7 @@ def _alert(summary: dict, *, apply: bool) -> None:
                 "After lifting the relevant lock, run: "
                 "manage.py reap_orphaned_containers --apply"
             )
-        _send_alert_to_personal_openclaw("\n".join(lines))
+        _send_alert_via_pushover("\n".join(lines))
     except Exception:
         logger.exception("orphan_reaper: failed to send admin alert")
 

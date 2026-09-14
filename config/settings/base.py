@@ -405,6 +405,12 @@ ADMIN_OPENCLAW_GATEWAY_URL = env("ADMIN_OPENCLAW_GATEWAY_URL", default="")
 ADMIN_OPENCLAW_GATEWAY_TOKEN = env("ADMIN_OPENCLAW_GATEWAY_TOKEN", default="")
 CF_ACCESS_CLIENT_ID = env("CF_ACCESS_CLIENT_ID", default="")
 CF_ACCESS_CLIENT_SECRET = env("CF_ACCESS_CLIENT_SECRET", default="")
+
+# Pushover push notifications — the health-alert delivery channel (replaced the
+# personal-OpenClaw gateway route, which silently 530'd for 13 days after its
+# origin VPS was removed). A single HTTPS POST to Pushover; no tunnel/agent.
+PUSHOVER_API_TOKEN = env("PUSHOVER_API_TOKEN", default="")
+PUSHOVER_USER_KEY = env("PUSHOVER_USER_KEY", default="")
 ROUTER_RATE_LIMIT_PER_MINUTE = env.int("ROUTER_RATE_LIMIT_PER_MINUTE", default=30)
 # Shared internal API key for runtime auth between Django and tenant containers.
 # All containers use the same key (stored in Azure Key Vault). This is safe

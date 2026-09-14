@@ -68,7 +68,7 @@ class ReapOrphanedContainersTest(TestCase):
         with (
             patch(f"{AZ}.container_app_has_active_revision", return_value=True),
             patch(f"{AZ}.hibernate_container_app") as hib,
-            patch("apps.cron.views._send_alert_to_personal_openclaw", return_value="delivered") as alert,
+            patch("apps.cron.views._send_alert_via_pushover", return_value="delivered") as alert,
         ):
             summary = orphan_reaper.reap_orphaned_containers(hibernate=True, apply=False, alert=True)
 
@@ -83,7 +83,7 @@ class ReapOrphanedContainersTest(TestCase):
         with (
             patch(f"{AZ}.container_app_has_active_revision", return_value=False),
             patch(f"{AZ}.hibernate_container_app") as hib,
-            patch("apps.cron.views._send_alert_to_personal_openclaw", return_value="delivered"),
+            patch("apps.cron.views._send_alert_via_pushover", return_value="delivered"),
         ):
             summary = orphan_reaper.reap_orphaned_containers(hibernate=True, apply=False, alert=True)
 
@@ -108,7 +108,7 @@ class ReapOrphanedContainersTest(TestCase):
             patch(f"{AZ}.delete_container_app") as del_app,
             patch(f"{AZ}.delete_tenant_file_share") as del_share,
             patch(f"{AZ}.delete_managed_identity") as del_mi,
-            patch("apps.cron.views._send_alert_to_personal_openclaw", return_value="delivered"),
+            patch("apps.cron.views._send_alert_via_pushover", return_value="delivered"),
         ):
             summary = orphan_reaper.reap_orphaned_containers(hibernate=True, apply=True, alert=True)
 
@@ -127,7 +127,7 @@ class ReapOrphanedContainersTest(TestCase):
             patch(f"{AZ}.delete_container_app", side_effect=lock_exc),
             patch(f"{AZ}.delete_tenant_file_share"),
             patch(f"{AZ}.delete_managed_identity"),
-            patch("apps.cron.views._send_alert_to_personal_openclaw", return_value="delivered"),
+            patch("apps.cron.views._send_alert_via_pushover", return_value="delivered"),
         ):
             summary = orphan_reaper.reap_orphaned_containers(hibernate=False, apply=True, alert=False)
 
@@ -137,7 +137,7 @@ class ReapOrphanedContainersTest(TestCase):
         self._find.stop()
         with (
             patch(f"{AZ}.list_tenant_container_app_names", return_value=["oc-known"]),
-            patch("apps.cron.views._send_alert_to_personal_openclaw") as alert,
+            patch("apps.cron.views._send_alert_via_pushover") as alert,
         ):
             _make_tenant(container_id="oc-known")
             summary = orphan_reaper.reap_orphaned_containers()
