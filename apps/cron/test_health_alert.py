@@ -1,10 +1,11 @@
-"""Tests for the admin-alert delivery classification used by run_health_check.
+"""Tests for the health-alert delivery classification used by run_health_check.
 
-The classifier decides whether a failed alert POST should keep retrying every tick
-(transient), start a SHORT backoff (timeout — gateway slow/cold), or start the full
-30-minute cooldown (delivered / undeliverable). The short-backoff path is what stops
-a cold personal-OpenClaw gateway (read timeout or 5xx behind Cloudflare) from
-re-firing — and Sentry-storming — every 5 minutes while never delivering.
+Alerts push straight to MJ's phone via Pushover (a single HTTPS POST — no
+Cloudflare tunnel, no personal gateway, no agent). The classifier decides
+whether a failed POST keeps retrying every tick (transient), starts a SHORT
+backoff (timeout — Pushover briefly down), or takes the full 30-minute cooldown
+(delivered / undeliverable). The status vocabulary is unchanged from the old
+gateway sender, so the caller's cooldown map is untouched.
 """
 
 from unittest.mock import Mock, patch
@@ -16,67 +17,67 @@ from django.urls import reverse
 from apps.cron.views import (
     _HEALTH_ALERT_COOLDOWN_SECONDS,
     _HEALTH_ALERT_TIMEOUT_COOLDOWN_SECONDS,
-    _send_alert_to_personal_openclaw,
+    _send_alert_via_pushover,
 )
 
 
-@override_settings(
-    ADMIN_OPENCLAW_GATEWAY_URL="https://agent.example.com",
-    ADMIN_OPENCLAW_GATEWAY_TOKEN="tok",
-)
+@override_settings(PUSHOVER_API_TOKEN="tok", PUSHOVER_USER_KEY="usr")
 class SendAlertClassificationTest(TestCase):
     @patch("httpx.post")
     def test_200_is_delivered(self, mock_post):
-        mock_post.return_value = Mock(status_code=200, text="ok")
-        self.assertEqual(_send_alert_to_personal_openclaw("m"), "delivered")
+        mock_post.return_value = Mock(status_code=200, text='{"status":1}')
+        self.assertEqual(_send_alert_via_pushover("m"), "delivered")
 
     @patch("httpx.post")
-    def test_302_redirect_is_undeliverable(self, mock_post):
-        # Cloudflare Access bounce to its login page — retrying won't help, so the
-        # caller must start the cooldown (this is the 5-min-spam fix).
-        mock_post.return_value = Mock(status_code=302, text="<html>302 Found</html>")
-        self.assertEqual(_send_alert_to_personal_openclaw("m"), "undeliverable")
+    def test_posts_to_pushover_with_credentials(self, mock_post):
+        mock_post.return_value = Mock(status_code=200, text='{"status":1}')
+        _send_alert_via_pushover("hello")
+        args, kwargs = mock_post.call_args
+        self.assertEqual(args[0], "https://api.pushover.net/1/messages.json")
+        data = kwargs["data"]
+        self.assertEqual(data["token"], "tok")
+        self.assertEqual(data["user"], "usr")
+        self.assertEqual(data["message"], "hello")
+        self.assertEqual(data["priority"], 1)  # high — bypasses quiet hours
 
     @patch("httpx.post")
     def test_4xx_is_undeliverable(self, mock_post):
-        mock_post.return_value = Mock(status_code=403, text="forbidden")
-        self.assertEqual(_send_alert_to_personal_openclaw("m"), "undeliverable")
+        # Bad token/user/params — retrying won't fix it, take the full cooldown.
+        mock_post.return_value = Mock(status_code=400, text='{"status":0,"errors":["application token is invalid"]}')
+        self.assertEqual(_send_alert_via_pushover("m"), "undeliverable")
 
     @patch("httpx.post")
-    def test_503_is_timeout(self, mock_post):
-        # A 5xx from a cold/waking gateway behind Cloudflare — back off ~10 min,
-        # don't storm. (Previously classified 'transient'.)
-        mock_post.return_value = Mock(status_code=503, text="busy")
-        self.assertEqual(_send_alert_to_personal_openclaw("m"), "timeout")
+    def test_429_quota_is_undeliverable(self, mock_post):
+        # Monthly message quota exhausted — retrying this cycle can't help.
+        mock_post.return_value = Mock(status_code=429, text="rate limited")
+        self.assertEqual(_send_alert_via_pushover("m"), "undeliverable")
 
     @patch("httpx.post")
-    def test_502_is_timeout(self, mock_post):
-        mock_post.return_value = Mock(status_code=502, text="bad gateway")
-        self.assertEqual(_send_alert_to_personal_openclaw("m"), "timeout")
+    def test_500_is_timeout(self, mock_post):
+        # Pushover briefly down — short backoff, don't storm.
+        mock_post.return_value = Mock(status_code=500, text="server error")
+        self.assertEqual(_send_alert_via_pushover("m"), "timeout")
 
     @patch("httpx.post", side_effect=httpx.ReadTimeout("slow"))
     def test_read_timeout_is_timeout(self, _mock_post):
-        # Connected fine, but the gateway's cold start + LLM round-trip blew the
-        # read window. The gateway is warming — back off, don't hammer or go silent.
-        self.assertEqual(_send_alert_to_personal_openclaw("m"), "timeout")
+        self.assertEqual(_send_alert_via_pushover("m"), "timeout")
 
     @patch("httpx.post", side_effect=httpx.ConnectTimeout("no route"))
     def test_connect_timeout_is_transient(self, _mock_post):
-        # Couldn't even reach the gateway — fast failure, retry next tick.
-        self.assertEqual(_send_alert_to_personal_openclaw("m"), "transient")
+        self.assertEqual(_send_alert_via_pushover("m"), "transient")
 
     @patch("httpx.post", side_effect=httpx.ConnectError("refused"))
     def test_connect_error_is_transient(self, _mock_post):
-        self.assertEqual(_send_alert_to_personal_openclaw("m"), "transient")
+        self.assertEqual(_send_alert_via_pushover("m"), "transient")
 
     @patch("httpx.post", side_effect=Exception("network down"))
     def test_network_error_is_transient(self, _mock_post):
-        self.assertEqual(_send_alert_to_personal_openclaw("m"), "transient")
+        self.assertEqual(_send_alert_via_pushover("m"), "transient")
 
-    @override_settings(ADMIN_OPENCLAW_GATEWAY_URL="", ADMIN_OPENCLAW_GATEWAY_TOKEN="")
+    @override_settings(PUSHOVER_API_TOKEN="", PUSHOVER_USER_KEY="")
     def test_unconfigured_is_undeliverable(self):
-        # No spamming when the gateway isn't even configured.
-        self.assertEqual(_send_alert_to_personal_openclaw("m"), "undeliverable")
+        # No spamming when Pushover isn't configured.
+        self.assertEqual(_send_alert_via_pushover("m"), "undeliverable")
 
 
 @override_settings(DEPLOY_SECRET="health-secret")
@@ -109,7 +110,7 @@ class RunHealthCheckCooldownTest(TestCase):
                 return_value=self._UNHEALTHY,
             ),
             patch(
-                "apps.cron.views._send_alert_to_personal_openclaw",
+                "apps.cron.views._send_alert_via_pushover",
                 return_value=alert_status,
             ),
             patch.object(cache, "set") as mock_set,

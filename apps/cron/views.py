@@ -1908,127 +1908,83 @@ _HEALTH_ALERT_COOLDOWN_SECONDS = 30 * 60  # 30 minutes
 _HEALTH_ALERT_TIMEOUT_COOLDOWN_SECONDS = 10 * 60  # 10 minutes
 
 
-def _send_alert_to_personal_openclaw(message: str) -> str:
-    """Send a health alert to MJ's personal OpenClaw agent.
+def _send_alert_via_pushover(message: str) -> str:
+    """Push a health alert straight to MJ's phone via Pushover.
 
-    Routes through the Cloudflare tunnel to the personal gateway. The agent
-    receives the alert and can propose fixes without acting.
+    Deliberately dependency-free: a single HTTPS POST to Pushover's API, no
+    Cloudflare tunnel, no personal gateway, no agent in the path. The old
+    gateway route silently 530'd for 13 days (2026-09-01 → 09-14) after its
+    origin VPS was removed, because a health-alert channel that depends on a
+    fragile custom chain can rot unnoticed. Keep this one boring.
 
-    Returns a delivery status:
-      - "delivered"    — the gateway accepted it (HTTP 200). Full cooldown.
-      - "undeliverable" — a config/auth problem that retrying won't fix
-                          (missing env, a 3xx CF-Access login redirect, or a 4xx).
-                          Full cooldown so we don't POST a doomed request every 5 minutes.
-      - "timeout"      — we connected but the gateway was slow/cold: a client-side
-                          read timeout, or a 5xx (incl. Cloudflare 52x) from a
-                          cold/waking origin. The personal gateway is itself an
-                          idle-hibernating Container App behind Cloudflare, so a
-                          real-outage alert often wakes a cold gateway. The caller
-                          starts a SHORT backoff — stops the every-tick storm but
-                          retries soon enough to land the alert once it warms.
-      - "transient"    — a fast connect-side failure (DNS/TCP/connect timeout) or
-                          an odd error; the caller leaves the cooldown unset so the
-                          next tick retries immediately against a hopefully-up gateway.
+    Returns the same delivery-status vocabulary the caller's cooldown map
+    already understands:
+      - "delivered"     — Pushover accepted it (HTTP 200, status:1). Full cooldown.
+      - "undeliverable" — missing config, or Pushover rejected the request
+                          (4xx / status:0 — bad token/user/params, or the monthly
+                          message quota is exhausted). Retrying won't fix it, so
+                          take the full cooldown instead of POSTing every tick.
+      - "timeout"       — a read timeout or a 5xx from Pushover: the service is
+                          briefly unavailable. Short backoff, then retry.
+      - "transient"     — a fast connect-side failure (DNS/TCP/connect) or an odd
+                          error; leave the cooldown unset so the next tick retries.
     """
     import httpx
 
-    gateway_url = getattr(settings, "ADMIN_OPENCLAW_GATEWAY_URL", "").strip()
-    gateway_token = getattr(settings, "ADMIN_OPENCLAW_GATEWAY_TOKEN", "").strip()
-    cf_client_id = getattr(settings, "CF_ACCESS_CLIENT_ID", "").strip()
-    cf_client_secret = getattr(settings, "CF_ACCESS_CLIENT_SECRET", "").strip()
+    token = getattr(settings, "PUSHOVER_API_TOKEN", "").strip()
+    user = getattr(settings, "PUSHOVER_USER_KEY", "").strip()
 
-    if not gateway_url or not gateway_token:
-        logger.warning("ADMIN_OPENCLAW_GATEWAY_URL or TOKEN not configured")
+    if not token or not user:
+        logger.warning("PUSHOVER_API_TOKEN or PUSHOVER_USER_KEY not configured — alert not sent")
         return "undeliverable"
-
-    headers = {
-        "Authorization": f"Bearer {gateway_token}",
-        "Content-Type": "application/json",
-    }
-    if cf_client_id and cf_client_secret:
-        headers["CF-Access-Client-Id"] = cf_client_id
-        headers["CF-Access-Client-Secret"] = cf_client_secret
-
-    url = f"{gateway_url.rstrip('/')}/v1/chat/completions"
 
     try:
         resp = httpx.post(
-            url,
-            headers=headers,
-            json={
-                "model": "openclaw",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are receiving an automated NBHD United platform health alert. "
-                            "Review the issue, propose fixes, but do NOT take any action. "
-                            "Summarize what happened and what MJ should consider doing."
-                        ),
-                    },
-                    {"role": "user", "content": message},
-                ],
+            "https://api.pushover.net/1/messages.json",
+            data={
+                "token": token,
+                "user": user,
+                "title": "NBHD Health Alert",
+                "message": message,
+                # priority 1 = high: bypasses the phone's quiet hours so a real
+                # outage isn't muted overnight. (2 would require ack/retry config.)
+                "priority": 1,
             },
-            # httpx does NOT follow redirects by default — a 302 is returned as-is
-            # (which is what we want: a CF-Access login redirect must read as a
-            # failure, not be chased to an HTML login page).
-            # Split timeout: a connect/DNS/TCP failure fast-fails in ~10s
-            # (-> transient) so it's cleanly separated from "reached the gateway,
-            # the LLM round-trip is just slow" (read=75 covers a cold start +
-            # generation). The body is tiny, so write/pool never bind.
-            timeout=httpx.Timeout(connect=10.0, read=75.0, write=10.0, pool=10.0),
+            # Body is tiny. connect fast-fails a dead network (-> transient);
+            # read covers Pushover being briefly slow (-> timeout).
+            timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=10.0),
         )
     # Exception order is LOAD-BEARING: ReadTimeout and ConnectTimeout both subclass
     # httpx.TimeoutException, so the specific types MUST precede the broad
-    # `except httpx.TimeoutException`; the bare `except Exception` MUST stay last
-    # (a plain Exception -> transient, which test_network_error_is_transient pins).
+    # `except httpx.TimeoutException`; the bare `except Exception` MUST stay last.
     except httpx.ReadTimeout:
-        # Connected fine; the gateway (cold start + LLM round-trip) didn't answer
-        # within the read window. It's warming now — back off briefly and retry.
-        logger.warning("Personal OpenClaw alert read-timed-out (gateway slow/cold) — backing off")
+        logger.warning("Pushover alert read-timed-out — backing off")
         return "timeout"
     except httpx.ConnectTimeout:
-        logger.warning("Personal OpenClaw alert connect-timed-out (gateway unreachable) — transient")
+        logger.warning("Pushover alert connect-timed-out — transient")
         return "transient"
     except httpx.ConnectError:
-        logger.warning("Personal OpenClaw alert connection error (gateway unreachable) — transient")
+        logger.warning("Pushover alert connection error — transient")
         return "transient"
     except httpx.TimeoutException:
-        # Write/pool timeout — unusual; treat as a quick transient retry.
-        logger.warning("Personal OpenClaw alert timed out (write/pool) — transient")
+        logger.warning("Pushover alert timed out (write/pool) — transient")
         return "transient"
     except Exception:
-        logger.exception("Failed to send alert to personal OpenClaw (transient)")
+        logger.exception("Failed to send Pushover alert (transient)")
         return "transient"
 
     if resp.status_code == 200:
-        logger.info("Health alert delivered to personal OpenClaw")
+        logger.info("Health alert delivered to Pushover")
         return "delivered"
-    if resp.status_code in (301, 302, 303, 307, 308):
-        # A 3xx to the gateway means Cloudflare Access bounced us to its login page:
-        # the CF-Access service token (CF_ACCESS_CLIENT_ID/SECRET) is missing/stale,
-        # or the CF-Access app has no Service-Auth policy admitting it. Retrying every
-        # tick won't help — fix the token/policy in Cloudflare Zero Trust.
-        logger.error(
-            "Personal OpenClaw alert redirected (HTTP %d) — Cloudflare Access rejected "
-            "the service token; alert NOT delivered. Check CF_ACCESS_CLIENT_ID/SECRET "
-            "and the CF-Access Service-Auth policy for the admin gateway.",
-            resp.status_code,
-        )
-        return "undeliverable"
     if 400 <= resp.status_code < 500:
-        logger.error("Personal OpenClaw alert rejected (HTTP %d): %s", resp.status_code, resp.text[:200])
+        # Pushover uses 4xx for bad token/user/params AND 429 for the monthly
+        # quota — none fixable by retrying this cycle, so take the full cooldown.
+        logger.error("Pushover rejected the alert (HTTP %d): %s", resp.status_code, resp.text[:200])
         return "undeliverable"
     if resp.status_code >= 500:
-        # 5xx (incl. Cloudflare 520-526) usually means the gateway origin is
-        # cold/waking behind CF — operationally the same as a slow read, so back
-        # off ~10 min rather than re-POSTing every 5-min tick (the storm fix for
-        # the real-outage path, where a cold gateway answers 5xx before read=75).
-        logger.warning(
-            "Personal OpenClaw returned %d (gateway slow/cold) — backing off: %s", resp.status_code, resp.text[:200]
-        )
+        logger.warning("Pushover returned %d (service issue) — backing off: %s", resp.status_code, resp.text[:200])
         return "timeout"
-    logger.warning("Personal OpenClaw returned %d (transient): %s", resp.status_code, resp.text[:200])
+    logger.warning("Pushover returned %d (transient): %s", resp.status_code, resp.text[:200])
     return "transient"
 
 
@@ -2080,7 +2036,7 @@ def run_health_check(request):
             if len(unhealthy) > 10:
                 lines.append(f"  ... and {len(unhealthy) - 10} more")
 
-            status = _send_alert_to_personal_openclaw("\n".join(lines))
+            status = _send_alert_via_pushover("\n".join(lines))
             # Cooldown policy:
             #   delivered / undeliverable -> full 30-min cooldown (it landed, or
             #     retrying won't fix it: missing config / CF-Access 302 / 4xx).
