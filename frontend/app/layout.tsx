@@ -4,6 +4,7 @@ import {
   Plus_Jakarta_Sans,
   Space_Grotesk,
   Instrument_Serif,
+  Schibsted_Grotesk,
 } from "next/font/google";
 
 import { AppShell } from "@/components/app-shell";
@@ -41,6 +42,14 @@ const instrumentSerif = Instrument_Serif({
   style: "italic",
 });
 
+// THE MEASURE onboarding screens (building / paused → subscribe).
+const schibstedGrotesk = Schibsted_Grotesk({
+  subsets: ["latin"],
+  variable: "--font-measure",
+  display: "swap",
+  weight: ["400", "500"],
+});
+
 export const metadata: Metadata = {
   title: "Neighborhood United",
   description: "Your AI-powered personal assistant.",
@@ -75,7 +84,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`h-full ${plusJakarta.variable} ${dmSerif.variable} ${spaceGrotesk.variable} ${instrumentSerif.variable}`}
+      className={`h-full ${plusJakarta.variable} ${dmSerif.variable} ${spaceGrotesk.variable} ${instrumentSerif.variable} ${schibstedGrotesk.variable}`}
     >
       <body className="overflow-x-hidden bg-bg">
         <ThemeProvider>
