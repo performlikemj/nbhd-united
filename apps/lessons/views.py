@@ -183,7 +183,7 @@ class LessonViewSet(viewsets.ModelViewSet):
         PendingShare + enqueues the fail-closed scrub; the grant is created only
         at approve-after-preview (POST /api/v1/friends/shares/<id>/approve)."""
         tenant = getattr(request.user, "tenant", None)
-        if tenant is None or not tenant.friends_enabled:
+        if tenant is None or not tenant.neighborhood_enabled:
             return Response(
                 {"detail": "The Neighborhood is not enabled for this account."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -209,7 +209,7 @@ class LessonViewSet(viewsets.ModelViewSet):
         """Revoke one share of this lesson → the spark leaves the neighbor's
         wormhole + absorb pull instantly (read-through, zero residue)."""
         tenant = getattr(request.user, "tenant", None)
-        if tenant is None or not tenant.friends_enabled:
+        if tenant is None or not tenant.neighborhood_enabled:
             return Response(
                 {"detail": "The Neighborhood is not enabled for this account."},
                 status=status.HTTP_403_FORBIDDEN,

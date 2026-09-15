@@ -29,7 +29,7 @@ class FriendsView(APIView):
         tenant = getattr(request.user, "tenant", None)
         if tenant is None:
             raise NotFound("No tenant for this account.")
-        if not tenant.friends_enabled:
+        if not tenant.neighborhood_enabled:
             raise PermissionDenied("The Neighborhood is not enabled for this account.")
         return tenant
 

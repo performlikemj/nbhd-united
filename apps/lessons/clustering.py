@@ -965,12 +965,13 @@ def _enqueue_shared_position_refresh(tenant: Tenant) -> None:
     star coords, enqueue a coords-only copy-forward onto any sparks they've
     shared to neighbors (``apps.friends.tasks.refresh_shared_positions_task``).
 
-    Lazy + defensive + gated on ``friends_enabled`` — the 99% of tenants without
-    the Neighborhood pay nothing, and a friends-side failure must never break the
-    core constellation refresh. QStash makes it a debounced async fire (it runs
-    inline only in dev/tests where QStash is unconfigured).
+    Lazy + defensive + gated on ``neighborhood_enabled`` — this follows the human
+    sharing surface (a person can share sparks without the assistant participating),
+    and a friends-side failure must never break the core constellation refresh.
+    QStash makes it a debounced async fire (it runs inline only in dev/tests where
+    QStash is unconfigured); the task itself no-ops when nothing has been shared.
     """
-    if not getattr(tenant, "friends_enabled", False):
+    if not getattr(tenant, "neighborhood_enabled", False):
         return
     try:
         from apps.cron.publish import publish_task

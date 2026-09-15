@@ -356,7 +356,9 @@ class SkyAddGateTest(TestCase):
         self.assertEqual(resp.status_code, 403)
 
     def test_friends_disabled_tenant_is_gated(self):
-        off = _tenant("off", friends_enabled=False)
+        off = _tenant("off")
+        off.neighborhood_enabled = False
+        off.save(update_fields=["neighborhood_enabled"])
         resp = _client(off.user).get("/api/v1/friends/sky/")
         self.assertEqual(resp.status_code, 403)
 

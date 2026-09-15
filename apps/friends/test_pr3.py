@@ -375,9 +375,11 @@ class RefreshSharedPositionsTest(TestCase):
         self.sl.refresh_from_db()
         self.assertEqual(self.sl.position_x, 0.42)
 
-    def test_recluster_hook_noop_when_friends_disabled(self):
+    def test_recluster_hook_noop_when_neighborhood_disabled(self):
         from apps.lessons.clustering import _enqueue_shared_position_refresh
 
-        plain = _tenant("plain", friends_enabled=False)
+        plain = _tenant("plain")
+        plain.neighborhood_enabled = False
+        plain.save(update_fields=["neighborhood_enabled"])
         # Should return without enqueuing anything (no crash, no work).
         self.assertIsNone(_enqueue_shared_position_refresh(plain))

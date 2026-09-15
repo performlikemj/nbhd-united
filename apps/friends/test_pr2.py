@@ -597,7 +597,9 @@ class ShareHttpTest(TestCase):
         self.assertEqual(resp.json()[0]["audience"], "HBee")
 
     def test_preview_endpoint_flag_off_403(self):
-        off = _tenant("http_off", friends_enabled=False)
+        off = _tenant("http_off")
+        off.neighborhood_enabled = False
+        off.save(update_fields=["neighborhood_enabled"])
         resp = _client(off.user).get("/api/v1/friends/shares/preview/?lesson_id=1&friendship_id=x")
         self.assertEqual(resp.status_code, 403)
 

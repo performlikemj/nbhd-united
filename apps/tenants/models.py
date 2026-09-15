@@ -888,9 +888,21 @@ class Tenant(models.Model):
     # Neighborhood (Friends) module — cross-tenant sharing, wormholes, chat,
     # Missions. Dark by default; rolled out per-tenant like every other pillar.
     # Product surface is "Neighborhood"; the flag/app stay ``friends_*``.
+    # Whether the PERSON can use the Neighborhood surface (waves, neighbor chat,
+    # circles/communities, shared sparks). Standard-on for everyone — this is a
+    # human-to-human social feature with no dependency on the paid AI runtime.
+    # A per-tenant off switch remains for moderation.
+    neighborhood_enabled = models.BooleanField(
+        default=True,
+        help_text="Person can use the Neighborhood — waves, neighbor chat, circles, shared sparks",
+    )
+    # Whether the ASSISTANT participates in the Neighborhood (friends plugin +
+    # tools, the Neighborhood AGENTS.md section, neighbor persona). Opt-in and
+    # dark by default — kept separate from neighborhood_enabled so opening the
+    # human surface never changes anyone's AI config.
     friends_enabled = models.BooleanField(
         default=False,
-        help_text="Enable the Neighborhood (Friends) layer — waves, shared sparks, wormholes, chat",
+        help_text="Assistant participates in the Neighborhood (friends plugin, tools, AGENTS.md section)",
     )
     friends_agent_propose_enabled = models.BooleanField(
         default=False,

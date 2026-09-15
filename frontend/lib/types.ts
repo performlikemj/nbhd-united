@@ -77,6 +77,7 @@ export interface Tenant {
   fuel_enabled: boolean;
   core_enabled: boolean;
   byo_models_enabled: boolean;
+  neighborhood_enabled: boolean;
   friends_enabled: boolean;
 }
 

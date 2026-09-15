@@ -308,7 +308,7 @@ export default function ConstellationPlayPage() {
   // the game is byte-identical to the pre-Neighborhood experience.
   const { data: tenant } = useTenantQuery();
   const { data: wormholes } = useWormholesQuery();
-  const friendsEnabled = !!tenant?.friends_enabled;
+  const friendsEnabled = !!tenant?.neighborhood_enabled;
 
   // gating: render nothing while deciding / redirecting out
   if (allowed === null || !allowed) return null;

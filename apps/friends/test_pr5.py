@@ -242,7 +242,9 @@ class ParticipantGateTest(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_flag_off_403(self):
-        off = _tenant("pg_off", friends_enabled=False)
+        off = _tenant("pg_off")
+        off.neighborhood_enabled = False
+        off.save(update_fields=["neighborhood_enabled"])
         resp = _client(off.user).get("/api/v1/friends/threads/")
         self.assertEqual(resp.status_code, 403)
 
