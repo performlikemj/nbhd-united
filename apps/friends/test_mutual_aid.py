@@ -102,8 +102,8 @@ class MutualAidContractTests(TestCase):
 
     def test_network_contract_requires_enabled_authenticated_account(self):
         self.assertEqual(_client(self.a.user).get("/api/v1/friends/network/").data["version"], 1)
-        self.c.friends_enabled = False
-        self.c.save(update_fields=["friends_enabled"])
+        self.c.neighborhood_enabled = False
+        self.c.save(update_fields=["neighborhood_enabled"])
         self.assertEqual(_client(self.c.user).get("/api/v1/friends/network/").status_code, 403)
 
     def test_revoked_friendship_hides_and_prevents_accepting_invitation(self):

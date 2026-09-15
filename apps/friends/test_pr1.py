@@ -40,7 +40,9 @@ def _profile(tenant, handle) -> NeighborProfile:
 
 class FlagGateTest(TestCase):
     def test_disabled_tenant_gets_403(self):
-        t = _make_tenant("gate_off", friends_enabled=False)
+        t = _make_tenant("gate_off")
+        t.neighborhood_enabled = False
+        t.save(update_fields=["neighborhood_enabled"])
         resp = _client(t.user).get("/api/v1/friends/")
         self.assertEqual(resp.status_code, 403)
 

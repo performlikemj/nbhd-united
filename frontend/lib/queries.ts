@@ -2003,7 +2003,7 @@ export function useNeighborhoodQuery() {
     queryKey: ["neighborhood"],
     queryFn: fetchNeighborhood,
     staleTime: 30_000,
-    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+    enabled: isLoggedIn() && !!tenant?.neighborhood_enabled,
   });
 }
 
@@ -2013,7 +2013,7 @@ export function useNeighborProfileQuery() {
     queryKey: ["neighbor-profile"],
     queryFn: fetchNeighborProfile,
     staleTime: 10 * 60_000,
-    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+    enabled: isLoggedIn() && !!tenant?.neighborhood_enabled,
   });
 }
 
@@ -2026,7 +2026,7 @@ export function useWormholesQuery() {
     queryKey: ["wormholes"],
     queryFn: fetchWormholes,
     staleTime: 30_000,
-    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+    enabled: isLoggedIn() && !!tenant?.neighborhood_enabled,
   });
 }
 
@@ -2216,7 +2216,7 @@ export function usePendingSharesQuery() {
     queryKey: ["pending-shares"],
     queryFn: fetchPendingShares,
     staleTime: 30_000,
-    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+    enabled: isLoggedIn() && !!tenant?.neighborhood_enabled,
   });
 }
 
@@ -2228,7 +2228,7 @@ export function useApprovedLessonsQuery() {
     queryKey: ["lessons-approved"],
     queryFn: () => fetchLessons("approved"),
     staleTime: 60_000,
-    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+    enabled: isLoggedIn() && !!tenant?.neighborhood_enabled,
   });
 }
 
@@ -2301,7 +2301,7 @@ export function useAbsorbedQuery() {
     queryKey: ["absorbed"],
     queryFn: fetchAbsorbed,
     staleTime: 30_000,
-    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+    enabled: isLoggedIn() && !!tenant?.neighborhood_enabled,
   });
 }
 
@@ -2340,7 +2340,7 @@ export function useThreadsQuery() {
     queryKey: ["friend-threads"],
     queryFn: fetchThreads,
     staleTime: 15_000,
-    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+    enabled: isLoggedIn() && !!tenant?.neighborhood_enabled,
   });
 }
 
@@ -2452,7 +2452,7 @@ export function useMissionsQuery() {
     queryKey: ["missions"],
     queryFn: fetchMissions,
     staleTime: 30_000,
-    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+    enabled: isLoggedIn() && !!tenant?.neighborhood_enabled,
   });
 }
 
@@ -2462,7 +2462,7 @@ export function useMissionDetailQuery(id: string | null) {
     queryKey: ["mission", id],
     queryFn: () => fetchMissionDetail(id as string),
     staleTime: 15_000,
-    enabled: isLoggedIn() && !!tenant?.friends_enabled && !!id,
+    enabled: isLoggedIn() && !!tenant?.neighborhood_enabled && !!id,
   });
 }
 
@@ -2472,7 +2472,7 @@ export function useGoalActionsQuery() {
     queryKey: ["goal-actions"],
     queryFn: fetchGoalActions,
     staleTime: 30_000,
-    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+    enabled: isLoggedIn() && !!tenant?.neighborhood_enabled,
   });
 }
 
@@ -2631,7 +2631,7 @@ export function useCirclesQuery() {
     queryKey: ["circles"],
     queryFn: fetchCircles,
     staleTime: 30_000,
-    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+    enabled: isLoggedIn() && !!tenant?.neighborhood_enabled,
   });
 }
 
@@ -2641,7 +2641,7 @@ export function useCircleDetailQuery(id: string | null) {
     queryKey: ["circle", id],
     queryFn: () => fetchCircleDetail(id as string),
     staleTime: 15_000,
-    enabled: isLoggedIn() && !!tenant?.friends_enabled && !!id,
+    enabled: isLoggedIn() && !!tenant?.neighborhood_enabled && !!id,
   });
 }
 
