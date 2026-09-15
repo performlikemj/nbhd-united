@@ -72,7 +72,10 @@ class MemoryToolPolicyTest(TestCase):
         # fired correctly on 5.28. 5.28's DENY list now diverges from 5.7's:
         # `web_fetch` was added at 5.28 (see tool_policy.py P0-0b comment and
         # test_tool_policy.py::test_2026_5_28_denies_web_fetch).
-        self.assertEqual(OPENCLAW_CURRENT_VERSION, "2026.5.28")
+        # 2026.9.4 security bump: 9.4 resolves to the 5.28 policy row (allow &
+        # deny lists unchanged, verified in code). Full tool-taxonomy
+        # re-verification against 9.4 rides on the image boot smoke.
+        self.assertEqual(OPENCLAW_CURRENT_VERSION, "2026.9.4")
 
     def test_starter_allow_unchanged_across_4_15_to_5_7(self):
         allow_4_15 = set(get_allowed_tools(version="2026.4.15"))
