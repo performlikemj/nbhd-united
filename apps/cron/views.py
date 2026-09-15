@@ -1906,6 +1906,11 @@ _HEALTH_ALERT_COOLDOWN_SECONDS = 30 * 60  # 30 minutes
 # cold start): long enough to stop the every-5-min storm, short enough to retry
 # and actually deliver once the gateway warms.
 _HEALTH_ALERT_TIMEOUT_COOLDOWN_SECONDS = 10 * 60  # 10 minutes
+# Debounce for the "two consecutive failed ticks before alerting" rule: how long to
+# remember the previous tick's unhealthy tenant set. Must comfortably exceed the
+# 5-min health-check interval (so the prior tick is still remembered) yet not linger
+# so long that a stale entry outlives a real recovery.
+_HEALTH_PREV_UNHEALTHY_TTL_SECONDS = 15 * 60  # 15 minutes
 
 
 def _send_alert_via_pushover(message: str) -> str:
@@ -2019,22 +2024,43 @@ def run_health_check(request):
         "unhealthy": len(unhealthy),
     }
 
+    # Debounce: a tenant must be unhealthy on TWO consecutive ticks before it
+    # alerts. A single failed probe is almost always a transient blip — most often
+    # the 5-min health tick landing on the exact second a just-woken container fires
+    # its top-of-hour cron (a one-off 502 from the in-container proxy that is 200
+    # again by the next tick). We remember this tick's unhealthy set in the shared
+    # cache and only alert on tenants that were ALSO unhealthy last tick. A genuine
+    # outage still alerts on the very next tick (~5 min later).
+    prev_unhealthy = set(cache.get("health_prev_unhealthy") or [])
+    this_unhealthy_ids = [r.get("tenant_id") for r in unhealthy if r.get("tenant_id")]
+    cache.set("health_prev_unhealthy", this_unhealthy_ids, _HEALTH_PREV_UNHEALTHY_TTL_SECONDS)
+    confirmed = [r for r in unhealthy if r.get("tenant_id") in prev_unhealthy]
+
     if unhealthy:
+        summary["details"] = unhealthy
+        summary["confirmed_unhealthy"] = len(confirmed)
+        if not confirmed:
+            logger.info(
+                "Health check: %d unhealthy (first failing tick, unconfirmed) — alert deferred",
+                len(unhealthy),
+            )
+
+    if confirmed:
         # Rate-limit alerts — skip if we already alerted recently
         cache_key = "health_alert_sent"
         already_alerted = cache.get(cache_key)
 
         if not already_alerted:
-            lines = [f"NBHD Health Alert — {len(unhealthy)}/{len(results)} tenant(s) unhealthy:"]
-            for r in unhealthy[:10]:
+            lines = [f"NBHD Health Alert — {len(confirmed)}/{len(results)} tenant(s) unhealthy:"]
+            for r in confirmed[:10]:
                 name = r.get("display_name", "?")
                 container = r.get("container", "?")
                 checks = r.get("checks", {})
                 failed = [k for k, v in checks.items() if not v.get("ok")]
                 detail = ", ".join(failed) if failed else r.get("error", "unknown")
                 lines.append(f"  - {name} ({container}): {detail}")
-            if len(unhealthy) > 10:
-                lines.append(f"  ... and {len(unhealthy) - 10} more")
+            if len(confirmed) > 10:
+                lines.append(f"  ... and {len(confirmed) - 10} more")
 
             status = _send_alert_via_pushover("\n".join(lines))
             # Cooldown policy:
@@ -2052,11 +2078,9 @@ def run_health_check(request):
             summary["alerted"] = status == "delivered"
             summary["alert_status"] = status
         else:
-            logger.info("Health check: %d unhealthy, alert suppressed (cooldown)", len(unhealthy))
+            logger.info("Health check: %d confirmed unhealthy, alert suppressed (cooldown)", len(confirmed))
             summary["alerted"] = False
             summary["cooldown"] = True
-
-        summary["details"] = unhealthy
 
     return JsonResponse(summary)
 
