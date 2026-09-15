@@ -80,14 +80,26 @@ class SendAlertClassificationTest(TestCase):
         self.assertEqual(_send_alert_via_pushover("m"), "undeliverable")
 
 
-@override_settings(DEPLOY_SECRET="health-secret")
+_LOCMEM = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "health-alert-test",
+    }
+}
+
+
+@override_settings(DEPLOY_SECRET="health-secret", CACHES=_LOCMEM)
 class RunHealthCheckCooldownTest(TestCase):
     """The cooldown map is THE storm-stopping behaviour and must be covered:
     a 'timeout' result sets a short backoff, 'transient' leaves the cooldown unset,
-    and 'delivered' uses the full cooldown."""
+    and 'delivered' uses the full cooldown. Each run pre-seeds the previous tick's
+    unhealthy set so it counts as the SECOND consecutive failure (the debounce
+    requires two before alerting)."""
 
+    _TID = "11111111-1111-1111-1111-111111111111"
     _UNHEALTHY = [
         {
+            "tenant_id": _TID,
             "healthy": False,
             "display_name": "Down Tenant",
             "container": "oc-x",
@@ -104,6 +116,8 @@ class RunHealthCheckCooldownTest(TestCase):
         from django.core.cache import cache
 
         cache.delete("health_alert_sent")  # ensure no prior cooldown
+        # Pre-seed the previous tick so this single run is a confirmed (2nd) failure.
+        cache.set("health_prev_unhealthy", [self._TID], 900)
         with (
             patch(
                 "apps.orchestrator.services.check_all_tenants_health",
@@ -145,6 +159,82 @@ class RunHealthCheckCooldownTest(TestCase):
             calls[0].args,
             ("health_alert_sent", True, _HEALTH_ALERT_COOLDOWN_SECONDS),
         )
+
+
+@override_settings(
+    DEPLOY_SECRET="health-secret",
+    PUSHOVER_API_TOKEN="tok",
+    PUSHOVER_USER_KEY="usr",
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "health-debounce-test",
+        }
+    },
+)
+class RunHealthCheckDebounceTest(TestCase):
+    """A tenant must be unhealthy on TWO consecutive ticks before it alerts, so a
+    one-off blip (the 5-min tick colliding with a cron-wake 502) never pages MJ."""
+
+    _TID = "dca551cc-9114-4ca9-aaaa-aaaaaaaaaaaa"
+    _UNHEALTHY = [
+        {
+            "tenant_id": _TID,
+            "healthy": False,
+            "display_name": "Blip Tenant",
+            "container": "oc-dca551cc-9114-4ca9-a",
+            "checks": {"gateway": {"ok": False, "status_code": 502}},
+        }
+    ]
+    _HEALTHY = [{"tenant_id": _TID, "healthy": True, "display_name": "Blip Tenant", "checks": {}}]
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()  # isolated LocMem — start every test with an empty cache
+
+    def _tick(self, results):
+        with (
+            patch(
+                "apps.orchestrator.services.check_all_tenants_health",
+                return_value=results,
+            ),
+            patch(
+                "apps.cron.views._send_alert_via_pushover",
+                return_value="delivered",
+            ) as mock_alert,
+        ):
+            resp = self.client.post(
+                reverse("cron-run-health-check"),
+                headers={"X-Deploy-Secret": "health-secret"},
+            )
+        return resp, mock_alert
+
+    def test_first_failing_tick_defers_alert(self):
+        resp, mock_alert = self._tick(self._UNHEALTHY)
+        self.assertEqual(resp.status_code, 200)
+        mock_alert.assert_not_called()
+        body = resp.json()
+        self.assertEqual(body["unhealthy"], 1)
+        self.assertEqual(body["confirmed_unhealthy"], 0)
+
+    def test_second_consecutive_tick_alerts(self):
+        self._tick(self._UNHEALTHY)  # tick 1 — deferred
+        resp, mock_alert = self._tick(self._UNHEALTHY)  # tick 2 — confirmed
+        self.assertEqual(resp.status_code, 200)
+        mock_alert.assert_called_once()
+        body = resp.json()
+        self.assertEqual(body["confirmed_unhealthy"], 1)
+        self.assertTrue(body.get("alerted"))
+
+    def test_recovery_after_one_blip_never_alerts(self):
+        self._tick(self._UNHEALTHY)  # tick 1 — one-off blip
+        resp, mock_alert = self._tick(self._HEALTHY)  # tick 2 — recovered
+        self.assertEqual(resp.status_code, 200)
+        mock_alert.assert_not_called()
+        # A later failure must again wait for a second consecutive tick.
+        _, mock_alert2 = self._tick(self._UNHEALTHY)
+        mock_alert2.assert_not_called()
 
 
 @override_settings(DEPLOY_SECRET="health-secret")
