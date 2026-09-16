@@ -145,12 +145,25 @@ set -e
 
 printf '%s\n' "$DOCTOR_OUTPUT"
 
-if printf '%s\n' "$DOCTOR_OUTPUT" | grep -qi "Invalid config"; then
-  echo "OpenClaw config doctor smoke failed: invalid config detected." >&2
+# Fail on config/binary SCHEMA skew — the class this smoke exists to catch (a
+# renamed/removed/unknown key the running OpenClaw rejects). OpenClaw prints
+# these as "Unrecognized key(s)" / "Invalid input" (e.g. the 2026.9.4 bump that
+# renamed pdfMaxBytesMb->pdfMaxMb, moved memorySearch->memory.search, etc.).
+if printf '%s\n' "$DOCTOR_OUTPUT" | grep -qiE 'unrecognized key|invalid input'; then
+  echo "OpenClaw config doctor smoke failed: config schema skew (unrecognized/invalid key)." >&2
   exit 1
 fi
 
-if [ "$DOCTOR_EXIT" -ne 0 ]; then
-  echo "OpenClaw config doctor smoke failed: doctor command exited non-zero." >&2
-  exit "$DOCTOR_EXIT"
+# NOTE: OpenClaw >= 2026.9.4 doctor exits non-zero (and prints an "Invalid
+# config" header) for "plugin path not found" whenever it runs OUTSIDE the
+# container image — the tenant plugins live at /opt/nbhd/plugins IN the image,
+# never on this CI runner (2026.5.28 doctor treated the same case as a warning
+# and exited 0). Plugin presence is owned by the in-container built-image boot
+# smoke, not this schema gate, so a non-zero exit alone is expected here. A
+# doctor that never reached completion (crash / bad version / no network) is
+# still a real failure, so require the completion marker instead of trusting
+# the exit code.
+if ! printf '%s\n' "$DOCTOR_OUTPUT" | grep -qi "Doctor complete"; then
+  echo "OpenClaw config doctor smoke failed: doctor did not complete (exit ${DOCTOR_EXIT})." >&2
+  exit "${DOCTOR_EXIT:-1}"
 fi
