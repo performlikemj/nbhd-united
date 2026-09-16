@@ -54,7 +54,7 @@ test("pinned gateway activates every repo-derived hook plugin without dropped-ho
 
   const openclawBinary = await realpath(configuredBinary);
   const packageJson = JSON.parse(await readFile(path.join(path.dirname(openclawBinary), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "2026.5.28", "the activation regression must run against the Dockerfile pin");
+  assert.equal(packageJson.version, "2026.9.4", "the activation regression must run against the Dockerfile pin");
 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "nbhd-hook-activation-e2e-"));
   const stateDirectory = path.join(temporaryRoot, "state");

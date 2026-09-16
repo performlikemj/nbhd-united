@@ -194,7 +194,7 @@ async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "
   assert.ok(configuredBinary, "OPENCLAW_REPRO_BIN must point to the pinned openclaw.mjs");
   const openclawBinary = await realpath(configuredBinary);
   const packageJson = JSON.parse(await readFile(path.join(path.dirname(openclawBinary), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "2026.5.28", "the regression must run against the Dockerfile pin");
+  assert.equal(packageJson.version, "2026.9.4", "the regression must run against the Dockerfile pin");
 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "nbhd-origin-e2e-"));
   const stateDirectory = path.join(temporaryRoot, "state");
