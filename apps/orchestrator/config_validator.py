@@ -84,6 +84,10 @@ _AGENTS_DEFAULTS_ALLOWED_KEYS = frozenset(
         # reject the very config the generator now emits.
         "pdfModel",
         "pdfMaxBytesMb",
+        # OpenClaw 2026.9.4 renamed pdfMaxBytesMb -> pdfMaxMb. Both are allowed
+        # here so this gate accepts a 5.28-shape config (still-rolling tenants)
+        # and a 9.4-shape config (migrated in generate_openclaw_config) alike.
+        "pdfMaxMb",
     }
 )
 
