@@ -23,6 +23,20 @@ OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-/home/node/oc-state}"
 OPENCLAW_WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-$OPENCLAW_WORKSPACE_PATH}"
 XDG_CACHE_HOME="${XDG_CACHE_HOME:-$OPENCLAW_STATE_DIR/cache}"
 export OPENCLAW_HOME OPENCLAW_CONFIG_PATH OPENCLAW_WORKSPACE_DIR OPENCLAW_STATE_DIR XDG_CACHE_HOME
+
+# OpenClaw 2026.9.4's fs-safe layer creates a directory, then VERIFIES its mode
+# equals (0o777 & ~umask) and throws "FsSafeError: directory final mode could
+# not be verified" if it doesn't. Our Azure volume mounts are root-owned, so
+# the node user's chmod is EPERM (swallowed by suppress-chmod-eperm.js) and the
+# mode never actually changes. With the default umask (022) fs-safe wants 0o755
+# but every dir is created 0o700, so the verify fails and doctor + the gateway
+# refuse to boot. Setting umask 077 makes the WANTED mode 0o700 — exactly what
+# mkdir/mkdtemp already produce — so no chmod is attempted and the verify
+# passes. This is the umask OpenClaw itself uses in its own prepare flows, and
+# it also matches fs-safe's 0o700 requirement for secret dirs. Must be set
+# before any directory is created below (and it is inherited by the doctor +
+# gateway children).
+umask 077
 NBHD_MANAGED_SKILLS_SRC="${NBHD_MANAGED_SKILLS_SRC:-/opt/nbhd/agent-skills}"
 NBHD_MANAGED_SKILLS_DST="${NBHD_MANAGED_SKILLS_DST:-$OPENCLAW_WORKSPACE_PATH/skills/nbhd-managed}"
 NBHD_MANAGED_AGENTS_TEMPLATE="${NBHD_MANAGED_AGENTS_TEMPLATE:-/opt/nbhd/templates/openclaw/AGENTS.md}"
