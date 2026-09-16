@@ -1,0 +1,582 @@
+/* THE MEASURE — onboarding "building" and "paused → subscribe" screens.
+ * One warm paper ground, one ink, one green. A single vertical spine rule, a
+ * big tabular counter, and a horizontal rail of five ticks. On the phone the
+ * rail rotates onto the spine itself. */
+
+.screen {
+  --paper: #f4f1ea;
+  --ink: #161511;
+  --ink-2: rgba(22, 21, 17, 0.52);
+  --ink-3: rgba(22, 21, 17, 0.48);
+  --green: #2e5a44;
+  --green-hover: #274d3a;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --spine: 25%;
+  --outer: 48px;
+  --gutter: 48px;
+  --margin-gap: 32px;
+  --air: 48px;
+  --frame-top: 104px;
+  --display: clamp(46px, 6.1vw, 88px);
+
+  position: relative;
+  box-sizing: border-box;
+  min-height: 100dvh;
+  padding: 24px 0 120px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-measure), "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 400;
+  font-size: 17px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+.screen *,
+.screen *::before,
+.screen *::after {
+  box-sizing: border-box;
+}
+
+.screen h1,
+.screen p,
+.screen ol {
+  margin: 0;
+}
+
+.screen button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.screen :focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: 4px;
+}
+
+/* the spine: one vertical rule, full height */
+.screen::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--spine);
+  width: 1px;
+  background: var(--ink);
+}
+
+@media (max-width: 959px) {
+  .screen {
+    --spine: 24px;
+    --outer: 16px;
+    --gutter: 16px;
+    --air: 32px;
+    --frame-top: 32px;
+    --display: 46px;
+
+    padding: 20px 0 calc(48px + env(safe-area-inset-bottom, 0px));
+  }
+  /* on the phone the spine is the instrument: half-strength until the measure draws it */
+  .screen::before {
+    background: var(--ink-2);
+  }
+}
+
+/* ---------- type ---------- */
+.label {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.labelDim {
+  color: var(--ink-2);
+}
+.display,
+.count {
+  font-size: var(--display);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 0.95;
+}
+.display {
+  max-width: 13ch;
+}
+.key {
+  color: var(--green);
+}
+.count,
+.cellNum,
+.price {
+  font-variant-numeric: tabular-nums;
+}
+.countOf {
+  color: var(--ink-2);
+}
+.green {
+  color: var(--green);
+}
+
+/* ---------- tag row ---------- */
+.tagrow {
+  display: grid;
+  grid-template-columns: var(--spine) minmax(0, 1fr);
+  align-items: baseline;
+  color: var(--ink-2);
+}
+.wordmark {
+  grid-column: 1;
+  padding: 0 var(--margin-gap) 0 var(--outer);
+  text-align: right;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.3;
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.14em;
+}
+.tagrowLabels {
+  grid-column: 2;
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 0 var(--outer) 0 var(--gutter);
+}
+
+/* ---------- frame ---------- */
+.frame {
+  display: grid;
+  grid-template-columns: var(--spine) minmax(0, 1fr);
+  padding-top: var(--frame-top);
+}
+.margin {
+  grid-column: 1;
+  padding: 0 var(--margin-gap) 0 var(--outer);
+  text-align: right;
+}
+.margin .count {
+  margin-top: 12px;
+  white-space: nowrap;
+}
+.margin .count + .label {
+  margin-top: 12px;
+}
+.content {
+  grid-column: 2;
+  padding: 0 var(--outer) 0 var(--gutter);
+  max-width: 1140px;
+}
+
+@media (min-width: 960px) {
+  /* headline left; the one action stands on the rule, flush with its last tick */
+  .content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 48px;
+    grid-template-rows: auto auto auto auto;
+    align-items: start;
+  }
+  .lead {
+    display: contents;
+  }
+  .content .display {
+    grid-column: 1;
+    grid-row: 1;
+    margin-bottom: var(--air);
+  }
+  .content:has(.status) .display {
+    margin-bottom: 24px;
+  }
+  .content > .status {
+    grid-column: 1;
+    grid-row: 2;
+    margin-bottom: var(--air);
+  }
+  .content .actions {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    align-self: end;
+    justify-self: end;
+  }
+  .content > .measure {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+  .content > .note,
+  .content > .para,
+  .content > .footLabel {
+    grid-column: 1 / -1;
+    grid-row: 4;
+  }
+  .content > .note,
+  .content > .footLabel {
+    margin-top: 24px;
+  }
+  .content > .para {
+    margin-top: var(--air);
+  }
+}
+
+@media (max-width: 959px) {
+  .frame {
+    display: block;
+    padding-left: calc(var(--spine) + var(--gutter));
+    padding-right: var(--outer);
+  }
+  .margin {
+    padding: 0;
+    text-align: left;
+  }
+  .margin > .marginTitle {
+    display: none;
+  }
+  .margin .count {
+    margin-top: 0;
+  }
+  .tagrow {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 0 var(--outer) 0 calc(var(--spine) + var(--gutter));
+  }
+  .wordmark {
+    padding: 0;
+    text-align: left;
+  }
+  .tagrowLabels {
+    flex-direction: column;
+    align-items: flex-end;
+    text-align: right;
+    gap: 4px;
+    padding: 0;
+  }
+  .content {
+    padding: 0;
+    margin-top: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--air);
+  }
+  .lead {
+    display: contents;
+  }
+  .measure {
+    order: -2;
+  }
+  .status {
+    order: 1;
+    margin-top: -16px;
+  }
+  .para {
+    order: 2;
+  }
+  .note {
+    order: 3;
+    margin-top: -8px;
+  }
+  .actions {
+    order: 4;
+  }
+  .content > .footLabel {
+    order: 5;
+    margin-top: -8px;
+  }
+}
+
+/* ---------- the measure ---------- */
+.measure {
+  position: relative;
+}
+.measureFill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--p, 0%);
+  height: 1px;
+  background: var(--ink);
+}
+.measure.isCreeping .measureFill {
+  transition: width 40s linear, height 40s linear;
+}
+.measureRest {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 0;
+  left: calc(var(--p, 0%) + 12px);
+  border-top: 1px dotted var(--ink);
+  display: none;
+}
+.measure.isStopped .measureRest {
+  display: block;
+}
+.measureTicks {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 24px;
+  pointer-events: none;
+}
+.tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 12px;
+  background: var(--ink-3);
+}
+.tick:nth-child(1) {
+  left: calc(20% - 1px);
+}
+.tick:nth-child(2) {
+  left: calc(40% - 1px);
+}
+.tick:nth-child(3) {
+  left: calc(60% - 1px);
+}
+.tick:nth-child(4) {
+  left: calc(80% - 1px);
+}
+.tick:nth-child(5) {
+  left: calc(100% - 1px);
+}
+.tick.isDone {
+  height: 24px;
+  background: var(--ink);
+}
+.tick.isCurrent {
+  height: 24px;
+  background: var(--green);
+}
+
+.cells {
+  list-style: none;
+  padding: 36px 0 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  color: var(--ink-3);
+  font-weight: 400;
+}
+.cell.isDone {
+  color: var(--ink);
+  font-weight: 500;
+}
+.cell.isCurrent {
+  color: var(--green);
+  font-weight: 500;
+}
+.cellInner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.cellNum {
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  margin-bottom: 6px;
+}
+
+@media (max-width: 959px) {
+  /* rotated: the ticks sit on the spine itself, labels beside them */
+  .measure {
+    margin-left: calc(-1 * var(--gutter));
+    height: 230px;
+    margin-bottom: 12px;
+  }
+  .measureFill {
+    width: 1px;
+    height: var(--p, 0%);
+  }
+  .measure.isCreeping .measureFill {
+    transition: height 40s linear;
+  }
+  .measureRest {
+    top: calc(var(--p, 0%) + 12px);
+    bottom: 0;
+    left: 0;
+    right: auto;
+    width: 0;
+    height: auto;
+    border-top: 0;
+    border-left: 1px dotted var(--ink);
+  }
+  .measureTicks {
+    display: none;
+  }
+  .cells {
+    position: absolute;
+    inset: 0;
+    display: block;
+    padding: 0;
+  }
+  .cell {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 20%;
+    display: block;
+  }
+  .cell:nth-child(1) {
+    top: 0;
+  }
+  .cell:nth-child(2) {
+    top: 20%;
+  }
+  .cell:nth-child(3) {
+    top: 40%;
+  }
+  .cell:nth-child(4) {
+    top: 60%;
+  }
+  .cell:nth-child(5) {
+    top: 80%;
+  }
+  .cell::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 8px;
+    height: 1px;
+    background: currentColor;
+  }
+  .cell.isDone::before,
+  .cell.isCurrent::before {
+    width: 16px;
+  }
+  .cellInner {
+    position: absolute;
+    left: 28px;
+    bottom: 0;
+    transform: translateY(50%);
+    display: flex;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 10px;
+    white-space: nowrap;
+  }
+  .cellNum {
+    font-size: 17px;
+    margin: 0;
+    line-height: 1;
+  }
+}
+
+/* ---------- actions ---------- */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 24px 32px;
+}
+.screen .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 56px;
+  padding: 0 32px;
+  min-width: 200px;
+  border-radius: 2px 2px 0 0;
+  border: 1px solid var(--green);
+  background: var(--green);
+  color: var(--paper);
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.screen .btn:hover {
+  background: var(--green-hover);
+  border-color: var(--green-hover);
+}
+.screen .btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.screen .btnLine {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--ink);
+}
+.screen .btnLine:hover {
+  background: rgba(22, 21, 17, 0.06);
+}
+.price {
+  font-weight: 400;
+  margin-left: 0.3em;
+}
+.link {
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 5px;
+}
+.link:hover {
+  color: var(--ink);
+}
+@media (max-width: 959px) {
+  .screen .btn {
+    width: 100%;
+    border-radius: 2px;
+  }
+  .actions {
+    gap: 20px;
+  }
+  .actions .link {
+    order: 2;
+  }
+}
+
+.status {
+  font-weight: 500;
+}
+.note {
+  color: var(--ink-2);
+}
+.para {
+  max-width: 52ch;
+}
+.alert {
+  color: var(--ink);
+}
+
+/* ---------- motion: settle with weight ---------- */
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.screen [data-settle] {
+  animation: settle 0.42s var(--ease) both;
+  animation-delay: var(--d, 0ms);
+}
+@media (prefers-reduced-motion: reduce) {
+  .screen [data-settle] {
+    animation: none;
+  }
+  .measure.isCreeping .measureFill {
+    transition: none;
+  }
+}

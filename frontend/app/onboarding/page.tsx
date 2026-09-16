@@ -7,6 +7,7 @@ import { PersonaScene } from "@/components/onboarding/persona-scene";
 import { ChannelScene } from "@/components/onboarding/channel-scene";
 import type { ChannelOutcome } from "@/components/onboarding/channel-outcome";
 import { LaunchSequence } from "@/components/onboarding/launch-sequence";
+import { PausedScene } from "@/components/onboarding/paused-scene";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { useMeQuery } from "@/lib/queries";
 
@@ -28,6 +29,12 @@ export default function OnboardingPage() {
     );
   }
 
+  // A suspended tenant has nothing to build — it needs a subscription, not a
+  // launch screen whose retry can never succeed.
+  if (tenant?.status === "suspended") {
+    return <PausedScene tenant={tenant} />;
+  }
+
   // Determine which scene to show: persona (no tenant) → channel → launch.
   let scene: "persona" | "channel" | "launch";
   if (!hasTenant) {
@@ -36,6 +43,12 @@ export default function OnboardingPage() {
     scene = "channel";
   } else {
     scene = "launch";
+  }
+
+  // THE MEASURE screens are full-bleed paper; the nebula shell wraps only the
+  // persona and channel steps.
+  if (scene === "launch" && channelOutcome) {
+    return <LaunchSequence outcome={channelOutcome} />;
   }
 
   return (
@@ -48,9 +61,6 @@ export default function OnboardingPage() {
         />
       )}
       {scene === "channel" && <ChannelScene onContinue={setChannelOutcome} />}
-      {scene === "launch" && channelOutcome ? (
-        <LaunchSequence outcome={channelOutcome} />
-      ) : null}
     </OnboardingShell>
   );
 }
