@@ -117,13 +117,18 @@ if (!fs.chmodSync.__nbhdPatched) {
   fs.chmodSync.__nbhdPatched = true;
 }
 
-// 2026.9.4 added fd-based chmod call-sites in the native file-write path
-// (dist worker native write: `fs.fchmodSync(fd, mode)` around the write) plus a
-// bare `fchmod`. On the root-owned Azure mount these EPERM exactly as chmodSync
-// did, and unsuppressed they abort the write (same failure class as the cron
-// 0-byte bug). This shim is loaded via NODE_OPTIONS --require BEFORE OpenClaw,
-// so OpenClaw's `fs.fchmodSync` / destructured `fchmodSync` / `fs$1.fchmodSync`
-// references all resolve to the patched method below.
+// OpenClaw 2026.9.4 moved fs.fchmodSync into the NATIVE FILE-WRITE path
+// (dist worker native write: `fs.fchmodSync(fd, mode)` around the write). That
+// call site is inside a try/catch, but the catch closes the fd and RE-THROWS —
+// so on the root-owned Azure mount an EPERM there aborts the write (file created
+// by O_CREAT, never written; same class as the cron 0-byte bug). In 2026.5.28
+// fs.fchmodSync only backed a trajectory-pointer write whose catch swallowed the
+// error, so it was benign then. This shim loads via NODE_OPTIONS --require
+// BEFORE OpenClaw, so `fs.fchmodSync` / destructured `fchmodSync` / the
+// `fs$1.fchmodSync` rollup alias all resolve to the patched method below.
+// fs.fchmod (callback form) is patched too as forward-defense — 2026.9.4 has no
+// such call-site, but the chmod audit's whole point is to not get surprised by
+// the next variant.
 if (fs.fchmodSync && !fs.fchmodSync.__nbhdPatched) {
   const origFchmodSync = fs.fchmodSync;
   fs.fchmodSync = function nbhdPatchedFchmodSync(fd, mode) {
