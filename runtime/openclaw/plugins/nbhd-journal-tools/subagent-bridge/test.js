@@ -197,7 +197,7 @@ describe("completion re-entry backstop", () => {
   it("injects a run-specific occurrence key into a marked model send", () => {
     const api = fakeApi({ tenantId: "model-provenance-tenant" });
     registerBridge(api);
-    api._handlers.before_agent_start(
+    api._handlers.before_prompt_build(
       { runId: "announce-model-key", prompt: runtimeWrappedPrompt() },
       { runId: "announce-model-key", sessionKey: SESSION_KEY },
     );
@@ -235,7 +235,7 @@ describe("completion re-entry backstop", () => {
       return { ok: true, status: 200 };
     };
     try {
-      const append = api._handlers.before_agent_start(
+      const append = api._handlers.before_prompt_build(
         { runId: "announce-child", prompt: markerPrompt() },
         { runId: "announce-child", sessionKey: SESSION_KEY },
       );
@@ -264,7 +264,7 @@ describe("completion re-entry backstop", () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { fetchCount += 1; return { ok: true, status: 200 }; };
     try {
-      api._handlers.before_agent_start(
+      api._handlers.before_prompt_build(
         { runId: "announce-model", prompt: markerPrompt() },
         { runId: "announce-model", sessionKey: SESSION_KEY },
       );
@@ -293,7 +293,7 @@ describe("completion re-entry backstop", () => {
       return { ok: true, status: 200 };
     };
     try {
-      api._handlers.before_agent_start(
+      api._handlers.before_prompt_build(
         { runId: "announce-friendly-fail", prompt: markerPrompt("failed", "Provider unavailable.") },
         { runId: "announce-friendly-fail", sessionKey: SESSION_KEY },
       );
@@ -319,7 +319,7 @@ describe("completion re-entry backstop", () => {
         return { ok: true, status: 200 };
       };
       try {
-        api._handlers.before_agent_start(
+        api._handlers.before_prompt_build(
           { runId: `announce-${silentToken}`, prompt: runtimeWrappedPrompt() },
           { runId: `announce-${silentToken}`, sessionKey: SESSION_KEY },
         );
@@ -344,7 +344,7 @@ describe("completion re-entry backstop", () => {
       return { ok: true, status: 200 };
     };
     try {
-      api._handlers.before_agent_start(
+      api._handlers.before_prompt_build(
         { runId: "announce-non-silent", prompt: runtimeWrappedPrompt() },
         { runId: "announce-non-silent", sessionKey: SESSION_KEY },
       );
@@ -369,7 +369,7 @@ describe("completion re-entry backstop", () => {
       return { ok: true, status: 200 };
     };
     try {
-      api._handlers.before_agent_start(
+      api._handlers.before_prompt_build(
         { runId: "announce-failed-send", prompt: runtimeWrappedPrompt() },
         { runId: "announce-failed-send", sessionKey: SESSION_KEY },
       );
@@ -395,7 +395,7 @@ describe("completion re-entry backstop", () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { fetchCount += 1; return { ok: false, status: 503 }; };
     try {
-      api._handlers.before_agent_start(
+      api._handlers.before_prompt_build(
         { runId: "announce-fail", prompt: markerPrompt("failed: provider unavailable", "") },
         { runId: "announce-fail", sessionKey: SESSION_KEY },
       );
