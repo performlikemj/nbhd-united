@@ -34,6 +34,12 @@ class ConfigGeneratorTest(TestCase):
             display_name="Config Test",
             telegram_chat_id=999888777,
         )
+        # These config-shape assertions document the 2026.5.28 schema (audio
+        # models under tools.media.audio, memorySearch under agents.defaults).
+        # Pin to it; the 2026.9.4 migration is covered by
+        # test_openclaw_9_4_migration and the openclaw doctor smoke.
+        self.tenant.openclaw_version = "2026.5.28"
+        self.tenant.save(update_fields=["openclaw_version"])
 
     def test_generates_valid_config(self):
         config = generate_openclaw_config(self.tenant)
