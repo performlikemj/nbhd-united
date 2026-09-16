@@ -603,6 +603,11 @@ class PluginRuntimeDepsMountTest(SimpleTestCase):
         self.assertIn("oc-state", mounts)
         self.assertEqual(mounts["oc-state"]["mountPath"], "/home/node/oc-state")
 
+        # The workspace AzureFile share mounts node-owned at 0o700 so 9.4's
+        # fs-safe directory-mode verification passes on the share root.
+        self.assertIn("uid=1000", volumes["workspace"]["mountOptions"])
+        self.assertIn("dir_mode=0700", volumes["workspace"]["mountOptions"])
+
         # The 9.4 state-relocation env: stateDir points at the local mount,
         # while config + workspace are pinned BACK to the share (so the user's
         # memory is not dragged onto ephemeral disk), and the SQLite snapshot
@@ -685,9 +690,10 @@ class PluginRuntimeDepsMountTest(SimpleTestCase):
             volume_mounts=[SimpleNamespace(volume_name="workspace")],
             env=[existing_env],
         )
+        workspace_vol = SimpleNamespace(name="workspace", storage_type="AzureFile", mount_options=None)
         app = MagicMock()
         app.template.containers = [container]
-        app.template.volumes = [SimpleNamespace(name="workspace")]
+        app.template.volumes = [workspace_vol]
         mock_client.container_apps.get.return_value = app
         mock_client.container_apps.begin_create_or_update.return_value = MagicMock()
 
@@ -698,6 +704,9 @@ class PluginRuntimeDepsMountTest(SimpleTestCase):
         self.assertIn("oc-state", volume_names)
         mount_names = {m.volume_name for m in container.volume_mounts}
         self.assertIn("oc-state", mount_names)
+        # Workspace share gets node-owned 0o700 mount options for 9.4 fs-safe.
+        self.assertIn("uid=1000", workspace_vol.mount_options)
+        self.assertIn("dir_mode=0700", workspace_vol.mount_options)
 
         env_map = {e.name: e.value for e in container.env}
         self.assertEqual(env_map["OPENCLAW_STATE_DIR"], "/home/node/oc-state")
