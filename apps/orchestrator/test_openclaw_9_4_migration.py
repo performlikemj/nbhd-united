@@ -110,6 +110,12 @@ class OpenClaw94MigrationTransformTest(SimpleTestCase):
         self.assertNotIn("bundledDiscovery", self.cfg["plugins"])
         self.assertIn("entries", self.cfg["plugins"])
 
+    def test_web_search_disabled(self):
+        # 9.4 auto-installs missing web-search provider plugins (perplexity via
+        # OPENROUTER_API_KEY) at boot; that npm install trips fs-safe on our
+        # root-owned mounts. Disabling web search keeps boot off that path.
+        self.assertIs(self.cfg["tools"]["web"]["search"]["enabled"], False)
+
 
 class OpenClaw94MigrationGateTest(TestCase):
     """The migration is version-gated so mixed-version rollout is safe."""
@@ -126,6 +132,7 @@ class OpenClaw94MigrationGateTest(TestCase):
         self.assertNotIn("commitments", config)
         self.assertNotIn("redactSensitive", config["logging"])
         self.assertNotIn("skipWhenBusy", defaults.get("heartbeat", {}))
+        self.assertIs(config["tools"]["web"]["search"]["enabled"], False)
 
     def test_5_28_tenant_keeps_legacy_shape(self):
         tenant = create_tenant(display_name="Mig528", telegram_chat_id=740002)
@@ -136,3 +143,8 @@ class OpenClaw94MigrationGateTest(TestCase):
         self.assertIn("memorySearch", defaults)
         self.assertIn("commitments", config)
         self.assertIn("redactSensitive", config["logging"])
+        # 5.28 keeps web search (no forced disable).
+        self.assertNotEqual(
+            config.get("tools", {}).get("web", {}).get("search", {}).get("enabled"),
+            False,
+        )

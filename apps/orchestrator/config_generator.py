@@ -2421,6 +2421,25 @@ def _migrate_config_to_openclaw_9_4(config: dict[str, Any]) -> None:
     if isinstance(plugins_cfg, dict):
         plugins_cfg.pop("bundledDiscovery", None)
 
+    # Disable the built-in web-search provider auto-install (9.4 only).
+    #
+    # 2026.9.4's `doctor --fix` (and the gateway) npm-install every "missing
+    # configured" web-search provider plugin into the state dir. A provider is
+    # "configured" when tools.web.search is enabled AND a catalog provider's env
+    # var is present — our OPENROUTER_API_KEY pulls in @openclaw/perplexity-plugin
+    # (and BRAVE_API_KEY would pull brave). That npm install extracts archives
+    # onto our root-owned Azure mounts, which trips 9.4's fs-safe directory-mode
+    # verification ("FsSafeError: directory final mode could not be verified")
+    # and blocks boot. We don't bundle a provider in the image, so disable web
+    # search on 9.4 to keep boot clean and off the fragile install path.
+    #
+    # TODO(web-search-9.4): restore web_search by bundling a search provider
+    # plugin into Dockerfile.openclaw (image path, like the nbhd-* plugins) so no
+    # boot-time npm install is needed, then flip this back on. Tracked in the
+    # dependabot-openclaw-9.4 memory. Until then 9.4 tenants lose live web/weather
+    # lookups (web_search tool absent).
+    config.setdefault("tools", {}).setdefault("web", {}).setdefault("search", {})["enabled"] = False
+
 
 def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     """Generate a complete openclaw.json for a tenant's container.
