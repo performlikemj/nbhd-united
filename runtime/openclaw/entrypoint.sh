@@ -4,13 +4,32 @@ set -eu
 OPENCLAW_HOME="${OPENCLAW_HOME:-/home/node/.openclaw}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$OPENCLAW_HOME/openclaw.json}"
 OPENCLAW_WORKSPACE_PATH="${OPENCLAW_WORKSPACE_PATH:-$OPENCLAW_HOME/workspace}"
+
+# OpenClaw 2026.9.4 relocated ALL runtime state (state/flows/tasks/plugin-state
+# SQLite, locks, caches, tmp) under its state dir and reads that SQLite via a
+# read-only snapshot *worker* that FAILS on the Azure Files (SMB) share
+# ("SQLite read-only worker returned invalid JSON" → the gateway refuses to
+# boot; confirmed 2026-09-16 demo canary). Keep the whole state dir OFF the
+# share on local disk, and pin config + workspace back to the share so the
+# user's memory is never dragged onto ephemeral storage. 9.4 reads
+# OPENCLAW_WORKSPACE_DIR (not the legacy OPENCLAW_WORKSPACE_PATH, which it
+# ignores). These are normally injected as container env vars (see
+# azure_client.py); the defaults below are a safety net so a container running
+# the 9.4 image still boots BEFORE the env retrofit lands — even a plain local
+# dir (no EmptyDir mount) is off-SMB and satisfies the worker. Unlike the
+# assignments above, these MUST be exported or the gateway/doctor children
+# never see them.
+OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-/home/node/oc-state}"
+OPENCLAW_WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-$OPENCLAW_WORKSPACE_PATH}"
+XDG_CACHE_HOME="${XDG_CACHE_HOME:-$OPENCLAW_STATE_DIR/cache}"
+export OPENCLAW_HOME OPENCLAW_CONFIG_PATH OPENCLAW_WORKSPACE_DIR OPENCLAW_STATE_DIR XDG_CACHE_HOME
 NBHD_MANAGED_SKILLS_SRC="${NBHD_MANAGED_SKILLS_SRC:-/opt/nbhd/agent-skills}"
 NBHD_MANAGED_SKILLS_DST="${NBHD_MANAGED_SKILLS_DST:-$OPENCLAW_WORKSPACE_PATH/skills/nbhd-managed}"
 NBHD_MANAGED_AGENTS_TEMPLATE="${NBHD_MANAGED_AGENTS_TEMPLATE:-/opt/nbhd/templates/openclaw/AGENTS.md}"
 NBHD_MANAGED_AGENTS_DST="${NBHD_MANAGED_AGENTS_DST:-$OPENCLAW_WORKSPACE_PATH/AGENTS.md}"
 NBHD_MEMORY_DIR="${NBHD_MEMORY_DIR:-$OPENCLAW_WORKSPACE_PATH/memory}"
 
-mkdir -p "$OPENCLAW_HOME" "$OPENCLAW_WORKSPACE_PATH" "$NBHD_MEMORY_DIR"
+mkdir -p "$OPENCLAW_HOME" "$OPENCLAW_WORKSPACE_PATH" "$NBHD_MEMORY_DIR" "$OPENCLAW_STATE_DIR" "$XDG_CACHE_HOME"
 
 # Skill templates.md is tenant-specific and authoritative on the file share
 # (rewritten by Django's update_tenant_config on every default-template edit).
