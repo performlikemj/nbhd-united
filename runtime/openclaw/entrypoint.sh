@@ -227,6 +227,20 @@ fi
 # forwards them to this container via /v1/chat/completions.
 unset TELEGRAM_BOT_TOKEN
 
+# OpenClaw 2026.9.4 requires a one-time workspace-state migration on first boot
+# from a 2026.5.28 workspace — the gateway REFUSES to start otherwise:
+#   "[gateway] requires workspace setup state migration ... run openclaw doctor
+#    --fix, then start it again."
+# (Confirmed on the 2026-09-16 demo-tenant canary: proxy came up but the gateway
+# never started.) Run it here while the gateway is still down (which is what the
+# message asks for). `doctor --fix` is idempotent — a fast no-op once migrated —
+# so running it on every boot is safe. Non-fatal: if it returns non-zero the
+# gateway start below fails loudly with the actionable message and the platform
+# restarts the revision, rather than us masking a real migration failure.
+echo "[entrypoint] running 'openclaw doctor --fix' (workspace/state migration; no-op once migrated)"
+openclaw doctor --fix --non-interactive \
+    || echo "[entrypoint] WARNING: 'openclaw doctor --fix' returned non-zero" >&2
+
 # Start both processes in background
 # shellcheck disable=SC2086
 openclaw gateway --allow-unconfigured $GATEWAY_ARGS &
