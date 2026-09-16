@@ -32,6 +32,12 @@ class BuiltInHeartbeatOffTest(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="HeartbeatOff", telegram_chat_id=720001)
+        # These full-config assertions document the 2026.5.28 shape (top-level
+        # commitments, heartbeat.skipWhenBusy). Pin to it; the 2026.9.4 migration
+        # that drops those keys is covered by test_openclaw_9_4_migration. 5.28 is
+        # still emitted for not-yet-bumped tenants during rollout.
+        self.tenant.openclaw_version = "2026.5.28"
+        self.tenant.save(update_fields=["openclaw_version"])
         # default for the field is False; assert it explicitly
         self.assertFalse(self.tenant.experimental_built_in_heartbeat)
 
@@ -59,6 +65,10 @@ class BuiltInHeartbeatOnTest(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="HeartbeatOn", telegram_chat_id=720002)
+        # Pin to the 2026.5.28 shape these full-config assertions document
+        # (commitments + heartbeat.skipWhenBusy); 9.4 migration covered by
+        # test_openclaw_9_4_migration.
+        self.tenant.openclaw_version = "2026.5.28"
         self.tenant.experimental_built_in_heartbeat = True
         self.tenant.heartbeat_start_hour = 8
         self.tenant.heartbeat_window_hours = 6

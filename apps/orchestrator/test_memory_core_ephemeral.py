@@ -86,6 +86,12 @@ class MemoryToolPolicyTest(TestCase):
 class MemorySearchConfigOffTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="MemoryOff", telegram_chat_id=730001)
+        # Full-config assertions here document the 2026.5.28 shape (memorySearch
+        # under agents.defaults, store.path). Pin to it; the 2026.9.4 migration
+        # (memory.search top-level, store.path dropped) is covered by
+        # test_openclaw_9_4_migration.
+        self.tenant.openclaw_version = "2026.5.28"
+        self.tenant.save(update_fields=["openclaw_version"])
         self.assertFalse(self.tenant.experimental_memory_core_enabled)
 
     def test_memory_search_disabled(self):
@@ -102,6 +108,10 @@ class MemorySearchConfigOffTest(TestCase):
 class MemorySearchConfigOnTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="MemoryOn", telegram_chat_id=730002)
+        # Pin to the 2026.5.28 shape these full-config assertions document
+        # (memorySearch under agents.defaults incl. store.path); 9.4 migration
+        # covered by test_openclaw_9_4_migration.
+        self.tenant.openclaw_version = "2026.5.28"
         self.tenant.experimental_memory_core_enabled = True
         self.tenant.save()
 
