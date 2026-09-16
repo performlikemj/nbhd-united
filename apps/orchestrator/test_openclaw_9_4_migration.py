@@ -10,7 +10,7 @@ regenerates keeps the valid 5.28 shape). Transforms were verified against
 
 from __future__ import annotations
 
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.orchestrator.config_generator import (
     _migrate_config_to_openclaw_9_4,
@@ -136,3 +136,49 @@ class OpenClaw94MigrationGateTest(TestCase):
         self.assertIn("memorySearch", defaults)
         self.assertIn("commitments", config)
         self.assertIn("redactSensitive", config["logging"])
+
+
+@override_settings(
+    OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID="nbhd-cron-enforcement",
+    OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="nbhd-doc-taint-guard",
+    OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="nbhd-routing-context",
+)
+class OpenClaw94PluginConversationAccessTest(SimpleTestCase):
+    """9.4 blocks conversation-reading hooks unless the plugin entry sets
+    hooks.allowConversationAccess. The migration grants it to the three nbhd
+    plugins that register such hooks — but only when the plugin is loaded."""
+
+    @staticmethod
+    def _migrate(plugins):
+        cfg = {"plugins": plugins}
+        _migrate_config_to_openclaw_9_4(cfg)
+        return cfg["plugins"]
+
+    def test_flag_granted_to_loaded_conversation_hook_plugins(self):
+        plugins = self._migrate(
+            {
+                "load": {
+                    "paths": [
+                        "/opt/nbhd/plugins/nbhd-cron-enforcement",
+                        "/opt/nbhd/plugins/nbhd-doc-taint-guard",
+                        "/opt/nbhd/plugins/nbhd-routing-context",
+                        "/opt/nbhd/plugins/nbhd-fuel-tools",
+                    ]
+                },
+                "entries": {"nbhd-doc-taint-guard": {"config": {"mode": "log_only"}}},
+                "bundledDiscovery": "compat",
+            }
+        )
+        entries = plugins["entries"]
+        self.assertTrue(entries["nbhd-cron-enforcement"]["hooks"]["allowConversationAccess"])
+        self.assertTrue(entries["nbhd-routing-context"]["hooks"]["allowConversationAccess"])
+        # existing config on the entry is preserved alongside the new hooks block
+        self.assertTrue(entries["nbhd-doc-taint-guard"]["hooks"]["allowConversationAccess"])
+        self.assertEqual(entries["nbhd-doc-taint-guard"]["config"]["mode"], "log_only")
+        # a non-conversation-hook plugin gets no phantom entry / flag
+        self.assertNotIn("nbhd-fuel-tools", entries)
+        self.assertNotIn("bundledDiscovery", plugins)
+
+    def test_no_flag_for_unloaded_plugin(self):
+        plugins = self._migrate({"load": {"paths": ["/opt/nbhd/plugins/nbhd-fuel-tools"]}, "entries": {}})
+        self.assertNotIn("nbhd-cron-enforcement", plugins.get("entries", {}))

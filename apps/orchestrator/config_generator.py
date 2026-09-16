@@ -2418,6 +2418,37 @@ def _migrate_config_to_openclaw_9_4(config: dict[str, Any]) -> None:
     if isinstance(plugins_cfg, dict):
         plugins_cfg.pop("bundledDiscovery", None)
 
+        # OpenClaw 2026.9.4 blocks conversation-reading hooks (before_prompt_build,
+        # before_agent_run, message_*, tool_result_persist) for non-bundled plugins
+        # unless the plugin entry sets hooks.allowConversationAccess=true. Three
+        # nbhd plugins register such hooks and would otherwise be silently blocked:
+        #   - nbhd-cron-enforcement (before_prompt_build): records the cron
+        #     runId->jobId used to sign the origin provenance stamp. Blocked =>
+        #     cron-triggered actions reach the runtime UNSIGNED and Django's
+        #     verify_origin_stamp rejects them.
+        #   - nbhd-doc-taint-guard (before_agent_run + tool_result_persist): the
+        #     P0 upload-security taint guard.
+        #   - nbhd-routing-context (message_sending): outbound routing context.
+        # Grant the flag per-entry, but only for a plugin that is actually loaded
+        # (its id is in plugins.load.paths or already has an entry) so we never
+        # create a phantom entry for an inactive plugin.
+        loaded_paths = ((plugins_cfg.get("load") or {}).get("paths")) or []
+        loaded_ids = {str(p).rstrip("/").rsplit("/", 1)[-1] for p in loaded_paths if p}
+        existing_entries = plugins_cfg.get("entries") if isinstance(plugins_cfg.get("entries"), dict) else {}
+        for pid in (
+            str(getattr(settings, "OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID", "") or "").strip(),
+        ):
+            if not pid or (pid not in loaded_ids and pid not in existing_entries):
+                continue
+            entries = plugins_cfg.setdefault("entries", {})
+            entry = entries.setdefault(pid, {})
+            if isinstance(entry, dict):
+                hooks = entry.setdefault("hooks", {})
+                if isinstance(hooks, dict):
+                    hooks["allowConversationAccess"] = True
+
 
 def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     """Generate a complete openclaw.json for a tenant's container.
