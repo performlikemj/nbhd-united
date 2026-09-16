@@ -65,12 +65,14 @@
 // LAYER 1 — sync chmod monkey-patch (covers 2026.5.7+ task registry init)
 // ────────────────────────────────────────────────────────────────────────
 //
-// Patches BOTH fs.chmodSync (the 2026.5.7+ task-registry failing call) and
-// fs.promises.chmod (the path-based async variant). The FileHandle.chmod
-// variant (which 2026.5.28's appendRegularFile uses) is patched separately
-// in Layer 2 below — Node's FileHandle doesn't surface on the fs object.
-// Skipped: fs.chmod (callback form, not in use), fs.fchmodSync /
-// fs.lchmodSync (file-descriptor / symlink variants, edge cases).
+// Patches fs.chmodSync (the 2026.5.7+ task-registry failing call),
+// fs.promises.chmod (the path-based async variant), and — added for 2026.9.4 —
+// fs.fchmodSync + fs.fchmod (the fd-based native-write call-sites). The
+// FileHandle.chmod variant (which 2026.5.28's appendRegularFile uses) is
+// patched separately in Layer 2 below — Node's FileHandle doesn't surface on
+// the fs object.
+// Skipped: fs.chmod (callback form, not in use), fs.lchmodSync (symlink
+// variant, not observed in the OpenClaw chmod call-site inventory).
 //
 // Idempotent — `--require` runs this for every node command, including the
 // entrypoint's `node -e "JSON.parse(...)"` config validation.
@@ -78,9 +80,14 @@
 const fs = require('fs');
 const seenChmodPaths = new Set();
 
+const _CHMOD_FAMILY_SYSCALLS = new Set(['chmod', 'fchmod', 'lchmod']);
+
 function isSuppressibleChmodErr(err) {
   if (!err) return false;
-  if (err.syscall && err.syscall !== 'chmod') return false;
+  // chmod / fchmod (fd-based; 2026.9.4's native-write path) / lchmod are all
+  // the same "set-mode on a root-owned mount" failure. Node stamps err.syscall
+  // with the specific variant, so accept the whole family, not just 'chmod'.
+  if (err.syscall && !_CHMOD_FAMILY_SYSCALLS.has(err.syscall)) return false;
   return err.code === 'EPERM' || err.code === 'EACCES' || err.code === 'ENOTSUP';
 }
 
@@ -108,6 +115,44 @@ if (!fs.chmodSync.__nbhdPatched) {
     }
   };
   fs.chmodSync.__nbhdPatched = true;
+}
+
+// 2026.9.4 added fd-based chmod call-sites in the native file-write path
+// (dist worker native write: `fs.fchmodSync(fd, mode)` around the write) plus a
+// bare `fchmod`. On the root-owned Azure mount these EPERM exactly as chmodSync
+// did, and unsuppressed they abort the write (same failure class as the cron
+// 0-byte bug). This shim is loaded via NODE_OPTIONS --require BEFORE OpenClaw,
+// so OpenClaw's `fs.fchmodSync` / destructured `fchmodSync` / `fs$1.fchmodSync`
+// references all resolve to the patched method below.
+if (fs.fchmodSync && !fs.fchmodSync.__nbhdPatched) {
+  const origFchmodSync = fs.fchmodSync;
+  fs.fchmodSync = function nbhdPatchedFchmodSync(fd, mode) {
+    try {
+      return origFchmodSync.call(fs, fd, mode);
+    } catch (err) {
+      if (isSuppressibleChmodErr(err)) {
+        logChmodSuppression(`fd:${fd}`, err.code, 'fchmod-sync');
+        return;
+      }
+      throw err;
+    }
+  };
+  fs.fchmodSync.__nbhdPatched = true;
+}
+
+if (fs.fchmod && !fs.fchmod.__nbhdPatched) {
+  const origFchmod = fs.fchmod;
+  fs.fchmod = function nbhdPatchedFchmod(fd, mode, cb) {
+    if (typeof cb !== 'function') return origFchmod.apply(fs, arguments);
+    return origFchmod.call(fs, fd, mode, function (err) {
+      if (err && isSuppressibleChmodErr(err)) {
+        logChmodSuppression(`fd:${fd}`, err.code, 'fchmod-cb');
+        return cb(null);
+      }
+      return cb(err);
+    });
+  };
+  fs.fchmod.__nbhdPatched = true;
 }
 
 if (fs.promises && fs.promises.chmod && !fs.promises.chmod.__nbhdPatched) {
