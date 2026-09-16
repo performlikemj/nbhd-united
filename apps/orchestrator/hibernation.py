@@ -507,11 +507,19 @@ def wake_hibernated_tenant(tenant: Tenant, *, cron_wake: bool = False) -> bool:
                 update_container_image,
                 wake_container_app,
             )
+            from apps.orchestrator.image_rollout import image_rollout_allowed
             from apps.orchestrator.tool_policy import openclaw_version_for_image_tag
 
             desired_tag = getattr(django_settings, "OPENCLAW_IMAGE_TAG", "latest") or "latest"
             current_tag = tenant.container_image_tag or ""
-            needs_image_refresh = desired_tag != "latest" and current_tag != desired_tag
+            # Gate the wake-time image refresh with the same per-tenant rollout
+            # allowlist as apply_pending_configs: a deploy bumps OPENCLAW_IMAGE_TAG,
+            # and a hibernated tenant waking must NOT auto-jump onto a not-yet-
+            # verified image (e.g. 2026.9.4, which bricks without the mount/oc-state
+            # retrofit) unless it's explicitly opted in. Default allows nobody.
+            needs_image_refresh = (
+                desired_tag != "latest" and current_tag != desired_tag and image_rollout_allowed(tenant.id)
+            )
 
             if needs_image_refresh:
                 # update_container_image bakes the EmptyDir mount into the same

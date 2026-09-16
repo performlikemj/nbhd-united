@@ -760,8 +760,16 @@ def apply_pending_configs(request):
         )
 
         from apps.orchestrator.hibernation import _cron_active_or_imminent
+        from apps.orchestrator.image_rollout import image_rollout_allowed
 
         for tenant in stale_image_tenants:
+            # Per-tenant rollout allowlist. A deploy bumps OPENCLAW_IMAGE_TAG on
+            # every merge; without this gate the whole fleet would auto-roll onto
+            # the new image within the hour — catastrophic for a schema/storage-
+            # crossing image like 2026.9.4. Default allows NOBODY; a staged
+            # rollout opts tenants in via OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS.
+            if not image_rollout_allowed(tenant.id):
+                continue
             # Mirror the safeguard in hibernate_idle_tenants_task: image
             # bump triggers a revision update that SIGTERMs the container,
             # so an in-flight or imminent user cron would get interrupted.

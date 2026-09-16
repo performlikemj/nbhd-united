@@ -152,6 +152,12 @@ AZURE_STORAGE_KEY_CACHE_TTL_SECONDS = env("AZURE_STORAGE_KEY_CACHE_TTL_SECONDS",
 # USER.md skip-unchanged canary gate. Container App env var name MUST match.
 USER_MD_SKIP_UNCHANGED_TENANT_IDS = env("USER_MD_SKIP_UNCHANGED_TENANT_IDS", default="")
 
+# OpenClaw image auto-roll allowlist. Container App env var name MUST match.
+# EMPTY MEANS NOBODY: a deploy bumps OPENCLAW_IMAGE_TAG but apply_pending_configs
+# + wake refresh only move a tenant onto it if listed here (comma-separated
+# UUIDs) or if "*". Staged rollout for 2026.9.4: set the canary UUID, then widen.
+OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS = env("OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS", default="")
+
 # Dropped-turn retry canary gate. The Azure Container App env var name MUST
 # match RETRY_DROPPED_TENANT_IDS exactly. Comma-separated tenant UUIDs; empty
 # means nobody, preserving the standard error notification path for the fleet.
