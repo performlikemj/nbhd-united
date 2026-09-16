@@ -419,3 +419,63 @@ test('credential fields retain no short values or quoted suffixes', () => {
     '[tools] {"password":"***"}');
   assert.equal(redactor.redactLine('[tools] token=abc'), '[tools] token=***');
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// OpenClaw 2026.9.4+ infra-worker stdout-IPC carve-out
+//
+// 9.4 reads its state SQLite via short-lived worker subprocesses that return
+// JSON on stdout (a pipe to the parent, NOT container logs). This redactor is
+// a global NODE_OPTIONS --require, so it also loads in those workers and would
+// classify the JSON payload as non-operational and drop it — the parent then
+// reads "SQLite read-only worker returned invalid JSON" and the gateway/doctor
+// refuses to boot. The carve-out skips wrapping in those workers only.
+// ─────────────────────────────────────────────────────────────────────────
+
+test('isOpenClawStdoutIpcWorker matches infra worker flags, not the agent runtime', () => {
+  assert.equal(
+    redactor.isOpenClawStdoutIpcWorker(['node', 'w.mjs', '--openclaw-sqlite-readonly-child', 'sync', '/x']),
+    true,
+  );
+  assert.equal(redactor.isOpenClawStdoutIpcWorker(['node', 'w.mjs', '--openclaw-state-snapshot']), true);
+  assert.equal(redactor.isOpenClawStdoutIpcWorker(['node', 'w.mjs', '--openclaw-database-verify-child']), true);
+  // The agent runtime handles tenant content — it must STILL be redacted.
+  assert.equal(redactor.isOpenClawStdoutIpcWorker(['node', 'cli.mjs', '--openclaw-agent-id', 'abc']), false);
+  // Normal gateway/doctor invocations are never workers.
+  assert.equal(redactor.isOpenClawStdoutIpcWorker(['node', 'openclaw', 'gateway', '--allow-unconfigured']), false);
+  assert.equal(redactor.isOpenClawStdoutIpcWorker(['node', 'openclaw', 'doctor', '--fix']), false);
+  assert.equal(redactor.isOpenClawStdoutIpcWorker([]), false);
+});
+
+test('worker subprocess: stdout-IPC JSON passes through unredacted; same payload dropped without the flag', () => {
+  const redactorPath = join(__dirname, 'redact-stdout.js');
+  // A JSON payload shaped like the SQLite read-only worker result — no
+  // operational prefix, so the redactor WOULD drop it if it wrapped stdout.
+  const script =
+    'process.stdout.write(JSON.stringify({location:"/home/node/oc-state/tmp/x.sqlite",journalMode:"wal"}))';
+  const childEnv = { ...process.env };
+  delete childEnv.NBHD_REDACT_STDOUT_DISABLE_AUTOINSTALL;
+
+  // With the worker flag: redactor must NOT wrap stdout — raw JSON emitted,
+  // no drop, and no install banner (wrap skipped entirely).
+  const worker = spawnSync(
+    process.execPath,
+    ['--require', redactorPath, '-e', script, '--', '--openclaw-sqlite-readonly-child'],
+    { encoding: 'utf8', env: childEnv },
+  );
+  assert.equal(worker.status, 0, `worker child exited non-zero: ${worker.stderr}`);
+  assert.deepEqual(JSON.parse(worker.stdout), {
+    location: '/home/node/oc-state/tmp/x.sqlite',
+    journalMode: 'wal',
+  });
+  assert.doesNotMatch(worker.stdout, /non-operational line dropped/);
+  assert.doesNotMatch(worker.stderr, /redaction installed/);
+
+  // Control: the SAME payload WITHOUT the worker flag is dropped — proving it
+  // is genuinely non-operational and would break IPC if the wrap ran.
+  const normal = spawnSync(process.execPath, ['--require', redactorPath, '-e', script], {
+    encoding: 'utf8',
+    env: childEnv,
+  });
+  assert.equal(normal.status, 0);
+  assert.match(normal.stdout, /non-operational line dropped/);
+});
