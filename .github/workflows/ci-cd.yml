@@ -249,7 +249,11 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          # OpenClaw 2026.9.4 requires Node >=24.16 (npm EBADENGINE otherwise),
+          # and this job runs the pinned OpenClaw binary via npx on the runner
+          # (doctor smoke + origin-propagation + hook-activation). Kept in step
+          # with Dockerfile.openclaw's node:24 base.
+          node-version: '24'
 
       - name: Install backend dependencies
         run: |

@@ -218,10 +218,38 @@ function wrapStream(stream) {
   stream.write.__nbhdRedacted = true;
 }
 
+// OpenClaw 2026.9.4+ spawns short-lived infra WORKER subprocesses (SQLite
+// read-only snapshot, state snapshot, database verify) that return their result
+// as JSON on stdout, which the PARENT captures over a pipe (spawnSync/execFile,
+// default 'pipe' stdio) and parses. That stdout is an IPC data channel — it
+// never reaches the container's stdout / Log Analytics. Because this redactor
+// is a global NODE_OPTIONS --require, it also loads INSIDE those workers and
+// classifies their JSON payload as "non-operational", dropping it — so the
+// parent reads "SQLite read-only worker returned invalid JSON" and the
+// gateway/doctor refuses to boot. That is the class that blocked the
+// 2026-09-16 OpenClaw 9.4 canary (5.28 had no such workers, so it never
+// surfaced). These workers carry a distinctive --openclaw-*-child /
+// --openclaw-state-snapshot flag in argv and emit only control/metadata JSON
+// (never tenant content), so skip stream wrapping entirely inside them. The
+// agent runtime (spawned with --openclaw-agent-id) is NOT in this set — it can
+// emit tenant content and stays redacted.
+const OPENCLAW_STDOUT_IPC_WORKER_ARGS = new Set([
+  '--openclaw-sqlite-readonly-child',
+  '--openclaw-state-snapshot',
+  '--openclaw-database-verify-child',
+]);
+
+function isOpenClawStdoutIpcWorker(argv) {
+  return Array.isArray(argv) && argv.some((arg) => OPENCLAW_STDOUT_IPC_WORKER_ARGS.has(arg));
+}
+
 // Auto-install on load. Tests that need to import the redactor without
 // patching streams (so the test runner's own output stays visible) set
 // `NBHD_REDACT_STDOUT_DISABLE_AUTOINSTALL=1` before `require()`.
-if (process.env.NBHD_REDACT_STDOUT_DISABLE_AUTOINSTALL !== '1') {
+if (
+  process.env.NBHD_REDACT_STDOUT_DISABLE_AUTOINSTALL !== '1' &&
+  !isOpenClawStdoutIpcWorker(process.argv)
+) {
   wrapStream(process.stdout);
   wrapStream(process.stderr);
 
@@ -249,6 +277,8 @@ module.exports = {
   applyFieldPatterns,
   maskToken,
   wrapStream,
+  isOpenClawStdoutIpcWorker,
+  OPENCLAW_STDOUT_IPC_WORKER_ARGS,
   OPERATIONAL_LINE_PATTERNS,
   GATEWAY_FATAL_CONFIG_PATTERNS,
 };

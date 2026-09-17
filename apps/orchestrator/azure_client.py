@@ -1387,6 +1387,34 @@ def create_container_app(
                             # and causes intermittent CIAO ANNOUNCEMENT CANCELLED
                             # crashes on startup.
                             {"name": "OPENCLAW_DISABLE_BONJOUR", "value": "1"},
+                            # OpenClaw 2026.9.4 relocated ALL runtime state (the
+                            # state/flows/tasks/plugin-state SQLite DBs, locks,
+                            # caches, tmp) under resolveStateDir(), and now reads
+                            # those SQLite files through a read-only snapshot
+                            # *worker* subprocess. That snapshot/read fails on the
+                            # Azure Files (SMB) share — "SQLite read-only worker
+                            # returned invalid JSON" → the gateway refuses to boot
+                            # (confirmed 2026-09-16 on the demo-tenant canary). The
+                            # default stateDir is $HOME/.openclaw, i.e. the share.
+                            # Fix: point stateDir at a local EmptyDir (``oc-state``
+                            # volume below) so every SQLite lands off SMB, and PIN
+                            # config + workspace back to the share EXPLICITLY —
+                            # moving stateDir alone silently drags the workspace
+                            # (AGENTS.md/SOUL.md/IDENTITY.md/memory) onto ephemeral
+                            # disk (9.4 workspace default is $stateDir/workspace
+                            # unless OPENCLAW_WORKSPACE_DIR is set; OPENCLAW_CONFIG_PATH
+                            # wins unconditionally). XDG_CACHE_HOME keeps the
+                            # snapshot staging root on the same local mount instead
+                            # of a HOME-derived path. All four are identical across
+                            # tenants, so they live in this static list (not
+                            # workspace_env). NOTE: like NODE_OPTIONS above, changes
+                            # here only reach NEWLY provisioned tenants — existing
+                            # tenants need the one-shot ``ensure_oc_state_dir_mount``
+                            # retrofit (env vars + volume + mount).
+                            {"name": "OPENCLAW_STATE_DIR", "value": "/home/node/oc-state"},
+                            {"name": "OPENCLAW_CONFIG_PATH", "value": "/home/node/.openclaw/openclaw.json"},
+                            {"name": "OPENCLAW_WORKSPACE_DIR", "value": "/home/node/.openclaw/workspace"},
+                            {"name": "XDG_CACHE_HOME", "value": "/home/node/oc-state/cache"},
                             *[{"name": k, "value": v} for k, v in (workspace_env or {}).items()],
                         ],
                         "volumeMounts": [
@@ -1417,6 +1445,19 @@ def create_container_app(
                                 "volumeName": "index-cache",
                                 "mountPath": "/home/node/.openclaw/index",
                             },
+                            # OpenClaw 2026.9.4 state tree (all SQLite + locks +
+                            # caches) — kept OFF the SMB share on local ephemeral
+                            # storage via OPENCLAW_STATE_DIR (see the env block
+                            # above). 9.4's read-only SQLite snapshot worker can't
+                            # operate on SMB, so the gateway won't boot with state
+                            # on the share. Wiped on restart, which is fine: the
+                            # durable truth (config + workspace/memory) stays on
+                            # the share, crons re-seed from Postgres, transcripts
+                            # live in Postgres.
+                            {
+                                "volumeName": "oc-state",
+                                "mountPath": "/home/node/oc-state",
+                            },
                         ],
                     },
                 ],
@@ -1425,6 +1466,10 @@ def create_container_app(
                         "name": "workspace",
                         "storageType": "AzureFile",
                         "storageName": f"ws-{str(tenant_id)[:20]}",
+                        # Mount the share owned by node at 0o700 so OpenClaw
+                        # 2026.9.4's fs-safe directory-mode verification passes
+                        # (see _WORKSPACE_MOUNT_OPTIONS).
+                        "mountOptions": _WORKSPACE_MOUNT_OPTIONS,
                     },
                     {
                         "name": "sessions-scratch",
@@ -1436,6 +1481,10 @@ def create_container_app(
                     },
                     {
                         "name": "index-cache",
+                        "storageType": "EmptyDir",
+                    },
+                    {
+                        "name": "oc-state",
                         "storageType": "EmptyDir",
                     },
                 ],
@@ -1872,6 +1921,36 @@ _PLUGIN_RUNTIME_DEPS_PATH = "/home/node/.openclaw/plugin-runtime-deps"
 _INDEX_CACHE_VOLUME = "index-cache"
 _INDEX_CACHE_PATH = "/home/node/.openclaw/index"
 
+# OpenClaw 2026.9.4 runtime-state tree (all SQLite + locks + caches). 9.4 reads
+# its state SQLite via a read-only snapshot worker that fails on the SMB share
+# ("SQLite read-only worker returned invalid JSON" → gateway won't boot). Keep
+# the whole stateDir on local ephemeral storage via OPENCLAW_STATE_DIR, and pin
+# config + workspace back to the share so the user's memory is NOT dragged onto
+# ephemeral disk. Kept in sync with the static env + volume block in the
+# provisioning template above. Mirror any change in both places.
+_OC_STATE_VOLUME = "oc-state"
+_OC_STATE_PATH = "/home/node/oc-state"
+_OC_STATE_ENV = {
+    "OPENCLAW_STATE_DIR": "/home/node/oc-state",
+    "OPENCLAW_CONFIG_PATH": "/home/node/.openclaw/openclaw.json",
+    "OPENCLAW_WORKSPACE_DIR": "/home/node/.openclaw/workspace",
+    "XDG_CACHE_HOME": "/home/node/oc-state/cache",
+}
+
+# OpenClaw 2026.9.4's fs-safe layer verifies that directories it touches are
+# owned by the node user (uid 1000) and carry mode 0o700, and throws
+# "FsSafeError: directory final mode could not be verified" otherwise. By
+# default the AzureFile (SMB) share mounts ROOT-owned at 0o755, so even the
+# share ROOT (parent of openclaw.json / its lock) fails the check and the
+# node user cannot chmod it (EPERM). umask 077 only fixes dirs we create, not
+# the mount root. These CIFS mount options mount the share owned by node at
+# 0o700 dirs / 0o600 files so fs-safe passes without any chmod. nobrl (SMB has
+# no byte-range locks), mfsymlinks (symlink emulation), cache=none + serverino
+# for lock-file consistency. Django writes the share via the Files REST API,
+# unaffected by these mount-time options.
+_WORKSPACE_VOLUME = "workspace"
+_WORKSPACE_MOUNT_OPTIONS = "uid=1000,gid=1000,dir_mode=0700,file_mode=0600,mfsymlinks,nobrl,cache=none,serverino"
+
 
 def _ensure_empty_dir_mount_in_template(app, volume_name: str, mount_path: str) -> bool:
     """Mutate a Container App template in place to include an EmptyDir
@@ -1923,6 +2002,92 @@ def _ensure_index_cache_in_template(app) -> bool:
     index-cache EmptyDir mount on the openclaw container.
     """
     return _ensure_empty_dir_mount_in_template(app, _INDEX_CACHE_VOLUME, _INDEX_CACHE_PATH)
+
+
+def _ensure_container_env_in_template(app, env: dict[str, str]) -> bool:
+    """Upsert env vars onto the ``openclaw`` container in a template, in place.
+
+    Idempotent — returns True if any value was added or changed, False if
+    every requested name already had the requested value. Existing env vars
+    not in ``env`` are left untouched. Caller persists the change.
+    """
+    from azure.mgmt.appcontainers.models import EnvironmentVar
+
+    modified = False
+    for container in app.template.containers:
+        if container.name != "openclaw":
+            continue
+        current = list(container.env or [])
+        by_name = {e.name: e for e in current}
+        for name, value in env.items():
+            existing = by_name.get(name)
+            if existing is None:
+                current.append(EnvironmentVar(name=name, value=value))
+                modified = True
+            elif existing.value != value:
+                existing.value = value
+                modified = True
+        container.env = current
+        break
+    return modified
+
+
+def _ensure_workspace_mount_options_in_template(app) -> bool:
+    """Set the node-owned 0o700 CIFS mount options on the ``workspace``
+    AzureFile volume so OpenClaw 2026.9.4's fs-safe directory-mode check
+    passes. Idempotent; returns True if changed.
+    """
+    modified = False
+    for volume in app.template.volumes or []:
+        if volume.name == _WORKSPACE_VOLUME and getattr(volume, "storage_type", None) == "AzureFile":
+            if getattr(volume, "mount_options", None) != _WORKSPACE_MOUNT_OPTIONS:
+                volume.mount_options = _WORKSPACE_MOUNT_OPTIONS
+                modified = True
+            break
+    return modified
+
+
+def _ensure_oc_state_dir_in_template(app) -> bool:
+    """Mutate a Container App template in place for the OpenClaw 2026.9.4
+    storage readiness: the node-owned workspace mount options, the ``oc-state``
+    EmptyDir volume + mount, AND the four env vars that point stateDir at it
+    while pinning config + workspace to the share. Returns True if anything
+    changed.
+    """
+    opts_changed = _ensure_workspace_mount_options_in_template(app)
+    mount_changed = _ensure_empty_dir_mount_in_template(app, _OC_STATE_VOLUME, _OC_STATE_PATH)
+    env_changed = _ensure_container_env_in_template(app, _OC_STATE_ENV)
+    return opts_changed or mount_changed or env_changed
+
+
+def ensure_oc_state_dir_mount(container_name: str) -> bool:
+    """Idempotently retrofit the OpenClaw 2026.9.4 state relocation onto an
+    existing Container App (env vars + ``oc-state`` EmptyDir volume + mount).
+
+    New tenants get this from the provisioning template; existing tenants
+    (env vars are NOT rewritten by image/config bumps) need this one-shot.
+    Returns True if a new revision was created, False if already present.
+    """
+    if _is_mock():
+        logger.info("[MOCK] Ensured oc-state dir mount + env on %s", container_name)
+        return False
+
+    client = get_container_client()
+    app = client.container_apps.get(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+    )
+
+    if not _ensure_oc_state_dir_in_template(app):
+        return False
+
+    client.container_apps.begin_create_or_update(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+        app,
+    ).result()
+    logger.info("Retrofitted oc-state dir mount + env onto %s", container_name)
+    return True
 
 
 def _ensure_gateway_readiness_probe_in_template(app) -> None:

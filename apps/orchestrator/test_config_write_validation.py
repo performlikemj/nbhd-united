@@ -263,13 +263,15 @@ class GenerateSmokeConfigCommandTests(TestCase):
             "nbhd-routing-context",
             "nbhd-activity-stream",
             "nbhd-stream-progress",
+            # cron-enforcement's before_prompt_build records the cron runId->jobId
+            # for the origin stamp; 2026.9.4 blocks it without this policy.
+            "nbhd-cron-enforcement",
         ):
             with self.subTest(conversation_hook_plugin=plugin_id):
                 self.assertEqual(
                     entries[plugin_id]["hooks"],
                     {"allowConversationAccess": True, "timeoutMs": 30000},
                 )
-        self.assertNotIn("hooks", entries["nbhd-cron-enforcement"])
         self.assertEqual(entries["nbhd-usage-reporter"]["hooks"], {"allowConversationAccess": True})
         self.assertEqual(
             entries["nbhd-usage-reporter"]["config"],

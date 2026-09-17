@@ -91,11 +91,17 @@ class GenerateOpenclawConfigIncludesLoggingTest(TestCase):
         config = generate_openclaw_config(self.tenant)
         self.assertIn("logging", config)
         self.assertIn("redactPatterns", config["logging"])
-        self.assertIn("redactSensitive", config["logging"])
+        # OpenClaw 2026.9.4 dropped logging.redactSensitive (redaction is always
+        # on); the tenant-content patterns remain under redactPatterns.
+        self.assertNotIn("redactSensitive", config["logging"])
 
-    def test_redact_sensitive_is_tools(self):
+    def test_redact_sensitive_dropped_for_9_4(self):
+        # The base builder still carries the 5.28 redactSensitive toggle...
+        self.assertEqual(_build_logging_config()["redactSensitive"], "tools")
+        # ...but the 2026.9.4 config migration strips it from the emitted config
+        # (the tenant defaults to the current OpenClaw version).
         config = generate_openclaw_config(self.tenant)
-        self.assertEqual(config["logging"]["redactSensitive"], "tools")
+        self.assertNotIn("redactSensitive", config["logging"])
 
     def test_logging_block_is_stable_across_tenants(self):
         """Two unrelated tenants get the same logging block — no tenant-

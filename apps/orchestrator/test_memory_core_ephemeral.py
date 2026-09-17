@@ -72,7 +72,10 @@ class MemoryToolPolicyTest(TestCase):
         # fired correctly on 5.28. 5.28's DENY list now diverges from 5.7's:
         # `web_fetch` was added at 5.28 (see tool_policy.py P0-0b comment and
         # test_tool_policy.py::test_2026_5_28_denies_web_fetch).
-        self.assertEqual(OPENCLAW_CURRENT_VERSION, "2026.5.28")
+        # 2026.9.4 security bump: 9.4 resolves to the 5.28 policy row (allow &
+        # deny lists unchanged, verified in code). Full tool-taxonomy
+        # re-verification against 9.4 rides on the image boot smoke.
+        self.assertEqual(OPENCLAW_CURRENT_VERSION, "2026.9.4")
 
     def test_starter_allow_unchanged_across_4_15_to_5_7(self):
         allow_4_15 = set(get_allowed_tools(version="2026.4.15"))
@@ -83,6 +86,12 @@ class MemoryToolPolicyTest(TestCase):
 class MemorySearchConfigOffTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="MemoryOff", telegram_chat_id=730001)
+        # Full-config assertions here document the 2026.5.28 shape (memorySearch
+        # under agents.defaults, store.path). Pin to it; the 2026.9.4 migration
+        # (memory.search top-level, store.path dropped) is covered by
+        # test_openclaw_9_4_migration.
+        self.tenant.openclaw_version = "2026.5.28"
+        self.tenant.save(update_fields=["openclaw_version"])
         self.assertFalse(self.tenant.experimental_memory_core_enabled)
 
     def test_memory_search_disabled(self):
@@ -99,6 +108,10 @@ class MemorySearchConfigOffTest(TestCase):
 class MemorySearchConfigOnTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="MemoryOn", telegram_chat_id=730002)
+        # Pin to the 2026.5.28 shape these full-config assertions document
+        # (memorySearch under agents.defaults incl. store.path); 9.4 migration
+        # covered by test_openclaw_9_4_migration.
+        self.tenant.openclaw_version = "2026.5.28"
         self.tenant.experimental_memory_core_enabled = True
         self.tenant.save()
 

@@ -49,7 +49,20 @@ logger = logging.getLogger(__name__)
 #     this reconciler owned them, they'd be absent from ``desired_by_name``
 #     and get removed on every pass — a destructive flapping race against
 #     the fuel reconciler that just added them.
-_UNMANAGED_PREFIXES: tuple[str, ...] = ("_sync:", "_fuel:")
+_UNMANAGED_PREFIXES: tuple[str, ...] = (
+    "_sync:",
+    "_fuel:",
+    # OpenClaw 2026.9.4's gateway auto-provisions its own system-owned monitor
+    # crons — heartbeat-<agentId>, heartbeat-monitor-*, heartbeat-task:*, and
+    # skill-collection-review-<agentId> (usually disabled rows). Cron clients
+    # cannot remove them ("system-owned monitor jobs cannot be removed by cron
+    # clients"), so the reconciler MUST treat them as unmanaged or it errors on
+    # every pass and burns its per-pass removal budget. Our own heartbeat cron
+    # is "Heartbeat Check-in" (capitalized, spaced) — no collision with these
+    # lowercase-hyphen system names.
+    "heartbeat-",
+    "skill-collection-review-",
+)
 
 # Schedule kinds that the reconciler treats as unmanaged. ``kind:"at"`` is
 # a one-shot whose gateway-side default is ``deleteAfterRun=true`` — the

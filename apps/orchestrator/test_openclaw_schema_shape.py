@@ -91,6 +91,12 @@ class OpenclawSchemaShapeTest(TestCase):
             display_name="SchemaShape",
             telegram_chat_id=998877,
         )
+        # This suite documents the 2026.5.28 config shape (agents.defaults.
+        # memorySearch/store.path, pdfMaxBytesMb, top-level commitments) against
+        # OpenClaw's Zod schema with dist/ line refs. Pin to 5.28; the 2026.9.4
+        # migration is covered by test_openclaw_9_4_migration. 5.28 is still
+        # emitted for not-yet-bumped tenants during rollout.
+        self.tenant.openclaw_version = "2026.5.28"
         self.config = generate_openclaw_config(self.tenant)
 
     # ── Heartbeat ─────────────────────────────────────────────────────
@@ -411,6 +417,9 @@ class ByoPdfModelPinTest(TestCase):
             key_vault_secret_name="byo-anthropic-test",
             status=BYOCredential.Status.VERIFIED,
         )
+        # Pin to the 2026.5.28 shape (pdfMaxBytesMb etc.); 9.4 migration covered
+        # by test_openclaw_9_4_migration.
+        self.tenant.openclaw_version = "2026.5.28"
         self.config = generate_openclaw_config(self.tenant)
 
     def test_byo_primary_keeps_its_own_model_for_pdf(self):

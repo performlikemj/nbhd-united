@@ -46,6 +46,9 @@ before(() => {
   fs.chmodSync = function mockChmodSync() {
     if (pendingError) throw pendingError;
   };
+  fs.fchmodSync = function mockFchmodSync() {
+    if (pendingError) throw pendingError;
+  };
   fs.promises.chmod = async function mockPromisesChmod() {
     if (pendingError) throw pendingError;
   };
@@ -88,6 +91,23 @@ test('sync: EPERM from non-chmod syscall re-throws', () => {
 test('sync: success returns undefined', () => {
   pendingError = null;
   assert.equal(fs.chmodSync('/path', 0o700), undefined);
+});
+
+test('fchmod-sync: EPERM (fchmod syscall) suppressed', () => {
+  // 2026.9.4 native-write path calls fs.fchmodSync(fd, mode); node stamps
+  // err.syscall='fchmod'. Must be suppressed like chmodSync on the mount.
+  pendingError = makeChmodErr('EPERM', 'fchmod');
+  assert.doesNotThrow(() => fs.fchmodSync(3, 0o600));
+});
+
+test('fchmod-sync: EACCES suppressed', () => {
+  pendingError = makeChmodErr('EACCES', 'fchmod');
+  assert.doesNotThrow(() => fs.fchmodSync(3, 0o600));
+});
+
+test('fchmod-sync: EBUSY re-throws (not in suppression set)', () => {
+  pendingError = makeChmodErr('EBUSY', 'fchmod');
+  assert.throws(() => fs.fchmodSync(3, 0o600), { code: 'EBUSY' });
 });
 
 test('async-promise: EPERM suppressed', async () => {

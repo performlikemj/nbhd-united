@@ -129,6 +129,17 @@ build_baseline() {
 #     fs\$1.chmod(             rollup alias for \`import fs\$1 from "node:fs/promises"\`
 #     chmod(                  bare; either destructured from fs.promises or
 #                             aliased via \`options.chmodSync ?? fs.chmodSync\`
+#     fs\$1.chmodSync(         NEW in 2026.9.4 — rollup alias for node:fs
+#                             chmodSync; same patched fs.chmodSync method.
+#     fs.fchmodSync(          fd-based sync. In 2026.5.28 it backed a
+#                             trajectory-pointer write whose catch swallowed the
+#                             error (benign); 2026.9.4 moved it into the native
+#                             file-write path where the catch closes the fd and
+#                             RE-THROWS, so an EPERM aborts the write. Now
+#                             covered by the fs.fchmodSync patch added to Layer 1
+#                             (err.syscall='fchmod' is in the suppressible
+#                             family). fs.fchmod (callback) is patched too as
+#                             forward-defense though 2026.9.4 has no such site.
 #
 #   BENIGN — uncovered but harmless on our containers as of this review:
 #     fs.chmod(               callback form; concentrated in launchd-*.js
@@ -136,8 +147,6 @@ build_baseline() {
 #                             One uncatchable site at launchd:434 is inside
 #                             a try/catch{} block, so even on macOS it would
 #                             swallow.
-#     fs.fchmodSync(          wrapped in try/catch by OpenClaw at the call
-#                             site (runtime-*.js trajectory pointer write)
 #     handle.chmod(           FileHandle prototype; trajectory writer calls
 #                             this only on files OpenClaw just created
 #                             (node-owned), so no EPERM in practice

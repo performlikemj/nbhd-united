@@ -107,19 +107,19 @@ pathlib.Path('$CONFIG_PATH').write_text(json.dumps(config))
 chmod 600 "$CONFIG_PATH"
 mkdir -p "$STATE_DIR"
 
-# `openclaw doctor` requires Node 22.12+. If the current node is too old, try
-# to source nvm and switch to a Node 22 install.
+# openclaw@2026.9.4 requires Node >=24.16. If the current node is too old, try
+# to source nvm and switch to a Node 24 install.
 node_major() { node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/'; }
-if [ "$(node_major)" -lt 22 ] 2>/dev/null; then
+if [ "$(node_major)" -lt 24 ] 2>/dev/null; then
   NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
   if [ -s "$NVM_DIR/nvm.sh" ]; then
     # shellcheck disable=SC1090,SC1091
     . "$NVM_DIR/nvm.sh"
-    nvm use 22 >/dev/null 2>&1 || nvm use --lts >/dev/null 2>&1 || true
+    nvm use 24 >/dev/null 2>&1 || nvm use --lts >/dev/null 2>&1 || true
   fi
-  if [ "$(node_major)" -lt 22 ] 2>/dev/null; then
-    echo "openclaw doctor requires Node 22.12+ (current: $(node --version))." >&2
-    echo "Install Node 22 (e.g. 'nvm install 22') or run this script in a shell with Node 22 on PATH." >&2
+  if [ "$(node_major)" -lt 24 ] 2>/dev/null; then
+    echo "openclaw@2026.9.4 doctor requires Node >=24.16 (current: $(node --version))." >&2
+    echo "Install Node 24 (e.g. 'nvm install 24') or run this script in a shell with Node 24 on PATH." >&2
     exit 1
   fi
 fi
@@ -145,12 +145,28 @@ set -e
 
 printf '%s\n' "$DOCTOR_OUTPUT"
 
-if printf '%s\n' "$DOCTOR_OUTPUT" | grep -qi "Invalid config"; then
-  echo "OpenClaw config doctor smoke failed: invalid config detected." >&2
+# Fail on config/binary SCHEMA skew — the class this smoke exists to catch (a
+# renamed/removed/unknown key the running OpenClaw rejects). OpenClaw prints
+# these as "Unrecognized key(s)" / "Invalid input" (e.g. the 2026.9.4 bump that
+# renamed pdfMaxBytesMb->pdfMaxMb, moved memorySearch->memory.search, etc.).
+if printf '%s\n' "$DOCTOR_OUTPUT" | grep -qiE 'unrecognized key|invalid input|invalid option'; then
+  # "invalid option" = a Zod enum value the running OpenClaw rejects (e.g. a
+  # value we emit that a version bump removed from the allowed set) — same
+  # config/binary schema-skew class as unrecognized/invalid keys.
+  echo "OpenClaw config doctor smoke failed: config schema skew (unrecognized/invalid key or option)." >&2
   exit 1
 fi
 
-if [ "$DOCTOR_EXIT" -ne 0 ]; then
-  echo "OpenClaw config doctor smoke failed: doctor command exited non-zero." >&2
-  exit "$DOCTOR_EXIT"
+# NOTE: OpenClaw >= 2026.9.4 doctor exits non-zero (and prints an "Invalid
+# config" header) for "plugin path not found" whenever it runs OUTSIDE the
+# container image — the tenant plugins live at /opt/nbhd/plugins IN the image,
+# never on this CI runner (2026.5.28 doctor treated the same case as a warning
+# and exited 0). Plugin presence is owned by the in-container built-image boot
+# smoke, not this schema gate, so a non-zero exit alone is expected here. A
+# doctor that never reached completion (crash / bad version / no network) is
+# still a real failure, so require the completion marker instead of trusting
+# the exit code.
+if ! printf '%s\n' "$DOCTOR_OUTPUT" | grep -qi "Doctor complete"; then
+  echo "OpenClaw config doctor smoke failed: doctor did not complete (exit ${DOCTOR_EXIT})." >&2
+  exit "${DOCTOR_EXIT:-1}"
 fi

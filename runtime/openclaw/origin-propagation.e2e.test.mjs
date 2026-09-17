@@ -194,7 +194,7 @@ async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "
   assert.ok(configuredBinary, "OPENCLAW_REPRO_BIN must point to the pinned openclaw.mjs");
   const openclawBinary = await realpath(configuredBinary);
   const packageJson = JSON.parse(await readFile(path.join(path.dirname(openclawBinary), "package.json"), "utf8"));
-  assert.equal(packageJson.version, "2026.5.28", "the regression must run against the Dockerfile pin");
+  assert.equal(packageJson.version, "2026.9.4", "the regression must run against the Dockerfile pin");
 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "nbhd-origin-e2e-"));
   const stateDirectory = path.join(temporaryRoot, "state");
@@ -253,11 +253,16 @@ async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "
       entries: includeEnforcement
         ? {
             "nbhd-datebook-tools": { enabled: true },
-            "nbhd-cron-enforcement": { enabled: true },
+            // OpenClaw 2026.9.4 blocks before_prompt_build (which records the
+            // cron runId->jobId used to sign the origin stamp) for non-bundled
+            // plugins unless hooks.allowConversationAccess is set.
+            "nbhd-cron-enforcement": {
+              enabled: true,
+              hooks: { allowConversationAccess: true },
+            },
           }
         : { "nbhd-datebook-tools": { enabled: true } },
       load: { paths: includeEnforcement ? [datebookPluginPath, enforcementPluginPath] : [datebookPluginPath] },
-      bundledDiscovery: "compat",
     },
   };
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);

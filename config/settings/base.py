@@ -282,6 +282,15 @@ AZURE_STORAGE_KEY_CACHE_TTL_SECONDS = env("AZURE_STORAGE_KEY_CACHE_TTL_SECONDS",
 # USER.md skip-unchanged canary gate; empty preserves all existing writes.
 USER_MD_SKIP_UNCHANGED_TENANT_IDS = env("USER_MD_SKIP_UNCHANGED_TENANT_IDS", default="")
 
+# OpenClaw image auto-roll allowlist. apply_pending_configs + wake refresh only
+# move a tenant onto OPENCLAW_IMAGE_TAG if it is listed here (comma-separated
+# UUIDs), or if this is "*". EMPTY MEANS NOBODY — so a deploy that bumps the
+# image tag (every merge rebuilds the OpenClaw image and points the tag at it)
+# never rolls the fleet on its own. Staged rollout for a schema/storage-crossing
+# image (e.g. 2026.9.4): canary UUID -> soak -> "*". Container App env var name
+# MUST match. See apps/orchestrator/image_rollout.py.
+OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS = env("OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS", default="")
+
 # OpenClaw native sub-agent offload — canary rollout gate. Comma-separated
 # tenant UUIDs; EMPTY MEANS NOBODY. The generated config keeps sessions_spawn
 # and subagents denied unless a tenant is explicitly listed here.

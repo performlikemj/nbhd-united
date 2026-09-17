@@ -4,13 +4,46 @@ set -eu
 OPENCLAW_HOME="${OPENCLAW_HOME:-/home/node/.openclaw}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$OPENCLAW_HOME/openclaw.json}"
 OPENCLAW_WORKSPACE_PATH="${OPENCLAW_WORKSPACE_PATH:-$OPENCLAW_HOME/workspace}"
+
+# OpenClaw 2026.9.4 relocated ALL runtime state (state/flows/tasks/plugin-state
+# SQLite, locks, caches, tmp) under its state dir and reads that SQLite via a
+# read-only snapshot *worker* that FAILS on the Azure Files (SMB) share
+# ("SQLite read-only worker returned invalid JSON" → the gateway refuses to
+# boot; confirmed 2026-09-16 demo canary). Keep the whole state dir OFF the
+# share on local disk, and pin config + workspace back to the share so the
+# user's memory is never dragged onto ephemeral storage. 9.4 reads
+# OPENCLAW_WORKSPACE_DIR (not the legacy OPENCLAW_WORKSPACE_PATH, which it
+# ignores). These are normally injected as container env vars (see
+# azure_client.py); the defaults below are a safety net so a container running
+# the 9.4 image still boots BEFORE the env retrofit lands — even a plain local
+# dir (no EmptyDir mount) is off-SMB and satisfies the worker. Unlike the
+# assignments above, these MUST be exported or the gateway/doctor children
+# never see them.
+OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-/home/node/oc-state}"
+OPENCLAW_WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-$OPENCLAW_WORKSPACE_PATH}"
+XDG_CACHE_HOME="${XDG_CACHE_HOME:-$OPENCLAW_STATE_DIR/cache}"
+export OPENCLAW_HOME OPENCLAW_CONFIG_PATH OPENCLAW_WORKSPACE_DIR OPENCLAW_STATE_DIR XDG_CACHE_HOME
+
+# OpenClaw 2026.9.4's fs-safe layer creates a directory, then VERIFIES its mode
+# equals (0o777 & ~umask) and throws "FsSafeError: directory final mode could
+# not be verified" if it doesn't. Our Azure volume mounts are root-owned, so
+# the node user's chmod is EPERM (swallowed by suppress-chmod-eperm.js) and the
+# mode never actually changes. With the default umask (022) fs-safe wants 0o755
+# but every dir is created 0o700, so the verify fails and doctor + the gateway
+# refuse to boot. Setting umask 077 makes the WANTED mode 0o700 — exactly what
+# mkdir/mkdtemp already produce — so no chmod is attempted and the verify
+# passes. This is the umask OpenClaw itself uses in its own prepare flows, and
+# it also matches fs-safe's 0o700 requirement for secret dirs. Must be set
+# before any directory is created below (and it is inherited by the doctor +
+# gateway children).
+umask 077
 NBHD_MANAGED_SKILLS_SRC="${NBHD_MANAGED_SKILLS_SRC:-/opt/nbhd/agent-skills}"
 NBHD_MANAGED_SKILLS_DST="${NBHD_MANAGED_SKILLS_DST:-$OPENCLAW_WORKSPACE_PATH/skills/nbhd-managed}"
 NBHD_MANAGED_AGENTS_TEMPLATE="${NBHD_MANAGED_AGENTS_TEMPLATE:-/opt/nbhd/templates/openclaw/AGENTS.md}"
 NBHD_MANAGED_AGENTS_DST="${NBHD_MANAGED_AGENTS_DST:-$OPENCLAW_WORKSPACE_PATH/AGENTS.md}"
 NBHD_MEMORY_DIR="${NBHD_MEMORY_DIR:-$OPENCLAW_WORKSPACE_PATH/memory}"
 
-mkdir -p "$OPENCLAW_HOME" "$OPENCLAW_WORKSPACE_PATH" "$NBHD_MEMORY_DIR"
+mkdir -p "$OPENCLAW_HOME" "$OPENCLAW_WORKSPACE_PATH" "$NBHD_MEMORY_DIR" "$OPENCLAW_STATE_DIR" "$XDG_CACHE_HOME"
 
 # Skill templates.md is tenant-specific and authoritative on the file share
 # (rewritten by Django's update_tenant_config on every default-template edit).
@@ -226,6 +259,20 @@ fi
 # The central Django poller handles all inbound Telegram messages and
 # forwards them to this container via /v1/chat/completions.
 unset TELEGRAM_BOT_TOKEN
+
+# OpenClaw 2026.9.4 requires a one-time workspace-state migration on first boot
+# from a 2026.5.28 workspace — the gateway REFUSES to start otherwise:
+#   "[gateway] requires workspace setup state migration ... run openclaw doctor
+#    --fix, then start it again."
+# (Confirmed on the 2026-09-16 demo-tenant canary: proxy came up but the gateway
+# never started.) Run it here while the gateway is still down (which is what the
+# message asks for). `doctor --fix` is idempotent — a fast no-op once migrated —
+# so running it on every boot is safe. Non-fatal: if it returns non-zero the
+# gateway start below fails loudly with the actionable message and the platform
+# restarts the revision, rather than us masking a real migration failure.
+echo "[entrypoint] running 'openclaw doctor --fix' (workspace/state migration; no-op once migrated)"
+openclaw doctor --fix --non-interactive \
+    || echo "[entrypoint] WARNING: 'openclaw doctor --fix' returned non-zero" >&2
 
 # Start both processes in background
 # shellcheck disable=SC2086

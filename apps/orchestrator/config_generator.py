@@ -2332,6 +2332,115 @@ def _build_logging_config() -> dict[str, Any]:
     }
 
 
+def _migrate_config_to_openclaw_9_4(config: dict[str, Any]) -> None:
+    """Transform a 2026.5.28-shape config into the 2026.9.4 schema, in place.
+
+    OpenClaw 2026.9.4 renamed/moved/dropped several config keys; a config still
+    carrying the old keys is rejected at gateway startup ("Invalid config:
+    Unrecognized key ...") and the container crash-loops
+    (openclaw_version_for_image_tag docstring's schema-skew class). The blocks
+    in ``generate_openclaw_config`` emit the 2026.5.28 baseline shape; this is a
+    forward transform (not inline per-key branches) so a still-on-5.28 tenant
+    whose config regenerates mid-rollout keeps the valid 5.28 shape and only
+    tenants already on >= 2026.9.4 get the migrated keys.
+
+    Transforms mirror OpenClaw's own ``doctor --fix`` migration, verified
+    against ``openclaw@2026.9.4 doctor`` on 2026-09-16
+    (docs/gateway/doctor/config-migrations.md in the pinned runtime).
+    """
+    defaults = config.get("agents", {}).get("defaults", {})
+
+    # agents.defaults.pdfMaxBytesMb -> pdfMaxMb (rename)
+    if "pdfMaxBytesMb" in defaults:
+        defaults["pdfMaxMb"] = defaults.pop("pdfMaxBytesMb")
+
+    # agents.defaults.envelopeTimezone removed — the envelope follows
+    # userTimezone (still emitted) directly.
+    defaults.pop("envelopeTimezone", None)
+
+    # agents.defaults.compaction.memoryFlush.{systemPrompt,prompt} removed —
+    # OpenClaw owns the flush prompt now; the nbhd flush steering lives in
+    # AGENTS.md so it governs every save the agent makes.
+    flush = defaults.get("compaction", {}).get("memoryFlush")
+    if isinstance(flush, dict):
+        flush.pop("systemPrompt", None)
+        flush.pop("prompt", None)
+
+    # agents.defaults.heartbeat.skipWhenBusy removed — busy deferral is a fixed
+    # runtime policy in 9.4 (docs/gateway/heartbeat.md: heartbeat config is
+    # strict), so dropping the key loses nothing.
+    heartbeat = defaults.get("heartbeat")
+    if isinstance(heartbeat, dict):
+        heartbeat.pop("skipWhenBusy", None)
+
+    # agents.defaults.memorySearch -> top-level memory.search; store.path
+    # dropped (indexes live in each agent DB); legacy provider "auto" -> openai.
+    if "memorySearch" in defaults:
+        memory_search = defaults.pop("memorySearch")
+        if isinstance(memory_search, dict):
+            store = memory_search.get("store")
+            if isinstance(store, dict):
+                store.pop("path", None)
+                if not store:
+                    memory_search.pop("store", None)
+            if memory_search.get("provider") == "auto":
+                memory_search["provider"] = "openai"
+        config.setdefault("memory", {})["search"] = memory_search
+
+    # tools.media.<kind>.models -> capability-tagged tools.media.models list
+    # (the per-kind enable flag, e.g. tools.media.audio.enabled, stays).
+    media = config.get("tools", {}).get("media")
+    if isinstance(media, dict):
+        tagged: list[dict[str, Any]] = []
+        for kind in ("audio", "image", "video"):
+            kind_cfg = media.get(kind)
+            if isinstance(kind_cfg, dict) and "models" in kind_cfg:
+                for model in kind_cfg.pop("models"):
+                    entry = dict(model) if isinstance(model, dict) else {"model": model}
+                    caps = entry.setdefault("capabilities", [])
+                    if kind not in caps:
+                        caps.append(kind)
+                    tagged.append(entry)
+        if tagged:
+            media["models"] = media.get("models", []) + tagged
+
+    # logging.redactSensitive removed — redaction is always on in 9.4; our
+    # redactPatterns stay and apply on top of the built-in set.
+    logging_cfg = config.get("logging")
+    if isinstance(logging_cfg, dict):
+        logging_cfg.pop("redactSensitive", None)
+
+    # root commitments removed — inferred commitments retired upstream.
+    config.pop("commitments", None)
+
+    # plugins.bundledDiscovery removed — discovery state moved to shared SQLite.
+    # (The 2026.9.4 hooks.allowConversationAccess requirement for the cron
+    # origin stamp is handled version-independently in the main plugin block via
+    # conversation_hook_plugin_ids, not here.)
+    plugins_cfg = config.get("plugins")
+    if isinstance(plugins_cfg, dict):
+        plugins_cfg.pop("bundledDiscovery", None)
+
+    # Disable the built-in web-search provider auto-install (9.4 only).
+    #
+    # 2026.9.4's `doctor --fix` (and the gateway) npm-install every "missing
+    # configured" web-search provider plugin into the state dir. A provider is
+    # "configured" when tools.web.search is enabled AND a catalog provider's env
+    # var is present — our OPENROUTER_API_KEY pulls in @openclaw/perplexity-plugin
+    # (and BRAVE_API_KEY would pull brave). That npm install extracts archives
+    # onto our root-owned Azure mounts, which trips 9.4's fs-safe directory-mode
+    # verification ("FsSafeError: directory final mode could not be verified")
+    # and blocks boot. We don't bundle a provider in the image, so disable web
+    # search on 9.4 to keep boot clean and off the fragile install path.
+    #
+    # TODO(web-search-9.4): restore web_search by bundling a search provider
+    # plugin into Dockerfile.openclaw (image path, like the nbhd-* plugins) so no
+    # boot-time npm install is needed, then flip this back on. Tracked in the
+    # dependabot-openclaw-9.4 memory. Until then 9.4 tenants lose live web/weather
+    # lookups (web_search tool absent).
+    config.setdefault("tools", {}).setdefault("web", {}).setdefault("search", {})["enabled"] = False
+
+
 def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     """Generate a complete openclaw.json for a tenant's container.
 
@@ -2829,6 +2938,14 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 "OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID",
                 "OPENCLAW_ACTIVITY_STREAM_PLUGIN_ID",
                 "OPENCLAW_STREAM_PROGRESS_PLUGIN_ID",
+                # cron-enforcement registers before_prompt_build to record the
+                # cron runId->jobId used to sign the origin provenance stamp.
+                # 2026.5.28 tolerated it without the policy; 2026.9.4 BLOCKS the
+                # hook unless the entry sets hooks.allowConversationAccess, which
+                # silently drops the cron origin stamp (Django verify_origin_stamp
+                # then rejects cron-triggered actions). Verified against the
+                # pinned 2026.9.4 runtime 2026-09-16.
+                "OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID",
             )
         }
         conversation_hook_plugin_ids.discard("")
@@ -3187,6 +3304,13 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         _ts_defaults = config["agents"]["defaults"]
         _ts_defaults["params"] = {"cacheRetention": "long"}
         _ts_defaults["contextPruning"] = {"mode": "cache-ttl"}
+
+    # OpenClaw 2026.9.4 config-schema migration. Everything above emits the
+    # 2026.5.28 baseline; tenants already on >= 2026.9.4 get the renamed/moved/
+    # dropped keys so their gateway accepts the config. Gated so mixed-version
+    # rollout stays safe (a still-on-5.28 tenant keeps the 5.28 shape).
+    if _parse_version(oc_version) >= (2026, 9, 4):
+        _migrate_config_to_openclaw_9_4(config)
 
     return config
 
