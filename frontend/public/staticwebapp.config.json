@@ -6,9 +6,7 @@
     },
     {
       "route": "/.well-known/apple-app-site-association",
-      "headers": {
-        "content-type": "application/json"
-      }
+      "rewrite": "/.well-known/apple-app-site-association.json"
     },
     {
       "route": "/_next/static/*",
