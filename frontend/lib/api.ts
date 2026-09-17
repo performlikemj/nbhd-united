@@ -2144,6 +2144,19 @@ export function createFriendInvite(
   });
 }
 
+export function fetchFriendInvite(token: string): Promise<import("@/lib/types").FriendInvitePreview> {
+  return apiFetch(`/api/v1/friends/invites/${encodeURIComponent(token)}/`, undefined, {
+    anonymous: true,
+    timeoutMs: 15_000,
+  });
+}
+
+export function claimFriendInvite(token: string): Promise<import("@/lib/types").WaveResult> {
+  return apiFetch(`/api/v1/friends/invites/${encodeURIComponent(token)}/claim/`, {
+    method: "POST",
+  });
+}
+
 // ── Neighborhood shares (PR2) ────────────────────────────────────────────────
 // propose → scrub → preview → approve → publish.
 

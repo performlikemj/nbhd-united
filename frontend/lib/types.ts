@@ -1093,6 +1093,13 @@ export interface FriendInvite {
   uses: number;
 }
 
+export interface FriendInvitePreview {
+  inviter_display_name: string;
+  inviter_handle: string;
+  inviter_hue: number;
+  valid: boolean;
+}
+
 // ── Neighborhood shares (PR2) ────────────────────────────────────────────────
 // The propose → scrub → preview → approve → publish pipeline. Every share is
 // addressed by friendship_id + lesson id (see the header note above) — never

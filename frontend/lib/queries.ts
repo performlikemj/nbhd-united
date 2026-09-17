@@ -182,6 +182,8 @@ import {
   fetchNeighborProfile,
   updateNeighborProfile,
   createFriendInvite,
+  fetchFriendInvite,
+  claimFriendInvite,
   fetchLessons,
   fetchPendingShares,
   shareLesson,
@@ -240,12 +242,12 @@ export function useUpdateProfileMutation() {
   });
 }
 
-export function useTenantQuery() {
+export function useTenantQuery(enabled = true) {
   return useQuery({
     queryKey: ["tenant"],
     queryFn: fetchTenant,
     staleTime: 5 * 60_000,
-    enabled: isLoggedIn(),
+    enabled: enabled && isLoggedIn(),
     // Poll while a picker change is in flight so the AI provider page can
     // transition the "Switching…" badge to "Active" once the container
     // adopts the change. `applied_model` is stamped only after a successful
@@ -2201,6 +2203,30 @@ export function useUpdateNeighborProfileMutation() {
 export function useCreateInviteMutation() {
   return useMutation({
     mutationFn: (data: { max_uses?: number; expires_in_days?: number } = {}) => createFriendInvite(data),
+  });
+}
+
+export function useFriendInviteQuery(token: string | null) {
+  return useQuery({
+    queryKey: ["friend-invite", token],
+    queryFn: () => fetchFriendInvite(token!),
+    enabled: !!token,
+    retry: false,
+    staleTime: 0,
+  });
+}
+
+export function useClaimFriendInviteMutation(token: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => {
+      if (!isLoggedIn()) throw new Error("Please sign in to accept this invite.");
+      return claimFriendInvite(token);
+    },
+    meta: { skipErrorToast: true },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["neighborhood"] });
+    },
   });
 }
 

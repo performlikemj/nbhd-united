@@ -57,6 +57,12 @@ function LoginPageInner() {
       created,
       needsOnboarding,
     });
+    const inviteReturn = searchParams.get("next");
+    if (destination === "journal" && inviteReturn && /^\/friends\/invite\/[A-Za-z0-9_-]+$/.test(inviteReturn)) {
+      // This unbounded path is served by SWA's rewrite, not Next's route table.
+      window.location.assign(inviteReturn);
+      return;
+    }
     router.push(destination === "journal" ? "/journal" : "/onboarding");
   };
 
