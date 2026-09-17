@@ -76,6 +76,24 @@ test("pinned gateway activates every repo-derived hook plugin without dropped-ho
   config.plugins.load.paths = config.plugins.load.paths.map((pluginPath) => (
     pluginPath.replace(/^\/opt\/nbhd\/plugins/u, localPluginRoot)
   ));
+  // Image-only web-search providers (brave is npm-vendored under
+  // /opt/nbhd/vendored in the built image, not the repo) can't be path-rewritten
+  // to a local source, so drop the web-search wiring for this runner smoke. The
+  // brave load.path is validated against the real image by the deploy-backend
+  // built-image boot smoke; here we only assert hook-plugin activation.
+  config.plugins.load.paths = config.plugins.load.paths.filter(
+    (pluginPath) => !pluginPath.startsWith("/opt/nbhd/vendored"),
+  );
+  if (config.plugins.entries) {
+    delete config.plugins.entries.brave;
+    delete config.plugins.entries.perplexity;
+  }
+  if (Array.isArray(config.plugins.allow)) {
+    config.plugins.allow = config.plugins.allow.filter(
+      (pluginId) => pluginId !== "brave" && pluginId !== "perplexity",
+    );
+  }
+  if (config.tools?.web?.search) config.tools.web.search = { enabled: false };
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
   await chmod(configPath, 0o600);
 
