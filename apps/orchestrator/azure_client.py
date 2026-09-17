@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 from typing import Any
 
 from django.conf import settings
@@ -2017,7 +2019,7 @@ def _ensure_container_env_in_template(app, env: dict[str, str]) -> bool:
     for container in app.template.containers:
         if container.name != "openclaw":
             continue
-        current = list(container.env or [])
+        current = list(getattr(container, "env", None) or [])
         by_name = {e.name: e for e in current}
         for name, value in env.items():
             existing = by_name.get(name)
@@ -2088,6 +2090,94 @@ def ensure_oc_state_dir_mount(container_name: str) -> bool:
     ).result()
     logger.info("Retrofitted oc-state dir mount + env onto %s", container_name)
     return True
+
+
+@dataclass
+class StorageReconcileResult:
+    """What ``ensure_openclaw_storage_ready`` found and did for one container.
+
+    ``drift_before`` is the per-field drift read from the live template;
+    ``drift_after`` is what the idempotent helpers could NOT fix (e.g. the
+    workspace volume itself is missing). ``fixed_fields`` is the difference.
+    """
+
+    container_name: str
+    drift_before: list = dc_field(default_factory=list)
+    drift_after: list = dc_field(default_factory=list)
+    revision_created: bool = False
+    dry_run: bool = False
+    mock: bool = False
+
+    @property
+    def fixed_fields(self) -> list[str]:
+        remaining = {f.field for f in self.drift_after}
+        return [f.field for f in self.drift_before if f.field not in remaining]
+
+    @property
+    def unfixable_fields(self) -> list[str]:
+        return [f.field for f in self.drift_after]
+
+    @property
+    def in_sync(self) -> bool:
+        return not self.drift_before
+
+
+def ensure_openclaw_storage_ready(container_name: str, *, dry_run: bool = False) -> StorageReconcileResult:
+    """Idempotently reconcile ONE container's live template to the
+    code-declared OpenClaw storage state, reporting per field.
+
+    Desired state = ``_WORKSPACE_MOUNT_OPTIONS`` on the workspace AzureFile
+    volume, the ``oc-state`` EmptyDir volume + mount, and ``_OC_STATE_ENV``.
+    This never consults the image-rollout allowlist — the IMAGE is reconciled
+    separately by the ``ensure_openclaw_ready`` command, which does respect
+    the gate. (2026.5.28 honors the relocation env too: on a 5.28 tenant this
+    moves runtime state to ephemeral disk exactly as on 9.4; the durable
+    truth — config + workspace on the share, crons/transcripts in Postgres —
+    is unaffected.)
+
+    ``dry_run`` reads the live template and reports drift without writing.
+    A second run on a converged container is a clean no-op (no revision).
+    A write mints a fresh ``revision_suffix``: re-submitting the GET'd template
+    with its previous suffix can wedge a single-revision app ("revision with
+    suffix already exists"), the same trap ``update_container_image`` avoids.
+    """
+    from apps.orchestrator.openclaw_drift import compare_storage
+
+    result = StorageReconcileResult(container_name=container_name, dry_run=dry_run)
+    if _is_mock():
+        logger.info("[MOCK] ensure_openclaw_storage_ready(%s) skipped", container_name)
+        result.mock = True
+        return result
+
+    client = get_container_client()
+    app = client.container_apps.get(settings.AZURE_RESOURCE_GROUP, container_name)
+
+    result.drift_before = compare_storage(app)
+    if not result.drift_before:
+        return result
+
+    changed = _ensure_oc_state_dir_in_template(app)
+    result.drift_after = compare_storage(app)
+    if dry_run or not changed:
+        return result
+
+    import hashlib
+    import time
+
+    app.template.revision_suffix = f"s{hashlib.sha256(f'oc-ready-{int(time.time_ns())}'.encode()).hexdigest()[:6]}"
+    client.container_apps.begin_create_or_update(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+        app,
+    ).result()
+    result.revision_created = True
+    logger.info(
+        "Reconciled OpenClaw storage on %s: fixed=%s unfixable=%s",
+        container_name,
+        result.fixed_fields,
+        result.unfixable_fields,
+    )
+    return result
 
 
 def _ensure_gateway_readiness_probe_in_template(app) -> None:
@@ -2197,6 +2287,11 @@ def update_container_image(container_name: str, image: str) -> None:
 
     _ensure_plugin_runtime_deps_in_template(app)
     _ensure_index_cache_in_template(app)
+    # 2026.9.4 storage readiness (workspace mount options + oc-state volume/
+    # mount + relocation env) rides on every image bump too, so the auto-roll
+    # path can never land a 9.4 image on a container that lacks the storage it
+    # needs to boot. Idempotent; a no-op on already-ready containers.
+    _ensure_oc_state_dir_in_template(app)
     _ensure_gateway_readiness_probe_in_template(app)
 
     # Keep the stable tag-derived part for image comparisons, but mint a
