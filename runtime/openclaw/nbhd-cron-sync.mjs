@@ -95,6 +95,39 @@ export function msToDuration(ms) {
   return null;
 }
 
+// Epoch-ms fire time of an `at` schedule (ISO `at` or numeric `atMs`), or null.
+export function atFireMs(schedule) {
+  if (!schedule || typeof schedule !== "object") return null;
+  if (Number.isFinite(schedule.atMs)) return Number(schedule.atMs);
+  if (typeof schedule.at === "number") return schedule.at;
+  if (typeof schedule.at === "string") {
+    const t = Date.parse(schedule.at);
+    return Number.isFinite(t) ? t : null;
+  }
+  return null;
+}
+
+// True when a container cron already matches the desired job on the fields we
+// own (schedule, message, delivery), so we can skip a no-op re-add. Ignores
+// runtime-added fields (anchorMs, state, configRevision, ...).
+export function sameCron(desired, current) {
+  const ds = desired.schedule || {};
+  const cs = current.schedule || {};
+  if (ds.kind !== cs.kind) return false;
+  if (ds.kind === "every" && Number(ds.everyMs) !== Number(cs.everyMs)) return false;
+  if (ds.kind === "cron" && String(ds.expr || "") !== String(cs.expr || "")) return false;
+  if (ds.kind === "at" && atFireMs(ds) !== atFireMs(cs)) return false;
+  if (String(ds.tz || "") !== String(cs.tz || "")) return false;
+  const dp = desired.payload || {};
+  const cp = current.payload || {};
+  if (dp.kind !== cp.kind) return false;
+  if (String(dp.message ?? dp.text ?? "") !== String(cp.message ?? cp.text ?? "")) return false;
+  const dd = desired.delivery || {};
+  const cd = current.delivery || {};
+  if (String(dd.mode || "") !== String(cd.mode || "")) return false;
+  return true;
+}
+
 // Build a SAFE `openclaw cron add` argv from extracted job fields. Returns null
 // for anything unmappable. Only ever emits --message / --system-event.
 export function buildAddArgs(job) {
@@ -160,45 +193,55 @@ async function oc(args) {
   return stdout;
 }
 
-async function listNbhdDeclarations() {
+async function listNbhdCrons() {
   const out = await oc(["cron", "list", "--json"]);
   const doc = JSON.parse(out);
   const rows = Array.isArray(doc) ? doc : (doc && Array.isArray(doc.jobs) ? doc.jobs : []);
-  return rows
-    .filter((r) => r && typeof r.declarationKey === "string" && r.declarationKey.startsWith(DECL_PREFIX))
-    .map((r) => ({ id: r.id, declarationKey: r.declarationKey }));
+  return rows.filter((r) => r && typeof r.declarationKey === "string" && r.declarationKey.startsWith(DECL_PREFIX));
 }
 
-// One reconcile pass: upsert every desired nbhd:* cron, then remove nbhd:* crons
-// that are no longer desired. Idempotent (declaration-key upsert), so it is safe
-// to run on a loop.
+// One reconcile pass. Snapshots the container's current nbhd:* crons, then:
+//  - adds a desired cron only when it is MISSING or CHANGED (so unchanged crons
+//    are not re-added every poll — avoids fleet-wide cron.add churn);
+//  - SKIPS one-shot `at` crons whose fire time has already passed (the container
+//    rejects a past `schedule.at`, and a fired one-shot self-deletes — re-adding
+//    it would spam "in the past" errors);
+//  - removes nbhd:* crons the desired set no longer contains.
 export async function reconcileOnce() {
   const jobs = await readSignedJobs();
   if (jobs === null) return { applied: 0, removed: 0, skipped: 0, ok: false };
 
+  let current;
+  try { current = await listNbhdCrons(); }
+  catch (e) { warn("cron list failed, skipping this pass:", e && e.message); return { applied: 0, removed: 0, skipped: 0, ok: false }; }
+  const currentByKey = new Map(current.map((r) => [r.declarationKey, r]));
+
+  const now = Date.now();
   const desiredKeys = new Set();
   let applied = 0;
   let skipped = 0;
   for (const job of jobs) {
     if (job && job.enabled === false) continue;
     if (!isSafeJob(job)) { warn("REFUSED unsafe job:", job && job.name); skipped++; continue; }
+    const schedule = job.schedule || {};
+    if (schedule.kind === "at") {
+      const fire = atFireMs(schedule);
+      if (fire === null || fire <= now) { skipped++; continue; } // past/unparseable one-shot
+    }
+    const key = String(job.declarationKey || "");
+    if (!key.startsWith(DECL_PREFIX)) { skipped++; continue; }
+    desiredKeys.add(key);
+    const existing = currentByKey.get(key);
+    if (existing && sameCron(job, existing)) continue; // present + unchanged → no-op
     const args = buildAddArgs(job);
     if (!args) { warn("skip unmappable job:", job && job.name); skipped++; continue; }
-    try {
-      await oc(args);
-      desiredKeys.add(String(job.declarationKey));
-      applied++;
-    } catch (e) {
-      warn("cron add failed for", job && job.name, "-", (e && e.message ? e.message : e));
-    }
+    try { await oc(args); applied++; }
+    catch (e) { warn("cron add failed for", job && job.name, "-", (e && e.message ? e.message : e)); }
   }
 
   let removed = 0;
-  let current;
-  try { current = await listNbhdDeclarations(); }
-  catch (e) { warn("cron list failed, skipping removals:", e && e.message); return { applied, removed, skipped, ok: true }; }
-  for (const row of current) {
-    if (!desiredKeys.has(row.declarationKey)) {
+  for (const [key, row] of currentByKey) {
+    if (!desiredKeys.has(key)) {
       try { await oc(["cron", "rm", row.id]); removed++; }
       catch (e) { warn("cron rm failed for", row.id, "-", e && e.message); }
     }

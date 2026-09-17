@@ -16,7 +16,7 @@ const CRONS_FILE = path.join(dir, "nbhd-crons.json");
 process.env.NBHD_INTERNAL_API_KEY = KEY;
 process.env.NBHD_CRONS_FILE = CRONS_FILE;
 
-const { isSafeJob, buildAddArgs, msToDuration, readSignedJobs } = await import("./nbhd-cron-sync.mjs");
+const { isSafeJob, buildAddArgs, msToDuration, readSignedJobs, atFireMs, sameCron } = await import("./nbhd-cron-sync.mjs");
 
 function signDoc(jobs, { badSig = false, tamper = false } = {}) {
   const signed = JSON.stringify(jobs);
@@ -102,4 +102,26 @@ test("readSignedJobs: tampered payload → null (sig mismatch)", async () => {
 test("readSignedJobs: unsigned/plain jobs array → null", async () => {
   await writeFile(CRONS_FILE, JSON.stringify([{ declarationKey: "nbhd:1" }]));
   assert.equal(await readSignedJobs(), null);
+});
+
+test("atFireMs: parses ISO at, numeric atMs, rejects junk", () => {
+  assert.equal(atFireMs({ at: "2026-09-18T07:43:00+09:00" }), Date.parse("2026-09-18T07:43:00+09:00"));
+  assert.equal(atFireMs({ atMs: 1789646580000 }), 1789646580000);
+  assert.equal(atFireMs({ at: "not-a-date" }), null);
+  assert.equal(atFireMs({}), null);
+  assert.equal(atFireMs(null), null);
+});
+
+test("sameCron: matches on owned fields, differs on schedule/message/delivery", () => {
+  const base = { schedule: { kind: "cron", expr: "0 9 * * *", tz: "Asia/Tokyo" }, payload: { kind: "agentTurn", message: "hi" }, delivery: { mode: "none" } };
+  // container adds runtime fields — still "same"
+  const cur = { schedule: { kind: "cron", expr: "0 9 * * *", tz: "Asia/Tokyo", anchorMs: 123 }, payload: { kind: "agentTurn", message: "hi" }, delivery: { mode: "none" }, configRevision: "sha256:x" };
+  assert.equal(sameCron(base, cur), true);
+  assert.equal(sameCron(base, { ...cur, schedule: { ...cur.schedule, expr: "0 10 * * *" } }), false);
+  assert.equal(sameCron(base, { ...cur, payload: { kind: "agentTurn", message: "changed" } }), false);
+  assert.equal(sameCron(base, { ...cur, delivery: { mode: "announce" } }), false);
+  // at crons compare by fire instant
+  const atD = { schedule: { kind: "at", at: "2026-09-18T07:43:00+09:00" }, payload: { kind: "agentTurn", message: "m" }, delivery: { mode: "none" } };
+  const atC = { schedule: { kind: "at", at: "2026-09-17T22:43:00Z" }, payload: { kind: "agentTurn", message: "m" }, delivery: { mode: "none" } };
+  assert.equal(sameCron(atD, atC), true); // same instant, different notation
 });
