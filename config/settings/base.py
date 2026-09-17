@@ -291,6 +291,14 @@ USER_MD_SKIP_UNCHANGED_TENANT_IDS = env("USER_MD_SKIP_UNCHANGED_TENANT_IDS", def
 # MUST match. See apps/orchestrator/image_rollout.py.
 OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS = env("OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS", default="")
 
+# OpenClaw fleet drift alerting (docs/agents/openclaw-fleet-admin.md). The
+# daily ``detect-openclaw-drift`` QStash cron compares every live Container
+# App template against the code-declared desired state and pages via Pushover
+# when a tenant drifted. DEFAULT OFF so merely deploying never starts paging;
+# flip on once the fleet is converged (``ensure_openclaw_ready --all``).
+# Container App env var name MUST match.
+OPENCLAW_DRIFT_ALERTS_ENABLED = env.bool("OPENCLAW_DRIFT_ALERTS_ENABLED", default=False)
+
 # OpenClaw native sub-agent offload — canary rollout gate. Comma-separated
 # tenant UUIDs; EMPTY MEANS NOBODY. The generated config keeps sessions_spawn
 # and subagents denied unless a tenant is explicitly listed here.
