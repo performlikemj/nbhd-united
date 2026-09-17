@@ -2421,24 +2421,36 @@ def _migrate_config_to_openclaw_9_4(config: dict[str, Any]) -> None:
     if isinstance(plugins_cfg, dict):
         plugins_cfg.pop("bundledDiscovery", None)
 
-    # Disable the built-in web-search provider auto-install (9.4 only).
+    # Web search on 9.4 via the IMAGE-VENDORED brave provider (9.4 only).
     #
-    # 2026.9.4's `doctor --fix` (and the gateway) npm-install every "missing
-    # configured" web-search provider plugin into the state dir. A provider is
-    # "configured" when tools.web.search is enabled AND a catalog provider's env
-    # var is present — our OPENROUTER_API_KEY pulls in @openclaw/perplexity-plugin
-    # (and BRAVE_API_KEY would pull brave). That npm install extracts archives
-    # onto our root-owned Azure mounts, which trips 9.4's fs-safe directory-mode
-    # verification ("FsSafeError: directory final mode could not be verified")
-    # and blocks boot. We don't bundle a provider in the image, so disable web
-    # search on 9.4 to keep boot clean and off the fragile install path.
-    #
-    # TODO(web-search-9.4): restore web_search by bundling a search provider
-    # plugin into Dockerfile.openclaw (image path, like the nbhd-* plugins) so no
-    # boot-time npm install is needed, then flip this back on. Tracked in the
-    # dependabot-openclaw-9.4 memory. Until then 9.4 tenants lose live web/weather
-    # lookups (web_search tool absent).
-    config.setdefault("tools", {}).setdefault("web", {}).setdefault("search", {})["enabled"] = False
+    # 2026.9.4's doctor + gateway npm-install every "missing configured" web-search
+    # provider into <configDir>/npm at boot. A provider is "configured" when
+    # tools.web.search is enabled AND a catalog provider's env var is present —
+    # BRAVE_API_KEY pulls brave, OPENROUTER_API_KEY pulls perplexity. That install
+    # lands on our root-owned, wipe-on-restart oc-state EmptyDir: it fails fs-safe
+    # AND re-runs every boot. So instead we bake brave into the image at build
+    # time (Dockerfile.openclaw → /opt/nbhd/vendored/brave-project/node_modules/@openclaw/brave-plugin) and load it via
+    # plugins.load.paths. Verified against the 9.4 source: a plugin on load.paths
+    # counts as already-installed, so the boot install is skipped, and web search
+    # accepts a load.paths provider. Pin the provider to brave explicitly and turn
+    # perplexity OFF, or OPENROUTER_API_KEY would still trigger perplexity's boot
+    # install (targets-CmYzcNoa.mjs:116). The vendored path only exists in the 9.4
+    # image, so this is inside the 9.4 migration (5.28 tenants keep their shape).
+    _brave_path = "/opt/nbhd/vendored/brave-project/node_modules/@openclaw/brave-plugin"
+    _plugins = config.setdefault("plugins", {})
+    _load = _plugins.setdefault("load", {})
+    _paths = _load.setdefault("paths", [])
+    if _brave_path not in _paths:
+        _paths.append(_brave_path)
+    _allow = _plugins.get("allow")
+    if isinstance(_allow, list) and "brave" not in _allow:
+        _allow.append("brave")
+    _entries = _plugins.setdefault("entries", {})
+    _entries["brave"] = {"enabled": True}
+    _entries.setdefault("perplexity", {})["enabled"] = False
+    config.setdefault("tools", {}).setdefault("web", {}).setdefault("search", {}).update(
+        {"enabled": True, "provider": "brave"}
+    )
 
 
 def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
