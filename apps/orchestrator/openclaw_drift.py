@@ -170,12 +170,35 @@ def _openclaw_container(app):
     return None
 
 
+def openclaw_image_is_9_4_plus(app) -> bool:
+    """True if the 'openclaw' container's image resolves to >= 2026.9.4.
+
+    The state-relocation env vars (``_OC_STATE_ENV``) are correct ONLY on 9.4+:
+    2026.5.28 also honors ``OPENCLAW_STATE_DIR``, so setting them on a 5.28
+    container moves its runtime state onto the wipe-on-restart EmptyDir. So the
+    env is applied (and expected) only on a 9.4+ image and must be ABSENT on
+    5.28. Gating on the live image — not a fixed flag — makes a 5.28<->9.4 image
+    change flip the env automatically, and keeps ``compare_storage`` in lockstep
+    with ``azure_client._ensure_oc_state_dir_in_template`` (both call this).
+    """
+    from apps.orchestrator.tool_policy import _parse_version, openclaw_version_for_image_tag
+
+    container = _openclaw_container(app)
+    if container is None:
+        return False
+    tag = image_tag_of(getattr(container, "image", None))
+    if not tag:
+        return False
+    return _parse_version(openclaw_version_for_image_tag(tag)) >= (2026, 9, 4)
+
+
 def compare_storage(app) -> list[FieldDrift]:
     """Storage + env drift for one SDK ``ContainerApp`` object.
 
     Mirrors, field for field, what ``azure_client._ensure_oc_state_dir_in_template``
     would change — so ``ensure_openclaw_ready`` can report per-field and the
-    two never disagree (guarded by a test).
+    two never disagree (guarded by a test). The env portion is version-gated:
+    expected present on a 9.4+ image, expected ABSENT on 5.28.
     """
     drift: list[FieldDrift] = []
     template = app.template
@@ -224,13 +247,20 @@ def compare_storage(app) -> list[FieldDrift]:
             )
         )
 
-    # 3. State-relocation env vars.
+    # 3. State-relocation env vars — version-gated (see openclaw_image_is_9_4_plus).
+    #    9.4+: must be present + correct. 5.28: must be ABSENT (they would move
+    #    5.28's live state onto the wipe-on-restart EmptyDir).
     env = {getattr(e, "name", None): getattr(e, "value", None) for e in getattr(container, "env", None) or []}
-    for name, expected in _OC_STATE_ENV.items():
-        if name not in env:
-            drift.append(FieldDrift(env_field(name), expected, "missing"))
-        elif env[name] != expected:
-            drift.append(FieldDrift(env_field(name), expected, str(env[name])))
+    if openclaw_image_is_9_4_plus(app):
+        for name, expected in _OC_STATE_ENV.items():
+            if name not in env:
+                drift.append(FieldDrift(env_field(name), expected, "missing"))
+            elif env[name] != expected:
+                drift.append(FieldDrift(env_field(name), expected, str(env[name])))
+    else:
+        for name in _OC_STATE_ENV:
+            if name in env:
+                drift.append(FieldDrift(env_field(name), "<absent on 5.28>", str(env[name])))
 
     return drift
 

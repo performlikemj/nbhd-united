@@ -89,3 +89,18 @@ For a one-off custom image on a single tenant without touching the DB tag, `cana
 - Fix is always the one button. If an alert repeats after a reconcile, the field is `UNFIXABLE` or something keeps rewriting it — find the writer, do not hand-patch Azure.
 
 Code map: `apps/orchestrator/openclaw_drift.py` (comparison + alert text), `azure_client.ensure_openclaw_storage_ready` (per-field reconcile), `management/commands/ensure_openclaw_ready.py`, `management/commands/detect_openclaw_drift.py`, `apps/cron/views.py::detect_openclaw_drift`, `apps/orchestrator/image_rollout.py` (the gate).
+
+## The state-relocation env is version-gated (5.28 vs 9.4)
+
+The four `OPENCLAW_STATE_DIR` / `OPENCLAW_CONFIG_PATH` / `OPENCLAW_WORKSPACE_DIR` / `XDG_CACHE_HOME` env vars are correct ONLY on a 9.4+ image. **2026.5.28 also honors `OPENCLAW_STATE_DIR`**, so setting them on a 5.28 container would move that tenant's live runtime state onto the wipe-on-restart EmptyDir. So the reconcile + drift check gate the env on the container's live image tag (`openclaw_image_is_9_4_plus`): present on 9.4+, **absent on 5.28**. A 5.28↔9.4 image change flips the env automatically (the image is set before the storage bake-in). Mount options + the `oc-state` volume/mount are harmless on 5.28, so they always apply. Practical effect: running `ensure_openclaw_ready --all` while the fleet is still on 5.28 will NOT relocate anyone's state — it only adds the (idle) node-owned mount + empty volume.
+
+## Troubleshooting: chat went silent after an OpenClaw upgrade
+
+Symptom: a user sends a message, it saves, but **no reply ever comes** (the app keeps polling; in Django logs you see the same one message re-read every ~2 s). Boot and plugins can be perfectly healthy — it's the chat-invocation path that broke. Check these three, in order:
+
+1. **Django logs** for the tenant — the smoking gun:
+   `grep proxy_attribution` / `grep "403"` → `Gateway ... returned 403 ... "type":"proxy_attribution_required"`. This is 9.4 rejecting our proxy→gateway hop (fixed by `runtime/openclaw/proxy.js` stripping `forwarded`/`x-real-ip`/`x-forwarded-*` on the gateway hop). If it reappears, the proxy image regressed or Azure ingress changed its forwarded headers.
+2. **Container console log**: `grep "unattributable proxy"` → `[gateway] observed unattributable proxy-shaped traffic from 127.0.0.1`. Same cause as #1.
+3. **Container console log** for a hard boot failure that only surfaces at runtime: `grep -E "FsSafeError|SQLite read-only worker|CLI command failed"`. These are the 9.4 storage-strictness class (node-owned mount / oc-state / umask) — reconcile with `ensure_openclaw_ready`.
+
+General rule: **when an OpenClaw bump lands, watch for new "who is calling me?" strictness** on anything behind our reverse proxy or Azure's ingress. The 2026.9.4 migration alone added six such incompatibilities (state migration, stdout-redactor vs SQLite worker, umask/fs-safe, web-search auto-install, node-owned share mount, proxy attribution) — all documented in `memory/project_dependabot_openclaw_9_4_config_break_2026_09_16.md`.

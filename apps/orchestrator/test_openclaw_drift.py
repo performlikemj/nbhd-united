@@ -129,6 +129,26 @@ class CompareStorageTest(SimpleTestCase):
         # And the helper is idempotent on the now-converged template.
         self.assertFalse(_ensure_oc_state_dir_in_template(app))
 
+    def test_5_28_image_env_present_is_drift_then_reconciled_away(self):
+        """The relocation env is version-gated. On a 5.28 image it must be
+        ABSENT (5.28 honors OPENCLAW_STATE_DIR — leaving it moves 5.28's live
+        state onto the wipe-on-restart EmptyDir). compare_storage flags a
+        5.28 tenant that still carries the env, and _ensure_oc_state_dir_in_template
+        removes it so the two agree — no false drift-alert on the 5.28 fleet."""
+        app = _converged_app(image="nbhdunited.azurecr.io/nbhd-openclaw:2026.5.28-cc3bcd2")
+        drift = compare_storage(app)
+        self.assertEqual({d.field for d in drift}, {env_field(n) for n in _OC_STATE_ENV})
+        # Reconcile removes the env for a 5.28 image → then fully in sync.
+        self.assertTrue(_ensure_oc_state_dir_in_template(app))
+        self.assertEqual(compare_storage(app), [])
+
+    def test_5_28_image_converged_storage_no_env_has_no_drift(self):
+        """A 5.28 tenant with the node-owned mount + oc-state volume but NO
+        relocation env is fully in sync and must NOT alert."""
+        app = _converged_app(image="nbhdunited.azurecr.io/nbhd-openclaw:2026.5.28-cc3bcd2")
+        app.template.containers[0].env = [SimpleNamespace(name="OPENCLAW_DISABLE_BONJOUR", value="1")]
+        self.assertEqual(compare_storage(app), [])
+
 
 class CompareImageTest(SimpleTestCase):
     def test_on_desired_tag_is_clean(self):

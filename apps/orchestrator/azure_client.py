@@ -2034,6 +2034,24 @@ def _ensure_container_env_in_template(app, env: dict[str, str]) -> bool:
     return modified
 
 
+def _remove_container_env_in_template(app, names) -> bool:
+    """Remove the named env vars from the ``openclaw`` container, in place.
+    Idempotent — returns True only if something was removed.
+    """
+    names = set(names)
+    modified = False
+    for container in app.template.containers:
+        if container.name != "openclaw":
+            continue
+        current = list(getattr(container, "env", None) or [])
+        kept = [e for e in current if e.name not in names]
+        if len(kept) != len(current):
+            container.env = kept
+            modified = True
+        break
+    return modified
+
+
 def _ensure_workspace_mount_options_in_template(app) -> bool:
     """Set the node-owned 0o700 CIFS mount options on the ``workspace``
     AzureFile volume so OpenClaw 2026.9.4's fs-safe directory-mode check
@@ -2056,9 +2074,21 @@ def _ensure_oc_state_dir_in_template(app) -> bool:
     while pinning config + workspace to the share. Returns True if anything
     changed.
     """
+    from apps.orchestrator.openclaw_drift import openclaw_image_is_9_4_plus
+
     opts_changed = _ensure_workspace_mount_options_in_template(app)
     mount_changed = _ensure_empty_dir_mount_in_template(app, _OC_STATE_VOLUME, _OC_STATE_PATH)
-    env_changed = _ensure_container_env_in_template(app, _OC_STATE_ENV)
+    # Mount options + the oc-state volume/mount are harmless on 5.28 (an unused
+    # EmptyDir + a node-owned share, both tolerated) and required by 9.4, so they
+    # ride unconditionally. The relocation ENV is version-gated: 2026.5.28 also
+    # honors OPENCLAW_STATE_DIR, so applying it to a 5.28 container would move its
+    # live state onto the wipe-on-restart EmptyDir. Apply env only on a 9.4+
+    # image (update_container_image sets the new image BEFORE calling this, so a
+    # bump to 9.4 turns it on); remove it on 5.28 so a rollback turns it off.
+    if openclaw_image_is_9_4_plus(app):
+        env_changed = _ensure_container_env_in_template(app, _OC_STATE_ENV)
+    else:
+        env_changed = _remove_container_env_in_template(app, _OC_STATE_ENV.keys())
     return opts_changed or mount_changed or env_changed
 
 
