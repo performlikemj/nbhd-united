@@ -150,7 +150,13 @@ export function buildAddArgs(job) {
 }
 
 async function oc(args) {
-  const { stdout } = await execFileP(OC_BIN, args, { env: process.env, timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
+  // Clear NODE_OPTIONS for the spawned CLI so the global redact-stdout shim
+  // (NODE_OPTIONS=--require .../redact-stdout.js) does not prepend its
+  // "[nbhd:redact...]" marker to the child's stdout — which would corrupt
+  // `cron list --json`. The child's stdout is consumed here, not logged, so it
+  // needs no redaction.
+  const env = { ...process.env, NODE_OPTIONS: "" };
+  const { stdout } = await execFileP(OC_BIN, args, { env, timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
   return stdout;
 }
 

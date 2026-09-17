@@ -106,6 +106,21 @@ class SignedDocTest(TestCase):
         with self.assertRaises(RuntimeError):
             build_signed_crons_doc(t)
 
+    @override_settings(NBHD_INTERNAL_API_KEY="shared-not-this-one")
+    def test_signs_with_per_tenant_key_not_shared(self):
+        # The container binds a per-tenant NBHD_INTERNAL_API_KEY, so the file must
+        # be signed with tenant.internal_api_key, not the shared platform setting.
+        t = create_tenant(display_name="pt", telegram_chat_id=810005)
+        t.internal_api_key = "per-tenant-key-123"
+        t.save(update_fields=["internal_api_key"])
+        _mk(t, "R", kind="cron")
+        data, _ = build_signed_crons_doc(t)
+        doc = json.loads(data.decode("utf-8"))
+        per_tenant_sig = hmac.new(b"per-tenant-key-123", doc["signed"].encode(), sha256).hexdigest()
+        shared_sig = hmac.new(b"shared-not-this-one", doc["signed"].encode(), sha256).hexdigest()
+        self.assertEqual(doc["sig"], per_tenant_sig)
+        self.assertNotEqual(doc["sig"], shared_sig)
+
 
 @override_settings(NBHD_INTERNAL_API_KEY=_KEY)
 class ReconcileRoutingTest(TestCase):

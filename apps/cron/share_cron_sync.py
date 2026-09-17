@@ -21,8 +21,6 @@ import json
 import logging
 from hashlib import sha256
 
-from django.conf import settings
-
 logger = logging.getLogger(__name__)
 
 _CRONS_FILE = "nbhd-crons.json"
@@ -73,13 +71,20 @@ def build_signed_crons_doc(tenant) -> tuple[bytes, int]:
     """Return the ``(bytes, job_count)`` of the signed ``nbhd-crons.json`` body.
 
     The signed envelope is ``{"signed": <exact JSON string of the jobs array>,
-    "sig": HMAC-SHA256(NBHD_INTERNAL_API_KEY, signed)}``. The container verifies
-    the HMAC over ``signed`` and then parses ``signed`` — it never re-serializes,
-    so no cross-language JSON canonicalization is required.
+    "sig": HMAC-SHA256(<tenant gateway key>, signed)}``. The key is the tenant's
+    own gateway token (``get_gateway_token_for_tenant`` — the per-tenant
+    ``internal_api_key``, i.e. the container's ``NBHD_INTERNAL_API_KEY``), NOT the
+    shared platform setting: post-2026-05-12 each container binds a per-tenant key
+    (``tenant-<uuid>-internal-key``), so signing with the shared value would fail
+    verification in the container. The container verifies the HMAC over ``signed``
+    and then parses ``signed`` — it never re-serializes, so no cross-language JSON
+    canonicalization is required.
     """
-    key = str(getattr(settings, "NBHD_INTERNAL_API_KEY", "") or "")
+    from apps.cron.gateway_client import get_gateway_token_for_tenant
+
+    key = get_gateway_token_for_tenant(tenant)
     if not key:
-        raise RuntimeError("NBHD_INTERNAL_API_KEY is required to sign the crons file")
+        raise RuntimeError(f"no gateway token for tenant {tenant.id} to sign the crons file")
     jobs = _desired_jobs(tenant)
     signed = json.dumps(jobs, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
     sig = hmac.new(key.encode("utf-8"), signed.encode("utf-8"), sha256).hexdigest()
