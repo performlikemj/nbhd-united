@@ -58,6 +58,8 @@ class _SetUpMixin:
         tenant.container_id = "oc-drift-test"
         tenant.container_fqdn = "oc-drift-test.internal"
         tenant.postgres_cron_canonical = True
+        # 5.28 gateway reconcile path (9.4 uses the signed-file path); default is 9.4.
+        tenant.openclaw_version = "2026.5.28"
         tenant.save()
         return tenant
 
