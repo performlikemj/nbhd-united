@@ -15,13 +15,38 @@ const GATEWAY_PORT = 18789;
 const WEBHOOK_PORT = 8787;
 const GATEWAY_HEALTH_TIMEOUT_MS = 2000;
 
-function proxyRequest(req, res, targetPort) {
+// OpenClaw 2026.9.4's gateway REJECTS Bearer-authenticated routes (e.g.
+// /tools/invoke — every chat turn + cron tool call) with
+// "proxy_attribution_required" when a request carries proxy-forwarded client
+// headers it can't attribute to a trusted proxy. Azure Container Apps ingress
+// stamps X-Forwarded-* / Forwarded on the hop to this proxy; passing them
+// through to the loopback gateway makes 9.4 treat us as an untrusted proxy and
+// 403 the request (silently breaks all chat on 9.4). gateway.trustedProxies
+// alone does NOT fix it — the forwarded client IP resolves to loopback, still
+// "unattributable". The fix the gateway itself recommends is to have the proxy
+// rebuild the forwarded headers: strip them so the gateway sees a clean
+// loopback request (attributed "direct-local") and applies the Bearer token
+// check normally. 9.4's hasForwardedRequestHeaders() keys on `forwarded`,
+// `x-real-ip`, and any `x-forwarded-*`, so drop exactly those. Only for the
+// gateway hop; the Telegram webhook server (:8787) is left untouched.
+function stripForwardedHeaders(headers) {
+  const cleaned = { ...headers };
+  for (const name of Object.keys(cleaned)) {
+    const n = name.toLowerCase();
+    if (n === "forwarded" || n === "x-real-ip" || n.startsWith("x-forwarded-")) {
+      delete cleaned[name];
+    }
+  }
+  return cleaned;
+}
+
+function proxyRequest(req, res, targetPort, stripForwarded = false) {
   const options = {
     hostname: "127.0.0.1",
     port: targetPort,
     path: req.url,
     method: req.method,
-    headers: req.headers,
+    headers: stripForwarded ? stripForwardedHeaders(req.headers) : req.headers,
   };
 
   const upstream = http.request(options, (upstreamRes) => {
@@ -102,7 +127,9 @@ function createProxyServer({
     if (req.url.startsWith("/telegram-webhook")) {
       proxyRequest(req, res, webhookPort);
     } else {
-      proxyRequest(req, res, gatewayPort);
+      // Strip proxy-forwarded client headers on the gateway hop (see
+      // stripForwardedHeaders) so 2026.9.4 doesn't 403 the Bearer-authed route.
+      proxyRequest(req, res, gatewayPort, true);
     }
   });
 }
@@ -126,4 +153,4 @@ if (require.main === module) {
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
-module.exports = { createProxyServer, GATEWAY_HEALTH_TIMEOUT_MS };
+module.exports = { createProxyServer, stripForwardedHeaders, GATEWAY_HEALTH_TIMEOUT_MS };
