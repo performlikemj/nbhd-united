@@ -28,6 +28,11 @@ def _apply_config_published(mock_publish) -> bool:
     return any(call.args and call.args[0] == "apply_single_tenant_config" for call in mock_publish.call_args_list)
 
 
+# The wake-time image refresh is now gated by the per-tenant rollout allowlist
+# (image_rollout.py; default empty = nobody refreshes). "*" opts every tenant in
+# so these tests exercise the refresh mechanics; the gate's default-off behavior
+# is covered by test_wake_skips_refresh_when_not_allowlisted + test_image_rollout.
+@override_settings(OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS="*")
 class WakeHibernatedTenantImageRefreshTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(
@@ -72,6 +77,37 @@ class WakeHibernatedTenantImageRefreshTest(TestCase):
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.container_image_tag, "newsha123")
         self.assertIsNone(self.tenant.hibernated_at)
+
+    @override_settings(
+        OPENCLAW_IMAGE_TAG="newsha123",
+        AZURE_ACR_SERVER="test.azurecr.io",
+        OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS="",
+    )
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.azure_client.wake_container_app")
+    @patch("apps.orchestrator.azure_client.ensure_plugin_runtime_deps_mount", return_value=False)
+    @patch("apps.orchestrator.azure_client.update_container_image")
+    def test_wake_skips_refresh_when_not_allowlisted(
+        self,
+        mock_update_image,
+        _mock_mount,
+        mock_wake,
+        _mock_publish,
+    ):
+        """The safety gate on the wake path: with an empty rollout allowlist a
+        hibernated tenant on a stale tag does a PLAIN wake and does NOT jump onto
+        the new (possibly unverified) image — so a deploy that bumps the tag
+        can't move the fleet via wake either."""
+        self.tenant.container_image_tag = "oldsha456"
+        self.tenant.save(update_fields=["container_image_tag"])
+
+        result = wake_hibernated_tenant(self.tenant)
+
+        self.assertTrue(result)
+        mock_update_image.assert_not_called()
+        mock_wake.assert_called_once_with("oc-wake-test")
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.container_image_tag, "oldsha456")
 
     @override_settings(OPENCLAW_IMAGE_TAG="latest")
     @patch("apps.cron.publish.publish_task")
@@ -305,6 +341,7 @@ class OpenClawVersionForImageTagTest(TestCase):
         self.assertEqual(openclaw_version_for_image_tag(""), OPENCLAW_CURRENT_VERSION)
 
 
+@override_settings(OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS="*")
 class WakeConfigSchemaSyncTest(TestCase):
     """Regression guards for the 2026-06-17 crash-loop incident: a tenant
     woken onto a newer image kept a stale ``openclaw_version`` (config schema)
