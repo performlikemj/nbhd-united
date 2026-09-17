@@ -45,6 +45,15 @@ NBHD_MEMORY_DIR="${NBHD_MEMORY_DIR:-$OPENCLAW_WORKSPACE_PATH/memory}"
 
 mkdir -p "$OPENCLAW_HOME" "$OPENCLAW_WORKSPACE_PATH" "$NBHD_MEMORY_DIR" "$OPENCLAW_STATE_DIR" "$XDG_CACHE_HOME"
 
+# Slowness diagnostic (9.4): OpenClaw forces rollback-journal mode (a journal
+# create+fsync+delete PER write) on mounts it classifies as network-like —
+# cifs/nfs/9p/virtiofs. If the oc-state EmptyDir is surfaced as virtiofs/9p by
+# Azure Container Apps, even our "local" SQLite runs in that slow mode. Log the
+# state-dir filesystem type so we can confirm the cause of the 9.4 slowness. The
+# [nbhd:*] prefix passes the stdout redactor. (Cheap, one line, no secrets.)
+echo "[nbhd:diag] state-dir fs=$(stat -f -c %T "$OPENCLAW_STATE_DIR" 2>/dev/null || echo unknown) at $OPENCLAW_STATE_DIR"
+echo "[nbhd:diag] brave=$([ -f /opt/nbhd/vendored/brave-project/node_modules/@openclaw/brave-plugin/package.json ] && echo present || echo MISSING) peer=$([ -e /opt/nbhd/vendored/brave-project/node_modules/openclaw/package.json ] && echo ok || echo MISSING)"
+
 # Skill templates.md is tenant-specific and authoritative on the file share
 # (rewritten by Django's update_tenant_config on every default-template edit).
 # It lives *inside* the nbhd-managed skills tree, so the rm -rf below would

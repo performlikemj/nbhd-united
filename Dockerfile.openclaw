@@ -47,6 +47,29 @@ RUN npm install --global \
 # minHostVersion check passes (see dist/manifest-registry-*.js).
 # Telegram, memory-core, openrouter, anthropic remain bundled in core.
 
+# Vendor the brave web-search provider INTO the image. 2026.9.4 otherwise
+# npm-installs the configured web-search provider into <configDir>/npm at boot;
+# our configDir sits on the root-owned, wipe-on-restart oc-state EmptyDir, so
+# that install fails 9.4's fs-safe check AND would re-run every boot. Installing
+# at build time (overlay fs supports chmod → fs-safe passes) and loading it via
+# plugins.load.paths makes 9.4 treat brave as already-present and skip the boot
+# install entirely (verified vs the 9.4 source: a load.paths plugin counts as
+# installed, and web search accepts it). The npm-project dir name is a hash, so
+# publish a STABLE symlink at /opt/nbhd/vendored/brave-plugin for
+# config_generator to reference; Node follows it (no --preserve-symlinks) so the
+# plugin's peer `openclaw` symlink still resolves. Build fails loudly if the
+# install layout changes.
+RUN OPENCLAW_STATE_DIR=/opt/oc-seed openclaw plugins install @openclaw/brave-plugin \
+    && BRAVE="$(find /opt/oc-seed/npm/projects -type d -path '*/node_modules/@openclaw/brave-plugin' 2>/dev/null | head -1)" \
+    && test -n "$BRAVE" && test -f "$BRAVE/package.json" \
+    && PROJECT="$(cd "$BRAVE/../../.." && pwd)" \
+    && mkdir -p /opt/nbhd/vendored \
+    && cp -a "$PROJECT/." /opt/nbhd/vendored/brave-project/ \
+    && ln -sfn "$(npm root -g)/openclaw" /opt/nbhd/vendored/brave-project/node_modules/openclaw \
+    && test -f /opt/nbhd/vendored/brave-project/node_modules/@openclaw/brave-plugin/package.json \
+    && test -e /opt/nbhd/vendored/brave-project/node_modules/openclaw/package.json \
+    && echo "[dockerfile] vendored brave -> /opt/nbhd/vendored/brave-project (real dir, peer relinked)"
+
 WORKDIR /opt/nbhd
 
 COPY runtime/openclaw/plugins/nbhd-google-tools /opt/nbhd/plugins/nbhd-google-tools

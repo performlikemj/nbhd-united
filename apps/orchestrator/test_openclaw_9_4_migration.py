@@ -110,11 +110,19 @@ class OpenClaw94MigrationTransformTest(SimpleTestCase):
         self.assertNotIn("bundledDiscovery", self.cfg["plugins"])
         self.assertIn("entries", self.cfg["plugins"])
 
-    def test_web_search_disabled(self):
-        # 9.4 auto-installs missing web-search provider plugins (perplexity via
-        # OPENROUTER_API_KEY) at boot; that npm install trips fs-safe on our
-        # root-owned mounts. Disabling web search keeps boot off that path.
-        self.assertIs(self.cfg["tools"]["web"]["search"]["enabled"], False)
+    def test_web_search_enabled_via_vendored_brave(self):
+        # 9.4 restores web search through the image-vendored brave provider on
+        # plugins.load.paths (no boot-time npm install). Provider is pinned to
+        # brave and perplexity is turned off so OPENROUTER_API_KEY doesn't
+        # trigger perplexity's boot install.
+        search = self.cfg["tools"]["web"]["search"]
+        self.assertIs(search["enabled"], True)
+        self.assertEqual(search["provider"], "brave")
+        self.assertIn(
+            "/opt/nbhd/vendored/brave-project/node_modules/@openclaw/brave-plugin", self.cfg["plugins"]["load"]["paths"]
+        )
+        self.assertIs(self.cfg["plugins"]["entries"]["brave"]["enabled"], True)
+        self.assertIs(self.cfg["plugins"]["entries"]["perplexity"]["enabled"], False)
 
 
 class OpenClaw94MigrationGateTest(TestCase):
@@ -132,7 +140,12 @@ class OpenClaw94MigrationGateTest(TestCase):
         self.assertNotIn("commitments", config)
         self.assertNotIn("redactSensitive", config["logging"])
         self.assertNotIn("skipWhenBusy", defaults.get("heartbeat", {}))
-        self.assertIs(config["tools"]["web"]["search"]["enabled"], False)
+        # Web search restored via the vendored brave provider on 9.4.
+        self.assertIs(config["tools"]["web"]["search"]["enabled"], True)
+        self.assertEqual(config["tools"]["web"]["search"]["provider"], "brave")
+        self.assertIn(
+            "/opt/nbhd/vendored/brave-project/node_modules/@openclaw/brave-plugin", config["plugins"]["load"]["paths"]
+        )
 
     def test_5_28_tenant_keeps_legacy_shape(self):
         tenant = create_tenant(display_name="Mig528", telegram_chat_id=740002)
@@ -143,8 +156,13 @@ class OpenClaw94MigrationGateTest(TestCase):
         self.assertIn("memorySearch", defaults)
         self.assertIn("commitments", config)
         self.assertIn("redactSensitive", config["logging"])
-        # 5.28 keeps web search (no forced disable).
+        # 5.28 keeps web search (no forced disable) and does NOT get the 9.4
+        # image-only vendored brave path.
         self.assertNotEqual(
             config.get("tools", {}).get("web", {}).get("search", {}).get("enabled"),
             False,
+        )
+        self.assertNotIn(
+            "/opt/nbhd/vendored/brave-project/node_modules/@openclaw/brave-plugin",
+            config.get("plugins", {}).get("load", {}).get("paths", []),
         )
