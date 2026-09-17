@@ -52,8 +52,6 @@ function Invite({ token, ready, loggedIn }: { token: string | null; ready: boole
       </header>
       <div className={s.frame}>
         <aside className={s.margin} aria-hidden="true">
-          <span className={s.label}>Room for connection</span>
-          <span className={s.mark}>↗</span>
         </aside>
         <div className={s.content} aria-live="polite" aria-busy={loading}>
           {claim.isSuccess ? (
