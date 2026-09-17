@@ -1,6 +1,16 @@
 {
   "routes": [
     {
+      "route": "/friends/invite/*",
+      "rewrite": "/friends/invite.html"
+    },
+    {
+      "route": "/.well-known/apple-app-site-association",
+      "headers": {
+        "content-type": "application/json"
+      }
+    },
+    {
       "route": "/_next/static/*",
       "headers": {
         "cache-control": "public, max-age=31536000, immutable"
@@ -22,6 +32,7 @@
   "navigationFallback": {
     "rewrite": "/index.html",
     "exclude": [
+      "/.well-known/*",
       "/_next/*",
       "/assets/*",
       "/icons/*",

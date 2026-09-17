@@ -270,8 +270,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [headerBorder, setHeaderBorder] = useState(false);
 
-  const isPublicPage = publicPages.includes(pathname) || pathname.startsWith("/legal/");
-  const { data: tenant } = useTenantQuery();
+  const isInvitePage = pathname === "/friends/invite" || pathname.startsWith("/friends/invite/");
+  const isPublicPage = isInvitePage || publicPages.includes(pathname) || pathname.startsWith("/legal/");
+  const { data: tenant } = useTenantQuery(!isInvitePage);
   const navItems = useNavItems(tenant);
 
   // Scroll listener for header blur/border transition (main is the scroll container)
@@ -319,7 +320,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     "/onboarding",
     "/yardtalk",
   ];
-  if (fullBleedPages.includes(pathname) || pathname === "/constellation/play") {
+  if (isInvitePage || fullBleedPages.includes(pathname) || pathname === "/constellation/play") {
     return (
       <ErrorBoundary>
         <a href="#main-content" className="skip-link">Skip to main content</a>
