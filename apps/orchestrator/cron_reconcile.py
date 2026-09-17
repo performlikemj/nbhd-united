@@ -472,6 +472,27 @@ def regenerate_tenant_crons(tenant: Tenant, *, recovery: bool = False) -> dict:
         )
         return summary
 
+    # OpenClaw 2026.9.4 gates the agent-tool gateway cron.* RPC path, so Django
+    # can no longer push crons over HTTP /tools/invoke. Deliver the desired set
+    # via a signed share file that the in-container helper applies with the
+    # ungated operator CLI. See apps/cron/share_cron_sync.py and
+    # CONTINUITY_openclaw_9_4_cron_sync.md.
+    from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
+
+    if tenant_uses_file_cron_sync(tenant):
+        from apps.cron.share_cron_sync import write_tenant_crons_file
+
+        try:
+            summary["file_synced"] = write_tenant_crons_file(tenant)
+        except Exception:
+            logger.warning(
+                "regenerate_tenant_crons: signed cron-file write failed for tenant %s",
+                tenant.id,
+                exc_info=True,
+            )
+            summary["errors"] = 1
+        return summary
+
     all_desired_rows = list(CronJob.objects.filter(tenant=tenant, managed=True))
     desired_rows = [row for row in all_desired_rows if not _is_unmanaged_cron(row.name)]
     skipped_unmanaged_desired = len(all_desired_rows) - len(desired_rows)

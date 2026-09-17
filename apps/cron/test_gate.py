@@ -46,7 +46,11 @@ class CronGateServiceTests(TestCase):
     def setUp(self):
         self.tenant = seed_internal_key(create_tenant(display_name="Cron Gate", telegram_chat_id=88101))
         self.tenant.postgres_cron_canonical = True
-        self.tenant.save(update_fields=["postgres_cron_canonical"])
+        # These tests exercise the 2026.5.28 gateway cron.add/list dispatch path;
+        # 2026.9.4 tenants dispatch via the signed share file (share_cron_sync.py).
+        # Pin the version — the default is now 2026.9.4.
+        self.tenant.openclaw_version = "2026.5.28"
+        self.tenant.save(update_fields=["postgres_cron_canonical", "openclaw_version"])
 
     def _request(self, request_id="req-1", **overrides):
         values = {
@@ -469,7 +473,9 @@ class CronGateRuntimeAndConsumerTests(TestCase):
     def setUp(self):
         self.tenant = seed_internal_key(_ready_tenant(88201))
         self.tenant.postgres_cron_canonical = True
-        self.tenant.save(update_fields=["postgres_cron_canonical"])
+        # 2026.5.28 gateway dispatch path (9.4 uses the signed share file).
+        self.tenant.openclaw_version = "2026.5.28"
+        self.tenant.save(update_fields=["postgres_cron_canonical", "openclaw_version"])
         self.url = f"/api/v1/integrations/runtime/{self.tenant.id}/crons/pure_reminder/"
         self.headers = {
             "HTTP_X_NBHD_INTERNAL_KEY": self.tenant.internal_api_key,

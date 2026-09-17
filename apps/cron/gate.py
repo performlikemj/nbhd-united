@@ -535,6 +535,20 @@ def _listed_at_gateway_job(result, cron: CronJob) -> tuple[bool, str]:
 def _dispatch_claimed_cron(dispatch: CronDispatch, *, stale_claim: bool) -> str:
     action = dispatch.action
     cron = dispatch.cron
+
+    # OpenClaw 2026.9.4 gates the agent-tool gateway cron.* RPC (including the
+    # cron.add below), so a 9.4 tenant's cron is delivered via the signed share
+    # file that the in-container helper applies. Writing the file publishes the
+    # full desired set (this just-approved cron included). See
+    # apps/cron/share_cron_sync.py + CONTINUITY_openclaw_9_4_cron_sync.md.
+    from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
+
+    if tenant_uses_file_cron_sync(action.tenant):
+        from apps.cron.share_cron_sync import write_tenant_crons_file
+
+        write_tenant_crons_file(action.tenant)
+        return ""
+
     if dispatch.kind == "at":
         from apps.cron.gateway_client import invoke_gateway_tool
 
