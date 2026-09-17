@@ -158,6 +158,11 @@ USER_MD_SKIP_UNCHANGED_TENANT_IDS = env("USER_MD_SKIP_UNCHANGED_TENANT_IDS", def
 # UUIDs) or if "*". Staged rollout for 2026.9.4: set the canary UUID, then widen.
 OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS = env("OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS", default="")
 
+# OpenClaw fleet drift alerting. Container App env var name MUST match.
+# DEFAULT OFF: the daily detect-openclaw-drift cron is a 200 no-op until this
+# is "true". See docs/agents/openclaw-fleet-admin.md.
+OPENCLAW_DRIFT_ALERTS_ENABLED = env.bool("OPENCLAW_DRIFT_ALERTS_ENABLED", default=False)
+
 # Dropped-turn retry canary gate. The Azure Container App env var name MUST
 # match RETRY_DROPPED_TENANT_IDS exactly. Comma-separated tenant UUIDs; empty
 # means nobody, preserving the standard error notification path for the fleet.

@@ -687,6 +687,7 @@ class PluginRuntimeDepsMountTest(SimpleTestCase):
         existing_env = SimpleNamespace(name="OPENCLAW_DISABLE_BONJOUR", value="1")
         container = SimpleNamespace(
             name="openclaw",
+            image="nbhdunited.azurecr.io/nbhd-openclaw:2026.9.4-abc123",
             volume_mounts=[SimpleNamespace(volume_name="workspace")],
             env=[existing_env],
         )
@@ -732,6 +733,7 @@ class PluginRuntimeDepsMountTest(SimpleTestCase):
 
         container = SimpleNamespace(
             name="openclaw",
+            image="nbhdunited.azurecr.io/nbhd-openclaw:2026.9.4-abc123",
             volume_mounts=[SimpleNamespace(volume_name="oc-state")],
             env=[
                 SimpleNamespace(name="OPENCLAW_STATE_DIR", value="/home/node/oc-state"),
@@ -749,6 +751,47 @@ class PluginRuntimeDepsMountTest(SimpleTestCase):
 
         self.assertFalse(changed)
         mock_client.container_apps.begin_create_or_update.assert_not_called()
+
+    @override_settings(AZURE_RESOURCE_GROUP="rg-test")
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_ensure_oc_state_retrofit_removes_env_on_5_28(
+        self,
+        mock_get_container_client,
+        _mock_is_mock,
+    ):
+        """The relocation env is version-gated: on a 5.28 container it is REMOVED
+        (5.28 honors OPENCLAW_STATE_DIR, so leaving it would move 5.28's live
+        state onto the wipe-on-restart EmptyDir). Mount options still apply."""
+        mock_client = MagicMock()
+        mock_get_container_client.return_value = mock_client
+
+        container = SimpleNamespace(
+            name="openclaw",
+            image="nbhdunited.azurecr.io/nbhd-openclaw:2026.5.28-cc3bcd2",
+            volume_mounts=[SimpleNamespace(volume_name="oc-state")],
+            env=[
+                SimpleNamespace(name="OPENCLAW_DISABLE_BONJOUR", value="1"),
+                SimpleNamespace(name="OPENCLAW_STATE_DIR", value="/home/node/oc-state"),
+                SimpleNamespace(name="XDG_CACHE_HOME", value="/home/node/oc-state/cache"),
+            ],
+        )
+        workspace_vol = SimpleNamespace(name="workspace", storage_type="AzureFile", mount_options=None)
+        app = MagicMock()
+        app.template.containers = [container]
+        app.template.volumes = [workspace_vol, SimpleNamespace(name="oc-state")]
+        mock_client.container_apps.get.return_value = app
+        mock_client.container_apps.begin_create_or_update.return_value = MagicMock()
+
+        changed = ensure_oc_state_dir_mount("oc-tenant")
+
+        self.assertTrue(changed)
+        env_names = {e.name for e in container.env}
+        self.assertNotIn("OPENCLAW_STATE_DIR", env_names)
+        self.assertNotIn("XDG_CACHE_HOME", env_names)
+        # Unrelated env is left alone; mount options still applied.
+        self.assertIn("OPENCLAW_DISABLE_BONJOUR", env_names)
+        self.assertIn("uid=1000", workspace_vol.mount_options)
 
     @override_settings(AZURE_RESOURCE_GROUP="rg-test")
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)

@@ -216,6 +216,11 @@ SYSTEM_CRONS = [
     # delete — run `manage.py reap_orphaned_containers --apply` after lifting
     # the lock. Offset from the other crons. See apps/orchestrator/orphan_reaper.py.
     ("reap-orphaned-containers", "20 8 * * *", "/api/cron/trigger/reap_orphaned_containers/"),
+    # Daily at 08:40 UTC — READ-ONLY compare of every live Container App
+    # template against the code-declared OpenClaw desired state; one Pushover
+    # alert if a tenant drifted. A 200 no-op until OPENCLAW_DRIFT_ALERTS_ENABLED
+    # is true (docs/agents/openclaw-fleet-admin.md).
+    ("detect-openclaw-drift", "40 8 * * *", "/api/cron/detect-openclaw-drift/"),
     # --- Eval Wave B journey probes (see docs/evals-wave-b-plan.md §PR-B6). ---
     # Each probe drives a REAL path against the synthetic eval-journey tenant and
     # RAISES on a non-pass run so a broken pipeline DLQs + emails the owner

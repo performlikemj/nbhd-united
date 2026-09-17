@@ -9,6 +9,7 @@ This file is a router, not the manual. Deep context lives in `docs/agents/` — 
 | When you are... | Read first |
 |---|---|
 | Touching tenants, containers, provisioning, messaging flow, OpenClaw config | `docs/agents/architecture.md` |
+| Changing OpenClaw container storage/env/image settings, staging an image rollout, answering a drift alert, or fixing a tenant container | `docs/agents/openclaw-fleet-admin.md` — the one rule (code is truth, never hand-edit `oc-*` on Azure) + the one button (`ensure_openclaw_ready`) |
 | Changing message routing, file-share writes, crons, revisions, timezones, transactions | `docs/agents/invariants.md` — permanent rules; each one broke production once |
 | Debugging production, reading logs, "assistant silent", timeouts, wake/hibernation | `docs/agents/debugging.md` — starts with the debugging ladder (telemetry → error logs → consent-gated raw data) |
 | Adding telemetry to a tool, or querying tool call/reject/error rates | `docs/agents/telemetry.md` |

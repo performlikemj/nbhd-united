@@ -2094,6 +2094,57 @@ def run_health_check(request):
 
 
 @csrf_exempt
+@require_POST
+def detect_openclaw_drift(request):
+    """Daily READ-ONLY OpenClaw desired-state drift sweep + Pushover alert.
+
+    URL: /api/cron/detect-openclaw-drift/
+    Auth: QStash signature or X-Deploy-Secret header (same as run_health_check).
+
+    Compares every active, non-hibernated tenant's live Container App template
+    against the constants ``azure_client`` provisions with (workspace
+    mountOptions, oc-state volume/mount, relocation env vars, image). Storage/
+    env drift, a DB/live image disagreement, or an unreadable template sends
+    ONE consolidated Pushover message; a tenant merely not yet on
+    OPENCLAW_IMAGE_TAG is a staged-rollout expectation and never alerts.
+
+    Gated by ``OPENCLAW_DRIFT_ALERTS_ENABLED`` (default False): while off this
+    returns 200 ``{"skipped": "disabled"}`` without touching Azure, so the cron
+    can be registered on every deploy and switched on when the fleet is
+    converged. Never writes to Azure or tenant data — the fix is
+    ``manage.py ensure_openclaw_ready --all``.
+    """
+    if not verify_qstash_signature(request):
+        deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+        provided = request.headers.get("X-Deploy-Secret", "")
+        if not (provided and deploy_secret and provided == deploy_secret):
+            return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    if not getattr(settings, "OPENCLAW_DRIFT_ALERTS_ENABLED", False):
+        return JsonResponse({"skipped": "disabled", "setting": "OPENCLAW_DRIFT_ALERTS_ENABLED"})
+
+    from apps.orchestrator.openclaw_drift import (
+        active_tenant_queryset,
+        check_fleet_drift,
+        send_drift_alert,
+    )
+
+    report = check_fleet_drift(active_tenant_queryset())
+    alert_status = send_drift_alert(report)
+    if report.alerting:
+        logger.warning(
+            "OpenClaw drift: %d/%d tenant(s) drifted (%d gated-only); alert %s",
+            len(report.alerting),
+            report.checked,
+            len(report.gated_only),
+            alert_status,
+        )
+    summary = report.as_dict()
+    summary["alert_status"] = alert_status
+    return JsonResponse(summary)
+
+
+@csrf_exempt
 def admin_health_status(request):
     """On-demand tenant health query for admin / personal agent.
 
