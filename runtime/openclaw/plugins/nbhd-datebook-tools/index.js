@@ -278,6 +278,18 @@ async function pollCommand(api, initial, startedAt) {
   return latest;
 }
 
+// Internal provenance stamp injected by nbhd-cron-enforcement's before_tool_call
+// hook (null for user-initiated calls, a signed object for cron-triggered ones).
+// 2026.9.4 strict-validates tool input against this schema POST-hook, so the
+// property MUST be declared here or the whole call is rejected with "must not
+// have additional properties: _nbhd_origin". The hook sets it authoritatively, so
+// any model-supplied value is overwritten and harmless; requestCreate() forwards
+// it to the runtime as `origin` for verify_origin_stamp.
+const ORIGIN_STAMP_SCHEMA = {
+  description:
+    "Internal runtime provenance stamp — injected automatically. Do not set this; any value you provide is ignored.",
+};
+
 async function requestCreate(api, toolContext, toolCallId, params, commandType) {
   const startedAt = Date.now();
   const input = asObject(params);
@@ -530,6 +542,7 @@ export default function register(api) {
           },
         },
         destination_name: { type: "string", maxLength: 256 },
+        _nbhd_origin: ORIGIN_STAMP_SCHEMA,
         direct_user_originated: {
           type: "boolean",
           description: "True only when this exact create was requested in the current direct user turn.",
@@ -572,6 +585,7 @@ export default function register(api) {
           },
         },
         destination_name: { type: "string", maxLength: 256 },
+        _nbhd_origin: ORIGIN_STAMP_SCHEMA,
         direct_user_originated: {
           type: "boolean",
           description: "True only when this exact create was requested in the current direct user turn.",

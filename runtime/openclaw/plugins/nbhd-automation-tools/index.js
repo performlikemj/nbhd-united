@@ -256,6 +256,18 @@ const SCHEDULE_SCHEMA = {
 const NAME_DESCRIPTION =
   "Short human-readable name for the cron, shown in the user's automations list. Must be unique per tenant. 3-80 characters.";
 
+// Internal provenance stamp injected by nbhd-cron-enforcement's before_tool_call
+// hook AFTER the model produces the call (null for user-initiated calls, a signed
+// object for cron-triggered ones). 2026.9.4 strict-validates tool input against
+// this schema POST-hook, so the property MUST be declared here or the whole call
+// is rejected with "must not have additional properties: _nbhd_origin". The hook
+// sets it authoritatively, so any model-supplied value is overwritten and harmless;
+// `hiddenOrigin(input)` forwards it to the runtime for verify_origin_stamp.
+const ORIGIN_STAMP_SCHEMA = {
+  description:
+    "Internal runtime provenance stamp — injected automatically. Do not set this; any value you provide is ignored.",
+};
+
 export default function register(api) {
   // ── pure_reminder ─────────────────────────────────────────────────────
   api.registerTool(
@@ -270,6 +282,7 @@ export default function register(api) {
         properties: {
           name: { type: "string", description: NAME_DESCRIPTION },
           schedule: SCHEDULE_SCHEMA,
+          _nbhd_origin: ORIGIN_STAMP_SCHEMA,
           text: {
             type: "string",
             description:
@@ -310,6 +323,7 @@ export default function register(api) {
         properties: {
           name: { type: "string", description: NAME_DESCRIPTION },
           schedule: SCHEDULE_SCHEMA,
+          _nbhd_origin: ORIGIN_STAMP_SCHEMA,
           text: {
             type: "string",
             description:
@@ -367,6 +381,7 @@ export default function register(api) {
         properties: {
           name: { type: "string", description: NAME_DESCRIPTION },
           schedule: SCHEDULE_SCHEMA,
+          _nbhd_origin: ORIGIN_STAMP_SCHEMA,
           query_tool: {
             type: "string",
             enum: [

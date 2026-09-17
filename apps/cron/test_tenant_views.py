@@ -1333,7 +1333,12 @@ class RegenerateTenantCronsTest(TestCase):
         self.user, self.tenant = _create_user_and_tenant()
         self.tenant.postgres_cron_canonical = True
         self.tenant.container_fqdn = "oc-test.example.com"
-        self.tenant.save(update_fields=["postgres_cron_canonical", "container_fqdn"])
+        # This suite exercises the 2026.5.28 gateway reconcile path (cron.add/
+        # list/remove, caps, at-reaping). 2026.9.4 tenants take the signed-file
+        # path instead (apps/cron/share_cron_sync.py, tested in
+        # test_share_cron_sync.py), so pin the version — the default is 2026.9.4.
+        self.tenant.openclaw_version = "2026.5.28"
+        self.tenant.save(update_fields=["postgres_cron_canonical", "container_fqdn", "openclaw_version"])
 
     def test_skips_when_flag_off(self):
         from apps.orchestrator.cron_reconcile import regenerate_tenant_crons

@@ -75,6 +75,8 @@ class RegenerateDedupTests(TestCase):
         self.tenant.container_id = "oc-dedup-test"
         self.tenant.container_fqdn = "oc-dedup-test.internal"
         self.tenant.postgres_cron_canonical = True
+        # 5.28 gateway reconcile path (9.4 uses the signed-file path); default is 9.4.
+        self.tenant.openclaw_version = "2026.5.28"
         self.tenant.save()
 
         # One desired Postgres row per cron name (the canary state).

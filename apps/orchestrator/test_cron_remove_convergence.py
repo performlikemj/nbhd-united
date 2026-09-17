@@ -47,6 +47,9 @@ class CronRemoveConvergenceTests(TestCase):
         self.tenant.container_id = "oc-remove-race"
         self.tenant.container_fqdn = "oc-remove-race.internal"
         self.tenant.postgres_cron_canonical = True
+        # Exercises the 2026.5.28 gateway cron.list/remove convergence; 2026.9.4
+        # tenants use the signed-file path (share_cron_sync.py). Default is 9.4.
+        self.tenant.openclaw_version = "2026.5.28"
         self.tenant.save()
         self.invoke = self.enterContext(patch(INVOKE))
         self.publish = self.enterContext(patch(PUBLISH))

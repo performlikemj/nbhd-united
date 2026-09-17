@@ -76,7 +76,7 @@ test("create tools forward the runtime-provided originating channel", async () =
   }
 });
 
-test("datebook create tools forward hidden origin unchanged without exposing it in schemas", async () => {
+test("datebook create tools forward origin and declare it as an internal, optional schema property (2026.9.4 strict validation)", async () => {
   const origin = {
     v: 1,
     kind: "cron",
@@ -108,7 +108,12 @@ test("datebook create tools forward hidden origin unchanged without exposing it 
       _nbhd_origin: origin,
     });
     assert.deepEqual(requestBody.origin, origin, name);
-    assert.equal(Object.hasOwn(tool.parameters.properties, "_nbhd_origin"), false, name);
+    // 2026.9.4 strict-validates tool input against the schema AFTER the
+    // cron-enforcement hook injects _nbhd_origin, so the property MUST be
+    // declared (additionalProperties:false rejects it otherwise), but stay
+    // optional — the hook, not the model, supplies it.
+    assert.equal(Object.hasOwn(tool.parameters.properties, "_nbhd_origin"), true, name);
+    assert.equal((tool.parameters.required || []).includes("_nbhd_origin"), false, name);
   }
 });
 

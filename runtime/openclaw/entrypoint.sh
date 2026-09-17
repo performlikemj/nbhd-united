@@ -293,7 +293,7 @@ PROXY_PID=$!
 
 # Forward termination signals to both children, including while the gateway
 # readiness guard below is still waiting.
-trap 'kill $GATEWAY_PID $PROXY_PID 2>/dev/null; wait' SIGTERM SIGINT
+trap 'kill $GATEWAY_PID $PROXY_PID $CRON_SYNC_PID 2>/dev/null; wait' SIGTERM SIGINT
 
 # The proxy binds independently of the gateway, so its listening socket is not
 # proof that this container can serve traffic. Refuse to announce readiness (or
@@ -313,6 +313,22 @@ if [ "$GATEWAY_READY" -ne 1 ]; then
     kill "$GATEWAY_PID" "$PROXY_PID" 2>/dev/null || true
     wait || true
     exit 1
+fi
+
+# OpenClaw 2026.9.4 gates the agent-tool gateway cron.* RPC, so Django delivers
+# this tenant's crons via a signed nbhd-crons.json on the share instead. Apply it
+# with the ungated operator CLI — once now (gateway is ready), then on a poll loop
+# so crons the user creates mid-session land within ~25s. Inert until Django
+# writes the file (pre-9.4 images do not ship this script). Security: the script
+# verifies the file's HMAC signature and refuses any non-message payload. See
+# CONTINUITY_openclaw_9_4_cron_sync.md.
+CRON_SYNC_PID=""
+if [ -f /opt/nbhd/nbhd-cron-sync.mjs ]; then
+    node /opt/nbhd/nbhd-cron-sync.mjs --once \
+        || echo "[entrypoint] nbhd-cron-sync initial pass returned non-zero" >&2
+    node /opt/nbhd/nbhd-cron-sync.mjs &
+    CRON_SYNC_PID=$!
+    echo "[entrypoint] nbhd-cron-sync poll loop started (pid $CRON_SYNC_PID)"
 fi
 
 # Container-started hook — fire-and-forget POST to Django so the

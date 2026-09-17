@@ -114,6 +114,7 @@ COPY skills/gws-* /opt/nbhd/skills/
 COPY agent-skills /opt/nbhd/agent-skills
 COPY templates/openclaw /opt/nbhd/templates/openclaw
 COPY runtime/openclaw/proxy.js /opt/nbhd/proxy.js
+COPY runtime/openclaw/nbhd-cron-sync.mjs /opt/nbhd/nbhd-cron-sync.mjs
 COPY runtime/openclaw/suppress-chmod-eperm.js /opt/nbhd/suppress-chmod-eperm.js
 COPY runtime/openclaw/redact-stdout.js /opt/nbhd/redact-stdout.js
 COPY runtime/openclaw/tool-logger.js /opt/nbhd/tool-logger.js

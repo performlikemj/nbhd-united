@@ -378,6 +378,8 @@ jobs:
           node --test runtime/openclaw/tool-logger.test.js
           node --test runtime/openclaw/plugins/nbhd-journal-tools/schema.test.mjs
           node --test runtime/openclaw/plugins/nbhd-settings-tools/schema.test.mjs
+          node --test runtime/openclaw/plugins/nbhd-automation-tools/schema.test.mjs
+          node --test runtime/openclaw/nbhd-cron-sync.test.mjs
           node --test runtime/openclaw/plugins/nbhd-google-tools/
           node --test runtime/openclaw/plugins/nbhd-datebook-tools/
           node --test runtime/openclaw/plugins/nbhd-usage-reporter/register.test.mjs

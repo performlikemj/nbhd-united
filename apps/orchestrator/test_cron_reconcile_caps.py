@@ -50,6 +50,8 @@ class CronReconcileObservationTests(TestCase):
         self.tenant.container_id = "oc-observation-test"
         self.tenant.container_fqdn = "oc-observation-test.internal"
         self.tenant.postgres_cron_canonical = True
+        # 5.28 gateway reconcile path (9.4 uses the signed-file path); default is 9.4.
+        self.tenant.openclaw_version = "2026.5.28"
         self.tenant.save()
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
@@ -106,6 +108,8 @@ class CronReconcileOperationCapTests(TestCase):
         self.tenant.container_id = "oc-operation-cap-test"
         self.tenant.container_fqdn = "oc-operation-cap-test.internal"
         self.tenant.postgres_cron_canonical = True
+        # 5.28 gateway reconcile path (9.4 uses the signed-file path); default is 9.4.
+        self.tenant.openclaw_version = "2026.5.28"
         self.tenant.save()
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
