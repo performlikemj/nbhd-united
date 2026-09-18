@@ -1409,7 +1409,9 @@ class DatebookConcurrencyTests(TransactionTestCase):
 
         def gated_gateway_lock(tenant):
             # Thread A pauses between its tenant lock and its gateway lock — the
-            # exact window production hits while PUT calendars authors PII.
+            # window production used to hit while PUT calendars authored PII
+            # under the lock (authoring now runs before it; this pins the
+            # tenant→gateway lock order either way).
             if threading.current_thread().name == "put-calendars":
                 a_holds_tenant.set()
                 if not release_a.wait(timeout=15):

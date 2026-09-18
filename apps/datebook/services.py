@@ -126,6 +126,14 @@ def _locked_active_gateway(tenant) -> DatebookGateway:
     return gateway
 
 
+def _unlocked_active_gateway(tenant) -> DatebookGateway:
+    """Unlocked read for pre-checks that run before a transaction opens."""
+    gateway = DatebookGateway.objects.filter(tenant=tenant, status=DatebookGateway.Status.ACTIVE).first()
+    if gateway is None:
+        raise ProtocolError("gateway_not_registered", 409)
+    return gateway
+
+
 def _assert_gateway(gateway, *, installation_id: str, gateway_epoch: int) -> None:
     if gateway.installation_id != installation_id or gateway.gateway_epoch != gateway_epoch:
         raise ProtocolError(
@@ -443,11 +451,24 @@ def replace_calendar_contexts(
     gateway_epoch = _positive_epoch(gateway_epoch)
     normalized = _calendar_context_set(calendars)
 
-    with suppress_refresh(), transaction.atomic():
-        locked_tenant = _locked_tenant(tenant)
-        gateway = _locked_active_gateway(locked_tenant)
-        _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
-        _assert_calendar_context_consents(locked_tenant, normalized)
+    with suppress_refresh():
+        # PII authoring runs BEFORE the tenant row lock. Each non-empty text
+        # field costs one detector round trip (three per calendar), and none of
+        # it needs our lock: the redactor mints new placeholders under its own
+        # ``select_for_update`` on the tenant row (apps/pii/redactor.py), so
+        # authoring inside ``_locked_tenant`` only made concurrent chat intake
+        # (``record_provisional_sightings``, same row lock) wait out the whole
+        # loop. The unlocked gateway/consent pre-checks keep a rejected request
+        # free of authoring side effects (minting), exactly as the locked checks
+        # did when authoring ran under them; the locked checks below remain the
+        # authoritative ones.
+        snapshot = Tenant.objects.get(pk=tenant.pk)
+        _assert_gateway(
+            _unlocked_active_gateway(snapshot),
+            installation_id=installation_id,
+            gateway_epoch=gateway_epoch,
+        )
+        _assert_calendar_context_consents(snapshot, normalized)
 
         authored_by_key = {}
         for row in normalized:
@@ -456,7 +477,7 @@ def replace_calendar_contexts(
             if row["included"] and not row["context_note"]:
                 continue
             authored, receipts = author_store_fields(
-                locked_tenant,
+                snapshot,
                 row,
                 model_label="datebook.CalendarContext",
                 seam="datebook.owner.calendar_context.ingress",
@@ -464,6 +485,12 @@ def replace_calendar_contexts(
             )
             authored["pii_receipts"] = receipts
             authored_by_key[(authored["entity_scope"], authored["calendar_fingerprint"])] = authored
+
+    with suppress_refresh(), transaction.atomic():
+        locked_tenant = _locked_tenant(tenant)
+        gateway = _locked_active_gateway(locked_tenant)
+        _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
+        _assert_calendar_context_consents(locked_tenant, normalized)
 
         existing_by_key = {
             (row.entity_scope, row.calendar_fingerprint): row
