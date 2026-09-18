@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import hashlib
+import re
+import threading
+from unittest.mock import patch
 
-from django.db import IntegrityError, connection, transaction
-from django.test import TestCase
+from django.db import IntegrityError, OperationalError, close_old_connections, connection, transaction
+from django.test import TestCase, TransactionTestCase
 
 from apps.orchestrator.envelope_registry import suppress_refresh
+from apps.pii.entity_registry import get_name
+from apps.pii.redactor import DetectedEntity
+from apps.pii.store_authoring import author_store_fields
+from apps.tenants.models import Tenant
 
+from . import services
 from .hashing import clean_event_item, clean_reminder_item, content_hash_v1
-from .models import CalendarContext, MirrorEvent, MirrorReminder
-from .tests import DatebookAPIMixin, _reminder, _zoned_event
+from .models import CalendarContext, DatebookGateway, MirrorEvent, MirrorReminder
+from .tests import DatebookAPIMixin, _ready_tenant, _reminder, _zoned_event
 
 
 def _fingerprint(seed: str) -> str:
@@ -34,6 +42,34 @@ def _context(
         "source_type": "icloud",
         "context_note": context_note,
     }
+
+
+_CALENDAR_CONTEXT_AUTHORING = {
+    "model_label": "datebook.CalendarContext",
+    "seam": "datebook.owner.calendar_context.ingress",
+    "writer": "owner",
+}
+
+
+def _bob_detector(events: list | None = None, *, before_call=None):
+    """Stand-in for the neural detector: every ``Bob`` is a PERSON span.
+
+    Marks the neural outcome available so authoring lands on the confirmed
+    ``placeholder`` receipt path (the one production takes), records each
+    call into ``events`` and runs ``before_call`` first when supplied.
+    """
+
+    def detect(text, entities, score_threshold):
+        from apps.pii import redactor
+
+        if before_call is not None:
+            before_call()
+        redactor._neural_detector_outcome.available = True
+        if events is not None:
+            events.append(("detect", text))
+        return [DetectedEntity("PERSON", match.start(), match.end(), 0.99) for match in re.finditer(r"\bBob\b", text)]
+
+    return detect
 
 
 class CalendarContextConsumerTests(DatebookAPIMixin, TestCase):
@@ -346,3 +382,213 @@ class CalendarContextDatabaseTests(DatebookAPIMixin, TestCase):
         tenant_id = self.tenant.id
         self.tenant.delete()
         self.assertFalse(CalendarContext.objects.filter(tenant_id=tenant_id).exists())
+
+
+class CalendarContextLockScopeTests(DatebookAPIMixin, TestCase):
+    """PUT calendars authors PII BEFORE the tenant row lock, with unchanged coverage."""
+
+    chat_id = 927004
+    path = "/api/v1/datebook/calendars/"
+
+    def setUp(self):
+        super().setUp()
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+
+    def put_contexts(self, calendars, *, gateway_epoch=None):
+        return self.client.put(
+            self.path,
+            {
+                "installation_id": "install-a",
+                "gateway_epoch": self.epoch if gateway_epoch is None else gateway_epoch,
+                "calendars": calendars,
+            },
+            format="json",
+        )
+
+    def _bob_placeholder(self) -> str:
+        self.tenant.refresh_from_db(fields=["pii_entity_map"])
+        minted = [placeholder for placeholder, entry in self.tenant.pii_entity_map.items() if get_name(entry) == "Bob"]
+        self.assertEqual(len(minted), 1, self.tenant.pii_entity_map)
+        return minted[0]
+
+    def test_every_detector_call_precedes_the_tenant_lock(self):
+        events: list[tuple[str, str | None]] = []
+        original_lock = services._locked_tenant
+
+        def recording_lock(tenant):
+            events.append(("lock", None))
+            return original_lock(tenant)
+
+        rows = [
+            _context(
+                "lock-scope-event",
+                container_title="Alice calendar",
+                source_title="Alice iCloud",
+                context_note="Shared with Bob",
+            ),
+            _context(
+                "lock-scope-reminder",
+                entity_scope="reminder",
+                container_title="Chores",
+                source_title="Bob list",
+                context_note="Bob and Alice",
+            ),
+        ]
+        with (
+            patch("apps.pii.redactor._detect_pii", side_effect=_bob_detector(events)),
+            patch.object(services, "_locked_tenant", recording_lock),
+        ):
+            response = self.put_contexts(rows)
+        self.assertEqual(response.status_code, 200, response.data)
+
+        kinds = [kind for kind, _ in events]
+        # One detector round trip per non-empty registered text field: three
+        # per calendar, and the lock is taken exactly once, AFTER all of them.
+        self.assertEqual(kinds.count("detect"), 6, events)
+        self.assertEqual(kinds.count("lock"), 1, events)
+        self.assertEqual(kinds[-1], "lock", events)
+
+        bob = self._bob_placeholder()
+        stored = {row.calendar_fingerprint: row for row in CalendarContext.objects.filter(tenant=self.tenant)}
+        event = stored[rows[0]["calendar_fingerprint"]]
+        reminder = stored[rows[1]["calendar_fingerprint"]]
+        self.assertEqual(event.container_title, "[PERSON_1] calendar")
+        self.assertEqual(event.source_title, "[PERSON_1] iCloud")
+        self.assertEqual(event.context_note, f"Shared with {bob}")
+        self.assertEqual(reminder.container_title, "Chores")
+        self.assertEqual(reminder.source_title, f"{bob} list")
+        self.assertEqual(reminder.context_note, f"{bob} and [PERSON_1]")
+
+    def test_stored_values_and_receipts_match_direct_store_authoring(self):
+        row = _context(
+            "lock-scope-coverage",
+            container_title="Alice and Bob",
+            source_title="Bob iCloud",
+            context_note="Shared with Alice, Bob",
+        )
+        calls: list[dict] = []
+        real_author = services.author_store_fields
+
+        def spying_author(tenant, data, **kwargs):
+            calls.append(kwargs)
+            return real_author(tenant, data, **kwargs)
+
+        with (
+            patch("apps.pii.redactor._detect_pii", side_effect=_bob_detector()),
+            patch.object(services, "author_store_fields", spying_author),
+        ):
+            response = self.put_contexts([row])
+        self.assertEqual(response.status_code, 200, response.data)
+        # Same store, same seam, same writer class as before the lock-scope change.
+        self.assertEqual(calls, [_CALENDAR_CONTEXT_AUTHORING])
+
+        bob = self._bob_placeholder()
+        stored = CalendarContext.objects.get(tenant=self.tenant)
+        self.assertEqual(stored.container_title, f"[PERSON_1] and {bob}")
+        self.assertEqual(stored.source_title, f"{bob} iCloud")
+        self.assertEqual(stored.context_note, f"Shared with [PERSON_1], {bob}")
+        for field in ("container_title", "source_title", "context_note"):
+            self.assertEqual(stored.pii_receipts[field]["state"], "placeholder", stored.pii_receipts)
+
+        # Authoring the same row straight through the registry seam yields
+        # byte-identical stored text and receipts: nothing was bypassed.
+        with patch("apps.pii.redactor._detect_pii", side_effect=_bob_detector()):
+            expected, receipts = author_store_fields(
+                Tenant.objects.get(pk=self.tenant.pk),
+                row,
+                **_CALENDAR_CONTEXT_AUTHORING,
+            )
+        for field in ("container_title", "source_title", "context_note"):
+            self.assertEqual(getattr(stored, field), expected[field], field)
+        self.assertEqual(stored.pii_receipts, receipts)
+        # Owner-read rehydration of the known binding is intact. (A placeholder
+        # minted by this very request rehydrates from the request's tenant
+        # instance, which predates the mint — unchanged from before.)
+        self.assertTrue(response.data["calendars"][0]["container_title"].startswith("Alice and "), response.data)
+
+    def test_rejected_put_never_reaches_authoring(self):
+        with (
+            patch("apps.pii.redactor._detect_pii", side_effect=_bob_detector()) as detect,
+            patch.object(services, "author_store_fields", wraps=services.author_store_fields) as author,
+        ):
+            stale = self.put_contexts([_context("lock-scope-stale", context_note="Bob")], gateway_epoch=self.epoch + 1)
+            self.assertEqual(stale.status_code, 409, stale.data)
+            self.assertEqual(stale.data["error"], "stale_gateway")
+
+            self.tenant.datebook_reminders_consent_at = None
+            self.tenant.save(update_fields=["datebook_reminders_consent_at"])
+            unconsented = self.put_contexts(
+                [_context("lock-scope-unconsented", entity_scope="reminder", context_note="Bob")]
+            )
+            self.assertEqual(unconsented.status_code, 400, unconsented.data)
+            self.assertEqual(unconsented.data["error"], "scope_not_consented")
+
+        # Pre-lock authoring must not mint for a request the locked checks reject.
+        author.assert_not_called()
+        detect.assert_not_called()
+        self.tenant.refresh_from_db(fields=["pii_entity_map"])
+        self.assertEqual(self.tenant.pii_entity_map, {"[PERSON_1]": {"name": "Alice"}})
+        self.assertFalse(CalendarContext.objects.filter(tenant=self.tenant).exists())
+
+
+class CalendarContextLockContentionTests(TransactionTestCase):
+    """While PUT calendars is inside the detector, chat intake can lock the tenant row."""
+
+    reset_sequences = True
+
+    def setUp(self):
+        self.tenant = _ready_tenant(927005)
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        DatebookGateway.objects.create(tenant=self.tenant, installation_id="install-a")
+
+    def test_detector_calls_run_with_the_tenant_row_unlocked(self):
+        outcomes: list[str] = []
+
+        def contend_for_tenant_row():
+            # ``record_provisional_sightings`` (chat intake) takes exactly this
+            # lock. Before the lock-scope change it waited out every detector
+            # call of the PUT; now it must get the row immediately.
+            close_old_connections()
+            try:
+                with transaction.atomic():
+                    with connection.cursor() as cursor:
+                        cursor.execute("SET LOCAL lock_timeout = '2000ms'")
+                    Tenant.objects.select_for_update().get(pk=self.tenant.pk)
+                outcomes.append("locked")
+            except OperationalError:
+                outcomes.append("blocked")
+            finally:
+                close_old_connections()
+
+        def during_detection():
+            worker = threading.Thread(target=contend_for_tenant_row, name="chat-intake")
+            worker.start()
+            worker.join(timeout=10)
+            if worker.is_alive():
+                outcomes.append("hung")
+
+        with patch("apps.pii.redactor._detect_pii", side_effect=_bob_detector(before_call=during_detection)):
+            rows = services.replace_calendar_contexts(
+                Tenant.objects.get(pk=self.tenant.pk),
+                installation_id="install-a",
+                gateway_epoch=1,
+                calendars=[
+                    _context(
+                        "lock-contention",
+                        container_title="Family",
+                        source_title="iCloud",
+                        context_note="Shared with Bob",
+                    )
+                ],
+            )
+
+        # Three text fields → three detector calls, each with the row free.
+        self.assertEqual(outcomes, ["locked", "locked", "locked"])
+        self.assertEqual(len(rows), 1)
+        self.tenant.refresh_from_db(fields=["pii_entity_map"])
+        minted = [placeholder for placeholder, entry in self.tenant.pii_entity_map.items() if get_name(entry) == "Bob"]
+        self.assertEqual(len(minted), 1, self.tenant.pii_entity_map)
+        self.assertEqual(rows[0].context_note, f"Shared with {minted[0]}")
