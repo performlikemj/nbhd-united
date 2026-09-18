@@ -575,6 +575,8 @@ def enqueue_tenant_turn(
     document: bytes | None = None,
     document_ext: str = "pdf",
     ingress_origin: str = "ios",
+    idempotency_prechecked: bool = False,
+    tenant_fresh: bool = False,
 ):
     """Create a PENDING ``AppChatMessage`` and enqueue a Tier-3 OpenClaw turn.
 
@@ -582,6 +584,18 @@ def enqueue_tenant_turn(
     both the normal ``ChatMessageView`` POST and the Tier-2 fast-responder
     escalation path (``apps.router.siri_views``). Idempotent on
     ``client_msg_id`` and budget-gated, exactly once.
+
+    ``idempotency_prechecked=True`` means the caller ALREADY ran the
+    ``(tenant, client_msg_id)`` replay read in this request and found nothing
+    (``ChatMessageView`` must, ahead of attachment validation), so the entry
+    read here is skipped — one cross-region round-trip. Idempotency does not
+    rest on either read: the ``(tenant, client_msg_id)`` unique constraint plus
+    the ``IntegrityError`` replay below is the guarantee.
+
+    ``tenant_fresh=True`` means ``tenant`` was loaded from the DB moments ago in
+    this same request (auth's ``select_related("tenant")``), so ``check_budget``
+    skips its budget-field re-read. The Siri escalation leaves it False: its
+    tenant row predates a multi-second fast-responder model call.
 
     ``image`` / ``document`` (optional, already-decoded+validated bytes; at most
     one per turn) are stored on the tenant share and referenced from the
@@ -607,9 +621,10 @@ def enqueue_tenant_turn(
     if image is not None and document is not None:
         raise ValueError("enqueue_tenant_turn: pass at most one of image/document per turn")
 
-    existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
-    if existing:
-        return existing, False
+    if not idempotency_prechecked:
+        existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
+        if existing:
+            return existing, False
 
     # Dual-write ciphertext (Phase 2, PR-2): the same `text` seals both the
     # budget-exhausted and the normal turn below, so compute it once. None when
@@ -618,16 +633,17 @@ def enqueue_tenant_turn(
 
     # Budget gate — don't enqueue work (or wake a container) for an over-budget
     # tenant. Recorded as an error so the client surfaces the reason.
-    budget_reason = check_budget(tenant)
+    budget_reason = check_budget(tenant, fresh=tenant_fresh)
     try:
         with transaction.atomic():
             # Serialize user-turn creation with the delayed dropped-turn retry.
             # The retry locks this same thread before its final newest-turn
             # check, closing the insert-between-check-and-requeue race.
+            # The lock orders inserts; it is NOT the idempotency gate. A duplicate
+            # client_msg_id that slipped past the replay read trips the
+            # (tenant, client_msg_id) unique constraint on the INSERT below and
+            # replays via the IntegrityError handler — no re-read under the lock.
             ChatThread.objects.select_for_update().only("id").get(id=thread.id, tenant=tenant)
-            existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
-            if existing:
-                return existing, False
 
             if budget_reason:
                 turn = AppChatMessage.objects.create(
@@ -748,7 +764,9 @@ def enqueue_tenant_turn(
     if user_redactions:
         redaction_update["user_redactions"] = user_redactions
         turn.user_redactions = user_redactions
-    AppChatMessage.objects.filter(pk=turn.pk).update(**redaction_update)
+    # The row UPDATE itself runs AFTER the enqueue below: the drain reads the
+    # receipt from payload["redaction"], never from this row, so the write is
+    # display-only and must not sit in front of the QStash publish.
     turn.redaction_confirmed = redaction.confirmed
     turn.redaction_reason = redaction.reason
     # A bare attachment with no caption still needs SOMETHING for the agent to
@@ -802,6 +820,10 @@ def enqueue_tenant_turn(
         # Telegram poller, which also stores a redacted excerpt.
         user_text_excerpt=redacted_text,
     )
+    # Deferred redaction receipt + transparency metadata (see above). A process
+    # death between the publish and this write leaves redaction_confirmed null —
+    # "unconfirmed", the fail-safe reading.
+    AppChatMessage.objects.filter(pk=turn.pk).update(**redaction_update)
     ChatThread.objects.filter(id=thread.id).update(last_active_at=timezone.now())
     # iOS is a first-class channel for the idle-hibernation freshness signal:
     # without this stamp the sweep sees an iOS-only tenant as permanently idle
@@ -1030,6 +1052,9 @@ class ChatMessageView(APIView):
             return Response({"error": "invalid_client_msg_id"}, status=status.HTTP_400_BAD_REQUEST)
         existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
         if existing:
+            # Filtering by tenant= does not fill the FK cache; without this the
+            # serializer's msg.tenant access refetches the whole Tenant row.
+            existing.tenant = tenant
             return Response(_serialize_message(existing), status=status.HTTP_200_OK)
 
         text = str(request.data.get("text") or "").strip()
@@ -1098,6 +1123,10 @@ class ChatMessageView(APIView):
             image_ext=image_ext or "jpg",
             document=document_bytes,
             document_ext=document_ext or "pdf",
+            # The replay read above already ran for this client_msg_id.
+            idempotency_prechecked=True,
+            # request.user.tenant was loaded by auth in this request.
+            tenant_fresh=True,
         )
         http = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return Response(_serialize_message(turn), status=http)
@@ -1288,6 +1317,9 @@ class ChatMessageDetailView(APIView):
         turn = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
         if not turn:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        # Filtering by tenant= does not fill the FK cache; without this every
+        # poll's serializer msg.tenant access refetches the whole Tenant row.
+        turn.tenant = tenant
         return _no_store(Response(_serialize_message(turn)))
 
 

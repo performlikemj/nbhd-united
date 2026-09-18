@@ -23,7 +23,9 @@ import base64
 import secrets
 from unittest.mock import MagicMock, patch
 
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIClient
 
 from apps.router.inbound_media import MAX_APP_DOCUMENT_BYTES, MAX_APP_IMAGE_BYTES, attachment_marker
@@ -193,6 +195,151 @@ class IOSChatRoutingTest(TestCase):
             AppChatMessage.objects.filter(tenant=self.tenant, client_msg_id="dup").count(),
             1,
         )
+
+    @patch("apps.router.chat_views.enqueue_message_for_tenant")
+    def test_post_runs_exactly_one_idempotency_read(self, _enqueue):
+        # Round-trip budget: the view's replay read is the ONLY SELECT keyed on
+        # client_msg_id for a fresh POST. enqueue_tenant_turn is told the read
+        # already ran (idempotency_prechecked) and the under-lock re-read is
+        # gone — the unique constraint is the guarantee. Was three reads.
+        with CaptureQueriesContext(connection) as queries:
+            resp = self.client.post(
+                "/api/v1/chat/messages/",
+                {"text": "hello", "client_msg_id": "one-idem-read"},
+                format="json",
+            )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        reads = [
+            q["sql"]
+            for q in queries.captured_queries
+            if q["sql"].lstrip().upper().startswith("SELECT")
+            and "app_chat_messages" in q["sql"]
+            and "one-idem-read" in q["sql"]
+        ]
+        self.assertEqual(len(reads), 1, reads)
+
+    @patch("apps.router.chat_views.enqueue_message_for_tenant")
+    def test_prechecked_duplicate_replays_via_unique_constraint(self, enqueue):
+        # The race the removed under-lock re-read used to catch: a duplicate
+        # client_msg_id whose replay read missed (concurrent POST committed just
+        # after it). The (tenant, client_msg_id) unique constraint rejects the
+        # INSERT and the IntegrityError handler replays the winner — one row,
+        # one enqueue, created=False.
+        from apps.router.chat_views import _get_or_create_main_thread, enqueue_tenant_turn
+
+        thread = _get_or_create_main_thread(self.tenant, self.user)
+        kwargs = {
+            "tenant": self.tenant,
+            "user": self.user,
+            "thread": thread,
+            "client_msg_id": "race-prechecked",
+            "idempotency_prechecked": True,
+        }
+        winner, created = enqueue_tenant_turn(text="first", **kwargs)
+        self.assertTrue(created)
+
+        replay, created_again = enqueue_tenant_turn(text="second", **kwargs)
+
+        self.assertFalse(created_again)
+        self.assertEqual(replay.pk, winner.pk)
+        self.assertEqual(replay.user_text, "first")
+        self.assertEqual(
+            AppChatMessage.objects.filter(tenant=self.tenant, client_msg_id="race-prechecked").count(),
+            1,
+        )
+        self.assertEqual(enqueue.call_count, 1)
+
+    @patch("apps.router.chat_views.enqueue_message_for_tenant")
+    def test_unprechecked_duplicate_replays_from_entry_read(self, enqueue):
+        # The Siri escalation path does not pre-read, so the default keeps the
+        # entry replay read: a duplicate returns the existing turn without ever
+        # reaching the INSERT.
+        from apps.router.chat_views import _get_or_create_main_thread, enqueue_tenant_turn
+
+        thread = _get_or_create_main_thread(self.tenant, self.user)
+        kwargs = {
+            "tenant": self.tenant,
+            "user": self.user,
+            "thread": thread,
+            "client_msg_id": "dup-unprechecked",
+        }
+        winner, created = enqueue_tenant_turn(text="first", **kwargs)
+        self.assertTrue(created)
+
+        with patch.object(AppChatMessage.objects, "create", side_effect=AssertionError("must not insert")):
+            replay, created_again = enqueue_tenant_turn(text="second", **kwargs)
+
+        self.assertFalse(created_again)
+        self.assertEqual(replay.pk, winner.pk)
+        self.assertEqual(enqueue.call_count, 1)
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_poll_and_replay_do_not_refetch_tenant_row(self, mock_post):
+        # The serializer reads msg.tenant.pii_entity_map; a row fetched with
+        # filter(tenant=...) has no FK cache, so without the explicit
+        # turn.tenant assignment every poll refetched the full Tenant row.
+        mock_post.return_value = _ok_chat_response("hi")
+        first = self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": "hello", "client_msg_id": "no-tenant-refetch"},
+            format="json",
+        )
+        self.assertEqual(first.status_code, 201, first.content)
+
+        with CaptureQueriesContext(connection) as queries:
+            poll = self.client.get("/api/v1/chat/messages/no-tenant-refetch/")
+            replay = self.client.post(
+                "/api/v1/chat/messages/",
+                {"text": "hello", "client_msg_id": "no-tenant-refetch"},
+                format="json",
+            )
+        self.assertEqual(poll.status_code, 200, poll.content)
+        self.assertEqual(replay.status_code, 200, replay.content)
+        self.assertEqual(poll.data["reply_text"], "hi")
+        tenant_reads = [q["sql"] for q in queries.captured_queries if f'FROM "{Tenant._meta.db_table}"' in q["sql"]]
+        self.assertEqual(tenant_reads, [])
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_reply_write_precedes_retried_turn_lookup(self, mock_post):
+        # Round-trip budget: the retried-turn lookup only feeds a log line, so
+        # on the success path it runs AFTER the reply UPDATE the polling client
+        # is waiting on, never in front of it.
+        mock_post.return_value = _ok_chat_response("pong-after-write")
+        with CaptureQueriesContext(connection) as queries:
+            resp = self.client.post(
+                "/api/v1/chat/messages/",
+                {"text": "ping", "client_msg_id": "b4-order"},
+                format="json",
+            )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        sql = [q["sql"] for q in queries.captured_queries]
+        reply_writes = [
+            i for i, q in enumerate(sql) if q.startswith('UPDATE "app_chat_messages"') and "pong-after-write" in q
+        ]
+        retried_reads = [
+            i
+            for i, q in enumerate(sql)
+            if q.startswith("SELECT") and "app_chat_messages" in q and '"retried_at" IS NOT NULL' in q
+        ]
+        self.assertEqual(len(reply_writes), 1, sql)
+        self.assertEqual(len(retried_reads), 1, sql)
+        self.assertLess(reply_writes[0], retried_reads[0])
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_drain_logs_one_timing_attribution_line(self, mock_post):
+        mock_post.return_value = _ok_chat_response("hi")
+        with self.assertLogs("apps.router.pending_queue", level="INFO") as logs:
+            resp = self.client.post(
+                "/api/v1/chat/messages/",
+                {"text": "hello", "client_msg_id": "timing-line"},
+                format="json",
+            )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        timing = [r.getMessage() for r in logs.records if "ios turn timing" in r.getMessage()]
+        self.assertEqual(len(timing), 1, timing)
+        self.assertRegex(timing[0], r"pre_post_ms=\d+ post_ms=\d+ reply_write_ms=\d+$")
+        # Content-free: tenant prefix + numbers only.
+        self.assertNotIn("hello", timing[0])
 
     @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
     @patch("apps.router.pending_queue.httpx.post")

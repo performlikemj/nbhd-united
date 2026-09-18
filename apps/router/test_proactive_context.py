@@ -17,7 +17,9 @@ from __future__ import annotations
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -522,6 +524,85 @@ class SurfaceProactiveContextTest(_TenantFixture):
         # Rendered oldest-first.
         self.assertLess(block.index("U_D4"), block.index("U_H2"))
         self.assertLess(block.index("U_H2"), block.index("U_NOW"))
+
+    def _seed_row(self, text, *, created, consumed=None):
+        row = record_proactive_outbound(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="123",
+            message_text=text,
+        )
+        assert row is not None
+        ProactiveOutbound.objects.filter(id=row.id).update(created_at=created, consumed_at=consumed)
+        return row
+
+    def test_over_limit_unconsumed_crowd_out_consumed_followups_in_one_select(self):
+        # Single-query selection (was two SELECTs): with MORE than ``limit``
+        # unconsumed rows pending AND newer consumed follow-ups inside the
+        # 5-min window, the newest ``limit`` unconsumed rows still take every
+        # slot — no consumed row leaks in, and the oldest unconsumed row stays
+        # unconsumed so it surfaces on the next turn.
+        now = timezone.now()
+        oldest = self._seed_row("U_D5", created=now - timedelta(days=5))
+        self._seed_row("U_D3", created=now - timedelta(days=3))
+        self._seed_row("U_H5", created=now - timedelta(hours=5))
+        self._seed_row("U_H1", created=now - timedelta(hours=1))
+        for index in range(4):
+            self._seed_row(
+                f"FOLLOWUP_C{index}",
+                created=now - timedelta(minutes=10 + index),
+                consumed=now - timedelta(minutes=1),
+            )
+
+        with CaptureQueriesContext(connection) as queries:
+            block = surface_proactive_context(tenant=self.tenant)
+
+        selects = [
+            q["sql"]
+            for q in queries.captured_queries
+            if q["sql"].lstrip().upper().startswith("SELECT") and "proactive_outbounds" in q["sql"]
+        ]
+        self.assertEqual(len(selects), 1, selects)
+        self.assertNotIn("U_D5", block)
+        self.assertIn("U_D3", block)
+        self.assertIn("U_H5", block)
+        self.assertIn("U_H1", block)
+        self.assertNotIn("FOLLOWUP_C", block)
+        # Rendered oldest-first.
+        self.assertLess(block.index("U_D3"), block.index("U_H5"))
+        self.assertLess(block.index("U_H5"), block.index("U_H1"))
+        # The capped-out question is NOT marked consumed; it surfaces next turn.
+        oldest.refresh_from_db()
+        self.assertIsNone(oldest.consumed_at)
+        self.assertIn("U_D5", surface_proactive_context(tenant=self.tenant))
+
+    def test_consumed_fill_picks_newest_created_not_most_recently_consumed(self):
+        # The fill slots go to the newest-CREATED consumed follow-ups — the
+        # pre-merge second SELECT's ordering. The rows consumed most recently
+        # here are the OLDEST-created ones, so ordering the merged query by the
+        # ``consumed_at`` value would select the wrong pair.
+        now = timezone.now()
+        self._seed_row("U_ONLY", created=now - timedelta(days=2))
+        self._seed_row("C_NEW1", created=now - timedelta(minutes=20), consumed=now - timedelta(minutes=4))
+        self._seed_row("C_NEW2", created=now - timedelta(minutes=30), consumed=now - timedelta(minutes=4))
+        self._seed_row("C_OLD1", created=now - timedelta(hours=3), consumed=now - timedelta(seconds=30))
+        self._seed_row("C_OLD2", created=now - timedelta(hours=4), consumed=now - timedelta(seconds=20))
+        # Outside the follow-up window / the 24h window: never eligible.
+        self._seed_row("C_STALE", created=now - timedelta(minutes=5), consumed=now - timedelta(minutes=9))
+        self._seed_row("C_ANCIENT", created=now - timedelta(days=2), consumed=now - timedelta(minutes=1))
+
+        block = surface_proactive_context(tenant=self.tenant)
+
+        self.assertIn("U_ONLY", block)
+        self.assertIn("C_NEW1", block)
+        self.assertIn("C_NEW2", block)
+        self.assertNotIn("C_OLD1", block)
+        self.assertNotIn("C_OLD2", block)
+        self.assertNotIn("C_STALE", block)
+        self.assertNotIn("C_ANCIENT", block)
+        # Re-sorted into strict conversation order across both states.
+        self.assertLess(block.index("U_ONLY"), block.index("C_NEW2"))
+        self.assertLess(block.index("C_NEW2"), block.index("C_NEW1"))
 
     def test_consumed_row_resurfaces_within_followup_window(self):
         row = record_proactive_outbound(

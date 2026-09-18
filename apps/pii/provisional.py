@@ -113,12 +113,31 @@ def expired_placeholder_for_name(
 
 
 def record_provisional_sightings(tenant, raw_owner_text: str, ingress: PiiIngress) -> list[TransitionResult]:
-    """Record one raw provider event using complete-map selection under lock."""
+    """Record one raw provider event using complete-map selection under lock.
+
+    The lock is taken only when the text names a value in the caller's in-memory
+    map; selection and every transition still run against the locked snapshot.
+    """
     digest = _event_digest(tenant, ingress)
     if not digest or not raw_owner_text:
         return []
 
     from apps.pii.redactor import known_value_matches
+
+    # Hot-path precheck: most messages name no known value, and then the locked
+    # pass below selects nothing — but still cost BEGIN + a full-row tenant
+    # ``FOR UPDATE`` + COMMIT on every inbound, on every channel. Run the same
+    # match over the caller's in-memory map first (loaded for this inbound and
+    # already carrying anything the redactor just minted) and skip the lock when
+    # nothing matches. Lifecycle counting only: redaction coverage never reads
+    # this function. A binding minted by a concurrent request in the last few
+    # milliseconds can miss one recurrence count; its next sighting counts.
+    in_memory_map = getattr(tenant, "pii_entity_map", None) or {}
+    if not any(
+        canonical_key(name) and known_value_matches(raw_owner_text, name)
+        for name in (get_name(raw) for raw in in_memory_map.values())
+    ):
+        return []
 
     results = []
     local_date = _local_date(tenant, ingress.occurred_at)

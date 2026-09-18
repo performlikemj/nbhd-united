@@ -13,11 +13,19 @@ logger = logging.getLogger("nbhd.perf")
 
 @contextmanager
 def _count_queries():
-    counter = {"n": 0}
+    # ``db_s`` sums wall time inside cursor.execute — network round-trip plus
+    # server time. Like ``n`` it only sees statements: BEGIN/COMMIT and the
+    # connection health check never pass through execute_wrapper, so
+    # total_ms - db_ms bounds those hidden round-trips plus Python time.
+    counter = {"n": 0, "db_s": 0.0}
 
     def wrapper(execute, sql, params, many, context):
         counter["n"] += 1
-        return execute(sql, params, many, context)
+        started = time.perf_counter()
+        try:
+            return execute(sql, params, many, context)
+        finally:
+            counter["db_s"] += time.perf_counter() - started
 
     with connection.execute_wrapper(wrapper):
         yield counter
@@ -26,7 +34,7 @@ def _count_queries():
 class RequestTimingMiddleware:
     """Log per-request timing and DB query count to stdout.
 
-    Format: `PERF method path status=N total_ms=N db_queries=N`. Visible in
+    Format: `PERF method path status=N total_ms=N db_queries=N db_ms=N cache=S`. Visible in
     `az containerapp logs show`. Must be the outermost middleware (first
     entry in MIDDLEWARE) so it captures total request time including all
     inner middleware.
@@ -49,12 +57,13 @@ class RequestTimingMiddleware:
 
         cache_state = response.get("X-Cache", "-") if hasattr(response, "get") else "-"
         logger.info(
-            "PERF %s %s status=%d total_ms=%d db_queries=%d cache=%s",
+            "PERF %s %s status=%d total_ms=%d db_queries=%d db_ms=%d cache=%s",
             request.method,
             path,
             response.status_code,
             total_ms,
             counter["n"],
+            int(counter["db_s"] * 1000),
             cache_state,
         )
         return response
