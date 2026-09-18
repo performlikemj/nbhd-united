@@ -275,22 +275,29 @@ def record_usage(
     return record
 
 
-def check_budget(tenant: Tenant) -> str:
+def check_budget(tenant: Tenant, *, fresh: bool = False) -> str:
     """Return '' if within budget, or the block reason ('personal'/'global').
 
     Checks personal cost budget first, then global platform budget.
     Callers should hibernate the container when a reason is returned.
+
+    ``fresh=True`` asserts the caller loaded this ``tenant`` row from the DB
+    moments ago in the same request (the app chat POST: auth's
+    ``select_related("tenant")``), so the budget-field re-read is skipped — one
+    cross-region round-trip. Leave it False for any tenant object that may be
+    long-lived or was loaded before slow work (poller, LINE, webhook, drain).
     """
     # Personal budget
-    tenant.refresh_from_db(
-        fields=[
-            "estimated_cost_this_month",
-            "monthly_cost_budget",
-            "model_tier",
-            "is_budget_exempt",
-            "purchased_credit",
-        ]
-    )
+    if not fresh:
+        tenant.refresh_from_db(
+            fields=[
+                "estimated_cost_this_month",
+                "monthly_cost_budget",
+                "model_tier",
+                "is_budget_exempt",
+                "purchased_credit",
+            ]
+        )
     if tenant.is_budget_exempt:
         return ""
     # Single source of truth for "may spend": within the included allowance OR

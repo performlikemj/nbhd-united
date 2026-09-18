@@ -295,6 +295,41 @@ class SightingRecorderTests(TestCase):
         self.assertFalse(entry["provisional"])
         self.assertEqual(entry["promoted_by"], "recurrence")
 
+    def test_no_known_value_skips_the_tenant_row_lock(self):
+        # Hot path: text naming nothing in the in-memory map must not open a
+        # transaction or take the tenant row lock — zero statements.
+        with self.assertNumQueries(0):
+            results = self._record("event-1", datetime(2026, 8, 28, 1, tzinfo=UTC), "Ordinary owner text")
+        self.assertEqual(results, [])
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.pii_entity_map["[PERSON_1]"]["seen_events"], [])
+
+    def test_known_value_still_counts_against_the_locked_snapshot(self):
+        # The in-memory map only gates WHETHER the lock is taken. Selection and
+        # the count run on the locked row: a sighting another request recorded
+        # after this tenant object was loaded is preserved, not clobbered.
+        stale = Tenant.objects.get(pk=self.tenant.pk)
+        self._record("event-1", datetime(2026, 8, 28, 1, tzinfo=UTC))
+
+        with self.assertLogs("apps.pii.provisional", level="INFO") as captured:
+            results = record_provisional_sightings(
+                stale,
+                "Fakenamealpha arrived",
+                PiiIngress(
+                    channel="fixture",
+                    provider_event_id="event-2",
+                    occurred_at=datetime(2026, 8, 28, 2, tzinfo=UTC),
+                ),
+            )
+
+        self.assertEqual([result.outcome for result in results], ["counted"])
+        self.assertIn("pii_policy_recurrence", "\n".join(captured.output))
+        self.assertIn("seen_events=2", "\n".join(captured.output))
+        self.tenant.refresh_from_db()
+        self.assertEqual(len(self.tenant.pii_entity_map["[PERSON_1]"]["seen_events"]), 2)
+        # The caller's instance is refreshed from the locked snapshot.
+        self.assertEqual(stale.pii_entity_map, self.tenant.pii_entity_map)
+
     def test_uses_substitution_boundary_rules(self):
         self.assertEqual(self._record("event-1", datetime(2026, 8, 28, 1, tzinfo=UTC), "XFakenamealphaY"), [])
 

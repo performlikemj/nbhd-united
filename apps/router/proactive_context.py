@@ -40,6 +40,7 @@ from collections.abc import Iterable
 from datetime import timedelta
 
 from django.db import transaction
+from django.db.models import Case, IntegerField, Q, Value, When
 from django.utils import timezone
 
 from apps.common.eval_sink import suppresses_real_transport
@@ -457,7 +458,7 @@ def surface_proactive_context(
     follow_up_cutoff = now - timedelta(minutes=5)
 
     # Tenant-scoped — the (tenant, created_at) index (proactive_tenant_created_idx)
-    # backs both walks below. User-delivery channels are not distinguished: one
+    # backs the range scan below. User-delivery channels are not distinguished: one
     # tenant = one human, and switching transports must not break continuity.
     # Internal eval evidence and thread-targeted sub-agent results are excluded;
     # the latter already landed in their authoritative app thread.
@@ -467,26 +468,31 @@ def surface_proactive_context(
         .exclude(job_name="_subagent_result")
     )
 
-    # UNCONSUMED (never threaded) rows claim the limit first, newest-first,
-    # within the long window.
-    fresh = list(
-        base.filter(
-            consumed_at__isnull=True,
-            created_at__gte=unconsumed_cutoff,
-        ).order_by("-created_at")[:limit]
+    # ONE query over both consumption states (was two sequential SELECTs — a
+    # cross-region round-trip on every inbound turn). Selection is unchanged:
+    # UNCONSUMED (never threaded) rows within the long window claim the limit
+    # first, newest-first; only the slots left over go to consumed follow-up
+    # rows (created within 24h AND consumed within the 5-min follow-up window),
+    # newest-first. The priority sort key is the consumption STATE, not the
+    # ``consumed_at`` value — ordering consumed rows by when they were consumed
+    # would pick different fill rows than the old newest-created-first walk.
+    unconsumed = Q(consumed_at__isnull=True, created_at__gte=unconsumed_cutoff)
+    consumed_follow_up = Q(
+        consumed_at__isnull=False,
+        created_at__gte=consumed_cutoff,
+        consumed_at__gte=follow_up_cutoff,
     )
-
-    # Fill any remaining slots with consumed follow-up rows, newest-first:
-    # created within 24h AND consumed within the 5-min follow-up window.
-    fill = limit - len(fresh)
-    if fill > 0:
-        fresh += list(
-            base.filter(
-                consumed_at__isnull=False,
-                created_at__gte=consumed_cutoff,
-                consumed_at__gte=follow_up_cutoff,
-            ).order_by("-created_at")[:fill]
+    fresh = list(
+        base.filter(unconsumed | consumed_follow_up)
+        .annotate(
+            _consumed_rank=Case(
+                When(consumed_at__isnull=True, then=Value(0)),
+                default=Value(1),
+                output_field=IntegerField(),
+            )
         )
+        .order_by("_consumed_rank", "-created_at")[:limit]
+    )
 
     if not fresh:
         return ""

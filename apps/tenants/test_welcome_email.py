@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 
 from apps.router.models import PendingMessage
 from apps.router.pending_queue import enqueue_message_for_tenant
@@ -161,6 +165,19 @@ class FirstMessageTrackingTests(TestCase):
         self._enqueue()
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.first_message_at, stamped)
+
+    def test_already_stamped_tenant_skips_the_update(self):
+        # Round-trip budget: the stamp is monotonic, so once the in-memory
+        # tenant carries it the conditional UPDATE is not issued at all.
+        self._enqueue()
+        self.tenant.refresh_from_db()
+        self.assertIsNotNone(self.tenant.first_message_at)
+
+        with patch("apps.cron.publish.publish_task"), CaptureQueriesContext(connection) as queries:
+            self._enqueue()
+
+        tenant_updates = [q["sql"] for q in queries.captured_queries if q["sql"].startswith('UPDATE "tenants"')]
+        self.assertEqual(tenant_updates, [])
 
     def test_first_message_tracked_regardless_of_channel(self):
         # Channel string is opaque to the chokepoint — any inbound counts.
