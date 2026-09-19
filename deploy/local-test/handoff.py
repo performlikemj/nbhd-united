@@ -35,9 +35,13 @@ def start_listener(state):
         from apps.orchestrator.local_test import local_root
 
         while True:
-            connection, _ = listener.accept()
+            try:
+                connection, _ = listener.accept()
+            except OSError:
+                return
             with connection:
                 connection.settimeout(5)
+                accepted = False
                 try:
                     payload = b""
                     while b"\n" not in payload and len(payload) <= MAX_BYTES:
@@ -67,11 +71,15 @@ def start_listener(state):
                         },
                     )
                     settings.SAUTAI_PLATFORM_SECRET = secret
-                    connection.sendall(b'{"accepted":true}\n')
+                    accepted = True
                 except Exception:
-                    connection.sendall(b'{"accepted":false}\n')
+                    pass  # Never expose a token or database exception in diagnostics.
                 finally:
                     close_old_connections()
+                try:
+                    connection.sendall(b'{"accepted":true}\n' if accepted else b'{"accepted":false}\n')
+                except OSError:
+                    pass  # A disconnected probe/client must not kill the listener.
 
     threading.Thread(target=serve, name="local-sautai-handoff", daemon=True).start()
     return listener

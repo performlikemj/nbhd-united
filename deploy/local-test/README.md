@@ -55,16 +55,25 @@ with the loanarmy lane for the whole inference run.
 
    ```sh
    python3 deploy/local-test/run.py manage prepare_local_test_tenant \
-     --email '<MJ-created email>' --persona-file '<confirmed-facts JSON path>'
+     --email '<MJ-created email>' \
+     --persona-file /Users/mjjones/worktrees/sautai-yuki-lane/sim/persona/yuki.json
    ```
 
-   No account is created by this command. The source facts file must be supplied
-   by the harness lane with `{"version":3,"confirmed_facts":["..."]}`. This is an
-   explicit import contract, not a claim that a missing persona was supplied.
-   If the canonical harness file uses another format, the lane exports only its
-   confirmed facts to this format. Omit `--persona-file` to provision while
-   waiting; output reports `persona_v3_seeded=false`. Repeat with the file when
-   available. No guessed biography is seeded.
+   No account is created by this command. The actual manifest contains
+   `persona=yuki`, `persona_version="3"` and 26 confirmed facts, retaining IDs and
+   citations. It was verified against the canonical
+   `/Users/mjjones/Projects/harness/core/personas/yuki.md` and its source digest
+   `811c280b12d42f349632942a6ad72487e585b41121276e3c4aed2b41c5d18fe6`.
+   Facts Y-021 through Y-026 were explicitly confirmed by MJ on 2026-09-04.
+   The manifest generator excludes proposed facts. No guessed biography is seeded.
+   To refresh the manifest without writing into another lane:
+
+   ```sh
+   node /Users/mjjones/worktrees/sautai-yuki-lane/sim/persona/generate-manifest.mjs \
+     /Users/mjjones/Projects/harness/core/personas/yuki.md \
+     "$PWD/deploy/local-test/.state/yuki-v3.json"
+   # Then use --persona-file deploy/local-test/.state/yuki-v3.json above.
+   ```
 
 The single tenant UUID is generated at install in `NBHD_TENANT_ID`. It is
 synthetic, non-eval-sink, starter, $1 monthly cap, 100,000 token cap, zero purchased
@@ -97,26 +106,57 @@ an unrecognized runtime source shape and does not modify the shared binary.
 
 The Django launcher opens the owner-only Unix socket
 `deploy/local-test/.state/sautai-handoff.sock` (directory 0700, socket 0600).
-The sautai lane's **sim/run.mjs** must send a single JSON line from its existing
-in-memory token and the actual synthetic account ID it created:
+Source inspection located the real values in the sibling lane:
+
+- `sim/run.mjs:531` creates `handshakeSecret` in memory, adds it to the redaction
+  set, and `bootServers` passes it as the backend's `NBHD_PLATFORM_SECRET`.
+- `sim/run.mjs:597` passes `handshakeSecret` into each journey.
+- `sim/journeys/yuki-week.mjs:108-109` resolves the connect key and captures
+  `linked = result.body`; the real identity is `linked.sautai_user_id`.
+- `sim/run.mjs:601-602` tears servers down in `finally`. The S2 proof must be
+  awaited inside that managed lifetime. A successful runner exit leaves no sim
+  backend running and cannot be used for later proof.
+
+The sautai lane must integrate this adapter immediately after its successful
+`nbhd-link-resolve` step, using those actual in-scope values. This worktree does
+not modify the other lane. For S2, replace that step's random NBHD tenant UUID
+with this install's `NBHD_TENANT_ID` (non-secret), so the sim also records the
+correct link. Use the self-hosted runner: its external mode deliberately returns
+an empty handshake secret and cannot satisfy this contract.
 
 ```js
-// Adapter to add in the sautai lane, where these two real values are in scope.
 import net from 'node:net';
-const socket = net.createConnection('/Users/mjjones/worktrees/united-yuki-test/deploy/local-test/.state/sautai-handoff.sock');
-socket.on('connect', () => socket.end(JSON.stringify({
-  base_url: 'http://127.0.0.1:8000',
-  platform_secret: simPlatformSecret,
-  sautai_user_id: simSyntheticUserId,
-}) + '\n'));
-// Parse the reply in memory; log only {accepted: true/false}.
+// In yuki-week.mjs, after linked = result.body and successful link validation:
+await new Promise((resolve, reject) => {
+  const socket = net.createConnection('/Users/mjjones/worktrees/united-yuki-test/deploy/local-test/.state/sautai-handoff.sock');
+  let reply = '';
+  socket.setTimeout(10_000, () => socket.destroy(new Error('S2 handoff timeout')));
+  socket.on('error', () => reject(new Error('S2 handoff transport failed')));
+  socket.on('connect', () => socket.write(JSON.stringify({
+    base_url: backendUrl,
+    platform_secret: handshakeSecret,
+    sautai_user_id: linked.sautai_user_id,
+  }) + '\n'));
+  socket.on('data', chunk => { reply += chunk.toString(); });
+  socket.on('end', () => {
+    try {
+      if (JSON.parse(reply).accepted !== true) throw new Error();
+      resolve();
+    } catch { reject(new Error('S2 handoff rejected')); }
+  });
+});
+// Await the real S2 proof here before run.mjs tears down its backend.
+// Log only acknowledgement/proof metadata; never handshakeSecret or raw replies.
 ```
 
-The illustrative variable names above are not an assertion about sim/run.mjs's
-current exports. That lane must wire its real variables and verify the ack.
-Alternatively, the lane pipes this JSON directly to
-`python3 deploy/local-test/run.py sautai-handoff`; never echo a token in a shell
-command or use a file. Do not generate a replacement secret in this lane.
+The lane must also choose an unused proof week, avoiding its own journey's plan
+and deletion steps. An S2 callback awaited at this point should run
+`prove_local_sautai --confirmed-week <that Monday>` in the united worktree and
+require exit zero. Local Ollama generation must be attested by the sim (its
+`llmMetadata.mode` is `local-ollama`); a deterministic sim fixture is not evidence
+of a real model-generated plan. Alternatively the lane can pipe the same JSON
+in memory to `python3 deploy/local-test/run.py sautai-handoff`; never put it in
+argv or a file. No adapter invocation or genuine hand-off has occurred yet.
 
 The listener requires the exact local sim URL, stores the token only in the
 running Django settings, and links the supplied sim user ID on the designated

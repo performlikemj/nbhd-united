@@ -16,12 +16,33 @@ from apps.orchestrator.services import update_tenant_config
 from apps.tenants.models import Tenant, User
 
 
+def persona_facts(persona):
+    """Read the harness confirmed-only manifest, retaining fact IDs and citations."""
+    if persona.get("persona") == "yuki" and persona.get("persona_version") == "3":
+        rows = persona.get("facts")
+        if (
+            isinstance(rows, list)
+            and rows
+            and all(
+                isinstance(row, dict)
+                and all(isinstance(row.get(key), str) and row[key].strip() for key in ("id", "citation", "text"))
+                for row in rows
+            )
+        ):
+            return [f"{row['id']}: {row['text']} (source: {row['citation']})" for row in rows]
+    facts = persona.get("confirmed_facts")
+    if persona.get("version") == 3 and isinstance(facts, list) and facts:
+        if all(isinstance(fact, str) and fact.strip() for fact in facts):
+            return facts
+    raise CommandError("Expected harness v3 confirmed facts; refuse invented/default facts")
+
+
 class Command(BaseCommand):
     help = "Prepare the isolated Yuki synthetic tenant; never creates an account or password"
 
     def add_arguments(self, parser):
         parser.add_argument("--email", required=True)
-        parser.add_argument("--persona-file", help="JSON: version=3, confirmed_facts=list of strings")
+        parser.add_argument("--persona-file", help="Harness sim/persona/yuki.json confirmed-only v3 manifest")
 
     def handle(self, *args, **options):
         if not getattr(settings, "LOCAL_TEST_ROOT", "") or not settings.DEBUG or os.environ.get("AZURE_MOCK") != "true":
@@ -41,14 +62,7 @@ class Command(BaseCommand):
         if options["persona_file"]:
             raw = Path(options["persona_file"]).read_bytes()
             persona = json.loads(raw)
-            facts = persona.get("confirmed_facts")
-            if (
-                persona.get("version") != 3
-                or not isinstance(facts, list)
-                or not facts
-                or not all(isinstance(x, str) for x in facts)
-            ):
-                raise CommandError("Expected harness v3 confirmed facts; refuse invented/default facts")
+            facts = persona_facts(persona)
             user.preferences = {
                 **(user.preferences or {}),
                 "local_test_persona_v3": facts,

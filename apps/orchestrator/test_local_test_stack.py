@@ -2,6 +2,7 @@
 
 import json
 import os
+import runpy
 import socket
 import subprocess
 import tempfile
@@ -55,6 +56,36 @@ class LocalStackTests(TestCase):
             local_root(self.tenant.id)
         with override_settings(DEBUG=False), self.assertRaises(RuntimeError):
             local_root(self.tenant.id)
+
+    def test_handoff_survives_disconnected_probe_and_rejects_invalid_host(self):
+        handoff = runpy.run_path(str(settings.BASE_DIR / "deploy/local-test/handoff.py"))
+        listener = handoff["start_listener"](Path(self.directory.name))
+        self.addCleanup(listener.close)
+        path = str(Path(self.directory.name) / "sautai-handoff.sock")
+        with socket.socket(socket.AF_UNIX) as client:
+            client.connect(path)
+        # A second request must receive a rejection even after the first client
+        # disconnected without a payload. No token or DB link is manufactured.
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(3)
+            client.connect(path)
+            client.sendall(b'{"base_url":"https://invalid.example"}\n')
+            self.assertEqual(json.loads(client.recv(1024)), {"accepted": False})
+
+    def test_persona_import_accepts_harness_manifest_and_refuses_wrong_version(self):
+        from django.core.management.base import CommandError
+
+        from .management.commands.prepare_local_test_tenant import persona_facts
+
+        manifest = {
+            "persona": "yuki",
+            "persona_version": "3",
+            "facts": [{"id": "Y-001", "citation": "fixture:1", "text": "Synthetic fixture."}],
+        }
+        self.assertEqual(persona_facts(manifest), ["Y-001: Synthetic fixture. (source: fixture:1)"])
+        manifest["persona_version"] = "2"
+        with self.assertRaises(CommandError):
+            persona_facts(manifest)
 
     def test_mock_key_survives_process_registry_reset(self):
         tid = str(self.tenant.id)
