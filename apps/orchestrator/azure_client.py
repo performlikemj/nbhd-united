@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from typing import Any
 
 from django.conf import settings
+
+from .local_test import local_root, mock_kek, share_path
 
 logger = logging.getLogger(__name__)
 
@@ -444,7 +447,7 @@ def create_tenant_kek(tenant_id: str) -> str:
 
     if _is_mock():
         kek_version = "mock-v1"
-        _MOCK_KEK_REGISTRY[tid] = {"key": os.urandom(32), "kek_version": kek_version, "deleted": False}
+        _MOCK_KEK_REGISTRY[tid] = {"key": mock_kek(tid) or os.urandom(32), "kek_version": kek_version, "deleted": False}
         logger.info("[MOCK] Created tenant KEK for tenant %s (version=%s)", tid, kek_version)
         return kek_version
 
@@ -474,6 +477,9 @@ def wrap_dek(tenant_id: str, dek: bytes) -> tuple[bytes, str]:
 
     if _is_mock():
         entry = _MOCK_KEK_REGISTRY.get(tid)
+        if entry is None and (key := mock_kek(tid)) is not None:
+            entry = {"key": key, "kek_version": "mock-v1", "deleted": False}
+            _MOCK_KEK_REGISTRY[tid] = entry
         if entry is None:
             raise LookupError(f"No KEK minted for tenant {tid} — call create_tenant_kek first")
         wrapped = _mock_kek_xor(dek, entry["key"])
@@ -512,6 +518,9 @@ def unwrap_dek(tenant_id: str, wrapped: bytes) -> bytes:
 
     if _is_mock():
         entry = _MOCK_KEK_REGISTRY.get(tid)
+        if entry is None and (key := mock_kek(tid)) is not None:
+            entry = {"key": key, "kek_version": "mock-v1", "deleted": False}
+            _MOCK_KEK_REGISTRY[tid] = entry
         if entry is None:
             raise LookupError(f"Cannot unwrap DEK for tenant {tid} — KEK was purged or never minted")
         if entry.get("deleted"):
@@ -552,8 +561,14 @@ def begin_delete_kek(tenant_id: str) -> None:
     """
     tid = str(tenant_id)
 
+    if local_root(tid) is not None:
+        raise RuntimeError("Key deletion/recovery is unsupported in the persistent local test adapter")
+
     if _is_mock():
         entry = _MOCK_KEK_REGISTRY.get(tid)
+        if entry is None and (key := mock_kek(tid)) is not None:
+            entry = {"key": key, "kek_version": "mock-v1", "deleted": False}
+            _MOCK_KEK_REGISTRY[tid] = entry
         if entry is not None:
             entry["deleted"] = True
         logger.info("[MOCK] Soft-deleted tenant KEK for tenant %s", tid)
@@ -586,8 +601,14 @@ def recover_kek(tenant_id: str) -> None:
     """
     tid = str(tenant_id)
 
+    if local_root(tid) is not None:
+        raise RuntimeError("Key deletion/recovery is unsupported in the persistent local test adapter")
+
     if _is_mock():
         entry = _MOCK_KEK_REGISTRY.get(tid)
+        if entry is None and (key := mock_kek(tid)) is not None:
+            entry = {"key": key, "kek_version": "mock-v1", "deleted": False}
+            _MOCK_KEK_REGISTRY[tid] = entry
         if entry is None:
             raise LookupError(f"Cannot recover KEK for tenant {tid} — already purged or never minted")
         entry["deleted"] = False
@@ -629,6 +650,9 @@ def kek_liveness(tenant_id: str) -> str:
 
     if _is_mock():
         entry = _MOCK_KEK_REGISTRY.get(tid)
+        if entry is None and (key := mock_kek(tid)) is not None:
+            entry = {"key": key, "kek_version": "mock-v1", "deleted": False}
+            _MOCK_KEK_REGISTRY[tid] = entry
         if entry is None:
             return "absent"
         return "recoverable" if entry.get("deleted") else "live"
@@ -672,6 +696,9 @@ def purge_kek(tenant_id: str) -> None:
     this code does. Never wire this into an automated/scheduled path.
     """
     tid = str(tenant_id)
+
+    if local_root(tid) is not None:
+        raise RuntimeError("Key deletion/recovery is unsupported in the persistent local test adapter")
 
     if _is_mock():
         _MOCK_KEK_REGISTRY.pop(tid, None)
@@ -740,6 +767,9 @@ def download_config_from_file_share(tenant_id: str) -> bytes | None:
     share_name = f"ws-{str(tenant_id)[:20]}"
 
     if _is_mock():
+        path = share_path(tenant_id, "openclaw.json")
+        if path is not None:
+            return path.read_bytes() if path.exists() else None
         logger.info("[MOCK] download_config_from_file_share %s", share_name)
         return None
 
@@ -846,6 +876,19 @@ def _put_share_file(
     share_name = f"ws-{str(tenant_id)[:20]}"
 
     if _is_mock():
+        path = share_path(tenant_id, file_path)
+        if path is not None:
+            if skip_if_exists and path.exists():
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = sanitize_share_text(text).encode() if text is not None else data
+            with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as temporary:
+                temporary.write(payload)
+            try:
+                os.replace(temporary.name, path)
+            finally:
+                if os.path.exists(temporary.name):
+                    os.unlink(temporary.name)
         logger.info("[MOCK] Uploaded %s to file share %s", file_path, share_name)
         return
 
@@ -1003,6 +1046,9 @@ def delete_workspace_file(tenant_id: str, file_path: str) -> None:
     share_name = f"ws-{str(tenant_id)[:20]}"
 
     if _is_mock():
+        path = share_path(tenant_id, file_path)
+        if path is not None:
+            path.unlink(missing_ok=True)
         logger.info("[MOCK] Deleted %s from file share %s", file_path, share_name)
         return
 
@@ -1060,6 +1106,9 @@ def download_workspace_file_binary(tenant_id: str, file_path: str) -> bytes | No
     share_name = f"ws-{str(tenant_id)[:20]}"
 
     if _is_mock():
+        path = share_path(tenant_id, file_path)
+        if path is not None:
+            return path.read_bytes() if path.exists() else None
         logger.info("[MOCK] Binary download of %s from file share %s", file_path, share_name)
         return None
 
@@ -1098,6 +1147,9 @@ def download_workspace_file(tenant_id: str, file_path: str) -> str | None:
     share_name = f"ws-{str(tenant_id)[:20]}"
 
     if _is_mock():
+        path = share_path(tenant_id, file_path)
+        if path is not None:
+            return path.read_text() if path.exists() else None
         logger.info("[MOCK] Download of %s from file share %s", file_path, share_name)
         return None
 

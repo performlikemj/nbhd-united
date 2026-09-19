@@ -578,6 +578,7 @@ def telegram_webhook(request):
             forward_to_openclaw(
                 tenant.container_fqdn,
                 update,
+                tenant=tenant,
                 user_timezone=user_timezone,
                 timeout=wh_timeout,
                 max_retries=1,

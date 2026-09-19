@@ -1,0 +1,15 @@
+# Overlay the repository Compose services, never the host postgres16 service.
+services:
+  postgres:
+    environment:
+      POSTGRES_DB: nbhd_yuki_test
+      POSTGRES_USER: nbhd_yuki_test
+      POSTGRES_PASSWORD: ${LOCAL_TEST_DB_PASSWORD:?installer required}
+    ports: !override
+      - "127.0.0.1:55441:5432"
+  redis:
+    ports: !override
+      - "127.0.0.1:56381:6379"
+  web:
+    profiles: [unused]
+    env_file: !override []

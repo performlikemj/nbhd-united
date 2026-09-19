@@ -75,3 +75,7 @@ compositions/
 
 # Local ML model artifacts (downloaded weights, training output)
 models/
+
+# Isolated Yuki local TEST install state (never credentials in git)
+.env.local-test
+/deploy/local-test/.state/

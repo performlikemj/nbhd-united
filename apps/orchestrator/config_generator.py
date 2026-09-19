@@ -3324,6 +3324,9 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     if _parse_version(oc_version) >= (2026, 9, 4):
         _migrate_config_to_openclaw_9_4(config)
 
+    from .local_test import configure_gateway
+
+    configure_gateway(config, tenant)
     return config
 
 
