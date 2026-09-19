@@ -71,6 +71,7 @@ class LocalStackTests(TestCase):
         provider = config["models"]["providers"]["ollama"]
         self.assertEqual(provider["baseUrl"], "http://127.0.0.1:11434/v1")
         self.assertEqual(provider["api"], "openai-completions")
+        self.assertIs(provider["injectNumCtxForOpenAICompat"], False)
         self.assertNotIn("num_ctx", json.dumps(config))
         self.assertIn("nbhd-sautai-tools", config["plugins"]["entries"])
         self.assertEqual(config["agents"]["defaults"]["model"]["fallbacks"], [])
@@ -162,3 +163,16 @@ class LocalStackTests(TestCase):
             self.assertFalse(called.wait(0.02))
             self.assertTrue(called.wait(2))
             execute.assert_called_once_with(TASK_MAP["generate_sautai_meal_plan"], "fixture-job")
+
+    def test_normal_mock_provision_path_creates_real_local_config_and_key(self):
+        from apps.crypto.keys import unwrap_dek_for
+        from apps.orchestrator.services import provision_tenant
+
+        provision_tenant(str(self.tenant.id), send_first_session_welcome=False)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        self.assertEqual(self.tenant.internal_api_key, settings.NBHD_INTERNAL_API_KEY)
+        self.assertEqual(len(unwrap_dek_for(self.tenant)), 32)
+        config = json.loads(share_path(self.tenant.id, "openclaw.json").read_text())
+        self.assertEqual(config["gateway"]["port"], 19443)
+        self.assertIn("nbhd-sautai-tools", config["plugins"]["entries"])

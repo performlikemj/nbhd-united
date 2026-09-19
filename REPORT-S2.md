@@ -41,16 +41,21 @@ Full setup, exact commands and hand-off contract:
 
 - Django `check`: passed; migrations applied; `makemigrations --check --dry-run`:
   no changes detected.
-- Repo-wide Ruff 0.15.21 lint and format checks: passed (1,650 Python files).
-- Final targeted regression run: **142 tests passed**, including native gateway
-  boot, delayed/on-commit dispatch, and public-schema lockdown checks.
+- Repo-wide Ruff 0.15.21 lint and format checks: passed (1,651 Python files).
+- Final targeted regression run: **143 tests passed**, including native gateway
+  boot, the real mocked provisioning path, delayed/on-commit dispatch, and
+  public-schema lockdown checks. The final runner delegates to the repository
+  `scripts/test-local.sh` using `test_nbhd_united_yuki_test_aaeb7c`; existing DBs
+  require explicit reuse authorization. Python child processes retain the
+  local network guard.
 - Generated config passes the **installed OpenClaw 2026.9.1** schema validator.
 - Native gateway boot smoke, using a disposable synthetic test DB fixture and
   isolated config under `.state`, passed `/health` inside the network/filesystem
   sandbox. No chat/inference was performed. The process was terminated and
   port 19443 verified free afterward. This is not the actual Yuki tenant proof.
 - HTTP smoke: `/health/` returned `status=ok`; `/local-test/signup/` served its
-  password form. The temporary Django process will be stopped before hand-back.
+  password form. The owned temporary Django process was stopped; both Django
+  18080 and gateway 19443 were verified free afterward.
 - DeBERTa copied from basecamp's existing model cache to the test home and loaded
   successfully offline on CPU. No model download/inference GPU job started.
 - Both plists pass `plutil -lint`. Seatbelt profile parses successfully.
@@ -103,7 +108,10 @@ is not run on macOS. Runtime plugin paths resolve to this repo, including sautai
 
 Ollama `/api/tags` confirmed `qwen3.8:27b-obliterated-q8` is already pulled.
 The local model uses the OpenAI-compatible `/v1` interface, without a `num_ctx`
-option or cloud fallback. No Ollama pull/restart was performed.
+option or cloud fallback. Installed runtime source inspection showed the compat
+provider would auto-inject `options.num_ctx`; the adapter explicitly sets
+`injectNumCtxForOpenAICompat=false` to retain the server default. No Ollama
+pull/restart was performed.
 
 OpenClaw 2026.9.1 requires pdfMaxMb, top-level memory.search, and removal of old
 schema keys already handled by the fleet's 9.4 migration. The local adapter
@@ -146,7 +154,8 @@ restart. No substitute secret, fake plan or fake success response was created.
    **zero accounts and zero tenants**. No account was manufactured to bypass MJ.
 2. Supply/export the harness persona v3 confirmed facts; this lane has not
    received the source path/content. Run the documented preparation command.
-3. The loanarmy process guard currently detects an active process. Do not start
+3. The loanarmy process guard detects an active process; an actual launcher check
+   confirmed it refuses startup. Do not start
    inference until the lane/orchestrator confirms a safe run window; this lane
    has not touched those processes.
 4. The orchestrator loads the gateway plist after tenant/config preparation.

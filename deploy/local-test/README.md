@@ -76,7 +76,8 @@ extend the trial or create another tenant. `provision_tenant` runs under
 The actual generator in this revision is `generate_openclaw_config`, not
 `build_openclaw_config`. Its local adapter selects only Ollama's OpenAI-compatible
 endpoint at `http://127.0.0.1:11434/v1`, with no cloud fallbacks and no `num_ctx`
-override. It retains generated runtime plugin configuration and resolves
+override (`injectNumCtxForOpenAICompat=false` also disables OpenClaw’s automatic
+injection). It retains generated runtime plugin configuration and resolves
 `OPENCLAW_*_PLUGIN_PATH` defaults into this repo's `runtime/openclaw/plugins`.
 The 2026.9.1 binary already requires several schema moves gated at 9.4 in the
 fleet generator; the local adapter handles these without changing fleet output.
@@ -88,6 +89,9 @@ and workspace files land in `~/openclaw-yuki-test` via the same
 The normal container shell entrypoint is Linux-specific; the host launcher uses
 its file/config/env protocol and directly runs the installed macOS gateway.
 There is no container proxy: the gateway itself listens on 19443.
+`openclaw-paths.mjs` redirects the installed runtime’s hardcoded `/tmp` lifecycle
+lock location into the worktree via a process-local Node loader hook. It refuses
+an unrecognized runtime source shape and does not modify the shared binary.
 
 ## Local sautai hand-off — no invented token or sim result
 
@@ -201,7 +205,10 @@ DOCKER_GATE_CACHE="$PWD/deploy/local-test/.state/docker-gate-cache" \
 TMPDIR="$PWD/deploy/local-test/.state/tmp" make docker-gate
 ```
 
-Tests use named `test_nbhd_yuki_local_stack` only on Compose 55441. The Docker
+Tests delegate to the repo `scripts/test-local.sh` with a worktree-hashed
+`test_nbhd_united_yuki_test_<hash>` name only on Compose 55441. Existing DBs
+are refused unless the caller explicitly sets `NBHD_TEST_DB_REUSE=1`; Python
+child processes retain the network guard via scoped `sitecustomize.py`. The Docker
 gate creates its own disposable containers. Its snapshot excludes `.state`
 (including sockets, binary/cache files, and the snapshot itself).
 See `REPORT-S2.md` for observed results and unresolved acceptance gates.

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Clean-room launcher; credentials never enter argv or launchd plists."""
 
+import hashlib
 import json
 import os
 import runpy
@@ -48,6 +49,8 @@ def environment():
         "PATH": "/Users/mjjones/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
         "HOME": str(TEST_HOME),
         "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": str(ROOT / "deploy/local-test") + os.pathsep + str(ROOT),
+        "NBHD_TEST_DB_REUSE": "1" if os.environ.get("NBHD_TEST_DB_REUSE") == "1" else "0",
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",
         "TMPDIR": str(STATE / "tmp"),
@@ -81,11 +84,12 @@ def main():
         env["LOCAL_TEST_CLEAN_PROCESS"] = "1"
         os.execve(PYTHON, [PYTHON, str(Path(__file__).resolve()), command, *args], env)
     sys.path.insert(0, str(ROOT))
-    sys.addaudithook(network_guard)
     if command == "manage":
         if args and args[0] == "test":
             os.environ["DJANGO_SETTINGS_MODULE"] = "config.settings.local_test_checks"
-            os.environ["DJANGO_TEST_DB_NAME"] = "test_nbhd_yuki_local_stack"
+            digest = hashlib.sha256(os.fsencode(ROOT)).hexdigest()[:6]
+            os.environ["DJANGO_TEST_DB_NAME"] = "test_nbhd_united_yuki_test_" + digest
+            os.execve("/bin/bash", ["bash", str(ROOT / "scripts/test-local.sh"), *args[1:]], dict(os.environ))
         sys.argv = ["manage.py", *args]
         runpy.run_path(str(ROOT / "manage.py"), run_name="__main__")
     elif command == "django":
@@ -97,7 +101,7 @@ def main():
         sys.argv = ["manage.py", "runserver", "127.0.0.1:18080", "--noreload"]
         runpy.run_path(str(ROOT / "manage.py"), run_name="__main__")
     elif command == "gateway":
-        processes = subprocess.run(["/bin/ps", "-axo", "command="], capture_output=True, text=True, check=True).stdout
+        processes = subprocess.run(["/bin/ps", "-axo", "comm="], capture_output=True, text=True, check=True).stdout
         if any("loanarmy" in line.lower() for line in processes.splitlines()):
             raise RuntimeError("Loanarmy process present; refuse to start GPU inference gateway")
         if not (TEST_HOME / "openclaw.json").exists():

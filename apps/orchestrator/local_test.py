@@ -54,6 +54,7 @@ def configure_gateway(config, tenant):
             "ollama": {
                 "baseUrl": "http://127.0.0.1:11434/v1",
                 "api": "openai-completions",
+                "injectNumCtxForOpenAICompat": False,
                 "apiKey": "local-ollama-no-auth",
                 "models": [
                     {
