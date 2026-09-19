@@ -26,6 +26,7 @@ from django.db import InterfaceError, OperationalError, models
 from django.utils import timezone
 
 from apps.common.eval_sink import suppresses_real_transport
+from apps.orchestrator.gateway_url import gateway_base_url
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -1265,7 +1266,7 @@ def _forward_buffered_telegram(tenant, msg, chat_timeout: float) -> _BufferedFor
 
     content = annotate_model_context(content, getattr(tenant, "pii_entity_map", None))
 
-    url = f"https://{tenant.container_fqdn}/v1/chat/completions"
+    url = f"{gateway_base_url(tenant)}/v1/chat/completions"
     gateway_token = get_gateway_token_for_tenant(tenant)
     user_tz = tenant.user.timezone or "UTC"
 
@@ -1560,7 +1561,7 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
                 )
 
             try:
-                url = f"https://{tenant.container_fqdn}/v1/chat/completions"
+                url = f"{gateway_base_url(tenant)}/v1/chat/completions"
                 from apps.cron.gateway_client import get_gateway_token_for_tenant
                 from apps.router.services import format_coalesced_user_content
 

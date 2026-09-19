@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 from django.conf import settings
 
+from apps.orchestrator.gateway_url import gateway_base_url
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -146,7 +147,7 @@ def _deliver_extraction_turn(tenant: Tenant, thread_id: str, turn_text: str) -> 
     from apps.router.pending_queue import _extract_ai_response
     from apps.router.proactive_context import record_proactive_outbound
 
-    url = f"https://{tenant.container_fqdn}/v1/chat/completions"
+    url = f"{gateway_base_url(tenant)}/v1/chat/completions"
     payload = {
         "model": "openclaw",
         "messages": [{"role": "user", "content": turn_text}],

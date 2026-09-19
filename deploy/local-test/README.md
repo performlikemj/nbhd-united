@@ -1,0 +1,207 @@
+# Basecamp Yuki TEST stack
+
+This is a local-only synthetic install. It never loads launchd jobs. Use this
+worktree, not the primary checkout. The normal production E2E harness remains
+unchanged; its host/account allowlist must not be weakened for this stack.
+
+## Install and start
+
+```sh
+cd /Users/mjjones/worktrees/united-yuki-test
+python3 deploy/local-test/bootstrap.py
+python3 deploy/local-test/compose.py
+python3 deploy/local-test/run.py manage migrate --noinput
+```
+
+Bootstrap creates a worktree venv that reads basecamp's existing repo Python
+packages via a `.pth` file (no mutation of that venv), installs CI's Ruff pin,
+and installs checksum-verified Compose 5.5.1 inside `.state/docker/cli-plugins`.
+It copies the already-cached DeBERTa model into the test home for offline CPU PII
+detection. It never downloads/pulls/restarts an Ollama model. `install.py` reads
+Ollama `/api/tags` and requires the already-pulled
+`qwen3.8:27b-obliterated-q8`. Re-running preserves install secrets.
+
+Compose uses the repo `docker-compose.yml` plus `compose.yaml`, project
+`nbhd-yuki-test`, its own volume/network, DB/user `nbhd_yuki_test`. It starts only
+Postgres and Redis. Ports: Postgres **55441**, Redis **56381**, Django **18080**,
+OpenClaw **19443**; all host listeners bind loopback. The host `postgres16`
+service and other containers are not used. `compose.py ps` inspects this project.
+
+The orchestrator, not Codex, runs these after reviewing the generated plists:
+
+```sh
+launchctl bootstrap gui/$(id -u) "$PWD/deploy/local-test/.state/com.mj.yuki-united.plist"
+# Load gateway only AFTER the account/provision steps below:
+launchctl bootstrap gui/$(id -u) "$PWD/deploy/local-test/.state/com.mj.yuki-united-gateway.plist"
+```
+
+There is no need to copy plists into `~/Library/LaunchAgents`. The launchers read
+the gitignored `.env.local-test`; plist XML contains no tokens. Gateway startup
+refuses if the process list contains a loanarmy process. It never uses `--force`,
+installs a personal daemon, or restarts Ollama. Keep GPU scheduling coordinated
+with the loanarmy lane for the whole inference run.
+
+## MJ creates the account
+
+1. After the orchestrator starts Django, visit
+   **http://127.0.0.1:18080/local-test/signup/**. This small local page POSTs to the
+   normal `/api/v1/auth/signup/` endpoint. MJ enters a dedicated email/password.
+   The page discards the returned JWTs and clears the form; no browser storage.
+2. MJ runs `python3 deploy/local-test/run.py password-help`, then runs the printed
+   command locally: `security add-generic-password -s org.nbhd.yuki-test -a nbhd -w`.
+   Type the password only at its interactive prompt. Codex does not create,
+   retrieve, print or store it. Django stores its normal password hash.
+3. Prepare the tenant using the email MJ chose:
+
+   ```sh
+   python3 deploy/local-test/run.py manage prepare_local_test_tenant \
+     --email '<MJ-created email>' --persona-file '<confirmed-facts JSON path>'
+   ```
+
+   No account is created by this command. The source facts file must be supplied
+   by the harness lane with `{"version":3,"confirmed_facts":["..."]}`. This is an
+   explicit import contract, not a claim that a missing persona was supplied.
+   If the canonical harness file uses another format, the lane exports only its
+   confirmed facts to this format. Omit `--persona-file` to provision while
+   waiting; output reports `persona_v3_seeded=false`. Repeat with the file when
+   available. No guessed biography is seeded.
+
+The single tenant UUID is generated at install in `NBHD_TENANT_ID`. It is
+synthetic, non-eval-sink, starter, $1 monthly cap, 100,000 token cap, zero purchased
+credit, no budget exemption or Stripe, and a 30-day trial. Re-running does not
+extend the trial or create another tenant. `provision_tenant` runs under
+`AZURE_MOCK=true`; the script then points it at `127.0.0.1:19443` and applies
+`update_tenant_config` through the normal share-write validator/sanitizer.
+
+The actual generator in this revision is `generate_openclaw_config`, not
+`build_openclaw_config`. Its local adapter selects only Ollama's OpenAI-compatible
+endpoint at `http://127.0.0.1:11434/v1`, with no cloud fallbacks and no `num_ctx`
+override. It retains generated runtime plugin configuration and resolves
+`OPENCLAW_*_PLUGIN_PATH` defaults into this repo's `runtime/openclaw/plugins`.
+The 2026.9.1 binary already requires several schema moves gated at 9.4 in the
+fleet generator; the local adapter handles these without changing fleet output.
+
+`USER.md` confirmed facts are persisted in the synthetic user's preferences and
+rendered inside its managed envelope, so refresh/apply preserves them. Config
+and workspace files land in `~/openclaw-yuki-test` via the same
+`upload_config_to_file_share` / `_put_share_file` path used for containers.
+The normal container shell entrypoint is Linux-specific; the host launcher uses
+its file/config/env protocol and directly runs the installed macOS gateway.
+There is no container proxy: the gateway itself listens on 19443.
+
+## Local sautai hand-off — no invented token or sim result
+
+The Django launcher opens the owner-only Unix socket
+`deploy/local-test/.state/sautai-handoff.sock` (directory 0700, socket 0600).
+The sautai lane's **sim/run.mjs** must send a single JSON line from its existing
+in-memory token and the actual synthetic account ID it created:
+
+```js
+// Adapter to add in the sautai lane, where these two real values are in scope.
+import net from 'node:net';
+const socket = net.createConnection('/Users/mjjones/worktrees/united-yuki-test/deploy/local-test/.state/sautai-handoff.sock');
+socket.on('connect', () => socket.end(JSON.stringify({
+  base_url: 'http://127.0.0.1:8000',
+  platform_secret: simPlatformSecret,
+  sautai_user_id: simSyntheticUserId,
+}) + '\n'));
+// Parse the reply in memory; log only {accepted: true/false}.
+```
+
+The illustrative variable names above are not an assertion about sim/run.mjs's
+current exports. That lane must wire its real variables and verify the ack.
+Alternatively, the lane pipes this JSON directly to
+`python3 deploy/local-test/run.py sautai-handoff`; never echo a token in a shell
+command or use a file. Do not generate a replacement secret in this lane.
+
+The listener requires the exact local sim URL, stores the token only in the
+running Django settings, and links the supplied sim user ID on the designated
+synthetic tenant. This is explicit local fixture setup, not a fabricated OAuth
+link. The token is neither put in the DB nor persisted to `.env.local-test`.
+Re-send after either process restarts. An accepted hand-off proves transfer,
+not successful plan generation.
+
+QStash stays blank. The existing fallback is `apps/cron/publish.py::publish_task`
+→ `apps/cron/views.py::execute_task_sync`. For this local setting only, a daemon
+Timer calls that same executor after transaction commit and honors delay_seconds;
+this preserves fast runtime acknowledgements and the sautai polling delay.
+Jobs/timers are not durable across Django restarts. No periodic fleet/QStash
+registration is run. Normal gateway cron capability remains available; call
+single-tenant maintenance explicitly when needed.
+
+## Real proof commands (after prerequisites)
+
+```sh
+# Read the tenant UUID from NBHD_TENANT_ID locally, without dumping the env file.
+python3 deploy/local-test/run.py manage check_gateway_health --tenant-id '<tenant UUID>' --gateway-only
+.venv/bin/python deploy/local-test/proof.py --email '<MJ-created email>'
+# Operator expressly confirms this unused synthetic Monday; no regeneration.
+python3 deploy/local-test/run.py manage prove_local_sautai --confirmed-week YYYY-MM-DD
+```
+
+Health checks tenant state, host+port resolution, gateway token, `/health`, and
+real `cron.list`. `--gateway-only` excludes the old Azure-share and proxy
+`daily-note` diagnostic; that full command is not a host-gateway round-trip
+proof. The separate sautai command proves the runtime plugin round trip.
+
+Chat proof prompts MJ for the password in memory, logs in normally, checks the
+exact tenant/synthetic/non-sink gate, creates a disposable non-main thread, sends
+one `[NBHD E2E SYNTHETIC]` fixture via normal chat API, and polls up to 900 seconds.
+It succeeds only for `status=ready`, `source=tenant`, no error and nonempty reply;
+it prints metadata only and deletes its disposable control-plane thread.
+Deletion does not erase gateway memory.
+
+Sautai proof calls the installed `nbhd_generate_meal_plan` plugin via the gateway,
+validates the preview against the operator-confirmed week, then submits its
+confirmation token. The real runtime view creates `SautaiMealPlanJob`; the normal
+task and `sautai_client` must call the real local sim. The command requires a new
+job to become ready; it prints flags/status only. No mocked reply is accepted.
+
+## Isolation and generated secrets
+
+`.env.local-test` is 0600 and gitignored. Generated per install:
+
+| Name | Purpose |
+| --- | --- |
+| `SECRET_KEY` | Django signing, including preview confirmations |
+| `JWT_SECRET` | Local account JWT signing |
+| `NBHD_INTERNAL_API_KEY` | Local gateway and designated tenant runtime auth |
+| `LOCAL_TEST_DB_PASSWORD` | Dedicated Compose PostgreSQL password; also in the two DB URLs |
+| `LOCAL_TEST_KEK_SEED` | Stable, per-tenant derived **mock** KEK across local process restarts |
+
+These are machine credentials, not MJ/Yuki passwords. Their canonical source is
+only the ignored env file; config uses env references. Normal application
+storage still includes the tenant internal-key column and wrapped random DEK
+row in the local DB. The mock KEK is not production cryptography; deletion,
+purge and recovery operations are refused in this persistent local adapter.
+Ollama's required client key is a public dummy string, not a credential.
+`SAUTAI_PLATFORM_SECRET` remains blank on disk and arrives only through hand-off.
+
+All example integration values are blanked before local allowlisted overrides.
+Cloud/provider credentials, email, Stripe, APNs, Azure, QStash, Sentry and admin
+gateway are blank/disabled. Email uses the dummy backend. Django starts with a
+clean environment, rejects other DB/home URLs, and denies external DNS/network
+connections. OpenClaw starts with isolated HOME/OPENCLAW_HOME/STATE_DIR/CONFIG_PATH,
+loopback binding, a Seatbelt network/write boundary, and no exec/browser/web
+or cloud model fallback tools. Personal OpenClaw state is explicitly unreadable.
+Do not weaken these guards to make a proof pass.
+
+## Gates
+
+```sh
+python3 deploy/local-test/run.py manage check
+python3 deploy/local-test/run.py manage makemigrations --check --dry-run
+python3 deploy/local-test/run.py manage test \
+  apps.orchestrator.test_gateway_url apps.orchestrator.test_local_test_stack \
+  apps.orchestrator.test_services apps.router.test_services \
+  apps.orchestrator.test_config_write_validation apps.integrations.test_sautai_client --noinput
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+DOCKER_GATE_CACHE="$PWD/deploy/local-test/.state/docker-gate-cache" \
+TMPDIR="$PWD/deploy/local-test/.state/tmp" make docker-gate
+```
+
+Tests use named `test_nbhd_yuki_local_stack` only on Compose 55441. The Docker
+gate creates its own disposable containers. Its snapshot excludes `.state`
+(including sockets, binary/cache files, and the snapshot itself).
+See `REPORT-S2.md` for observed results and unresolved acceptance gates.

@@ -20,6 +20,7 @@ from apps.cron.gateway_client import (
     invoke_gateway_tool,
     is_container_unavailable_response,
 )
+from apps.orchestrator.gateway_url import gateway_base_url
 from apps.tenants.models import Tenant
 
 from .azure_client import (
@@ -374,7 +375,11 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
         # validator dual-validation, then PR #525-something for fleet
         # migration of existing tenants.
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="generate_per_tenant_internal_key")
-        internal_api_key_plain = secrets_lib.token_urlsafe(48)
+        from .local_test import local_root
+
+        internal_api_key_plain = (
+            settings.NBHD_INTERNAL_API_KEY if local_root(tenant.id) is not None else secrets_lib.token_urlsafe(48)
+        )
         internal_api_key_kv_secret_name: str | None = None
         if secret_backend == "keyvault":
             internal_api_key_kv_secret_name = store_tenant_internal_key_in_key_vault(
@@ -2551,7 +2556,7 @@ def check_tenant_health(tenant_id: str) -> dict:
         result["config_drift_detail"] = f"current={current} pending={pending}"
 
     # Ping gateway health endpoint — this IS a health signal
-    health_url = f"https://{tenant.container_fqdn}/health"
+    health_url = f"{gateway_base_url(tenant)}/health"
     try:
         resp = httpx.get(health_url, timeout=10)
         # Azure's ingress serves a 404 "Container App - Unavailable" splash when a

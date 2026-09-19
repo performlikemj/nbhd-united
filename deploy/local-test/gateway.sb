@@ -1,0 +1,10 @@
+(version 1)
+(allow default)
+(deny network*)
+(allow network-inbound (local ip "localhost:*"))
+(allow network-outbound (remote ip "localhost:18080") (remote ip "localhost:11434") (remote ip "localhost:19443"))
+; Host execution and browser/web tools are also disabled in generated config.
+
+(deny file-read* (subpath "/Users/mjjones/.openclaw"))
+(deny file-write*)
+(allow file-write* (subpath "/Users/mjjones/openclaw-yuki-test") (subpath "/Users/mjjones/worktrees/united-yuki-test") (subpath "/Users/mjjones/codex-runs") (literal "/dev/null") (literal "/dev/tty"))

@@ -11,6 +11,7 @@ import requests
 from django.conf import settings
 
 from apps.orchestrator.azure_client import read_key_vault_secret
+from apps.orchestrator.gateway_url import gateway_base_url
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -211,7 +212,7 @@ def invoke_gateway_tool(
             args = {**args, "patch": patch}
 
     token = _get_gateway_token(tenant)
-    url = f"https://{tenant.container_fqdn}/tools/invoke"
+    url = f"{gateway_base_url(tenant)}/tools/invoke"
 
     # OpenClaw /tools/invoke expects {"tool": "<name>", "action": "<action>", "args": {}}
     # e.g. "cron.list" → tool="cron", action="list"

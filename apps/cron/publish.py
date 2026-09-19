@@ -157,6 +157,10 @@ def publish_task(
         from .views import TASK_MAP, execute_task_sync
 
         task_path = TASK_MAP[task_name]
+        if getattr(settings, "LOCAL_TEST_ROOT", ""):
+            from apps.orchestrator.local_test import dispatch_task
+
+            return dispatch_task(task_path, args, kwargs, delay_seconds)
         return execute_task_sync(task_path, *args, **kwargs)
 
     try:

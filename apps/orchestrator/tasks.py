@@ -772,7 +772,7 @@ def broadcast_single_tenant_task(tenant_id: str, message: str) -> None:
         logger.info("Broadcast skipped for tenant %s (no entitlement)", tenant_id[:8])
         return
 
-    url = f"https://{tenant.container_fqdn}/v1/chat/completions"
+    url = f"{gateway_base_url(tenant)}/v1/chat/completions"
     from apps.cron.gateway_client import get_gateway_token_for_tenant
 
     gateway_token = get_gateway_token_for_tenant(tenant)
@@ -1779,3 +1779,6 @@ def converge_unencrypted_chat_tenants_task() -> dict:
     tail = buf.getvalue()[-4000:]
     logger.info("converge_unencrypted_chat_tenants: %s", tail)
     return {"output": tail}
+
+
+from apps.orchestrator.gateway_url import gateway_base_url

@@ -23,6 +23,7 @@ from apps.billing.services import (
     resolve_model_for_attribution,
 )
 from apps.common.eval_sink import blocks_real_transport_for_identifier, suppresses_real_transport
+from apps.orchestrator.gateway_url import gateway_base_url
 from apps.tenants.models import Tenant
 
 from .error_messages import error_msg
@@ -1482,7 +1483,7 @@ class TelegramPoller:
         fqdn = tenant.container_fqdn
         if not fqdn:
             return False
-        url = f"https://{fqdn}/health"
+        url = f"{gateway_base_url(tenant)}/health"
         from apps.cron.gateway_client import get_gateway_token_for_tenant
 
         internal_key = get_gateway_token_for_tenant(tenant)

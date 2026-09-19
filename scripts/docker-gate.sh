@@ -50,6 +50,7 @@ create_snapshot() {
       --exclude='*/.env' \
       --exclude='*/.env.*' \
       --exclude='./.venv' \
+      --exclude='./deploy/local-test/.state' \
       --exclude='./venv' \
       --exclude='./env' \
       --exclude='./frontend/node_modules' \

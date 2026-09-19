@@ -15,6 +15,7 @@ import httpx
 from django.conf import settings
 
 from apps.common.eval_sink import blocks_real_transport_for_identifier
+from apps.orchestrator.gateway_url import gateway_base_url
 from apps.tenants.models import Tenant, User
 
 logger = logging.getLogger(__name__)
@@ -317,6 +318,7 @@ async def forward_to_openclaw(
     max_retries: int = 0,
     retry_delay: float = 5.0,
     failure_sink: dict | None = None,
+    tenant: Tenant | None = None,
 ) -> dict | None:
     """Forward a Telegram update to an OpenClaw instance's gateway.
 
@@ -325,7 +327,7 @@ async def forward_to_openclaw(
     the scale-up even if it times out. The user is told to retry in ~30s,
     by which time the container is warm.
     """
-    url = f"https://{container_fqdn}/telegram-webhook"
+    url = f"{gateway_base_url(tenant, fqdn=container_fqdn)}/telegram-webhook"
 
     attempt = 0
     while True:

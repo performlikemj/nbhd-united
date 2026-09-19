@@ -50,6 +50,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from apps.evals.behavior.targets import BehaviorConfigError
+from apps.orchestrator.gateway_url import gateway_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +339,7 @@ class HttpxBehaviorTransport:
 
         gateway_token = get_gateway_token_for_tenant(tenant)
         user_timezone = getattr(getattr(tenant, "user", None), "timezone", None) or "UTC"
-        url = f"https://{tenant.container_fqdn}/v1/chat/completions"
+        url = f"{gateway_base_url(tenant)}/v1/chat/completions"
         payload = {
             "model": "openclaw",
             "messages": [{"role": "user", "content": text}],

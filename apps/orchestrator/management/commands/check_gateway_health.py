@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import socket
+from urllib.parse import urlsplit
 
 from django.core.management.base import BaseCommand, CommandError
 
+from apps.orchestrator.gateway_url import gateway_base_url
 from apps.tenants.models import Tenant
 
 
@@ -16,6 +18,7 @@ class Command(BaseCommand):
     )
 
     def add_arguments(self, parser):
+        parser.add_argument("--gateway-only", action="store_true", help="Tenant, DNS, token, health and tools only")
         parser.add_argument(
             "--tenant-id",
             type=str,
@@ -34,6 +37,8 @@ class Command(BaseCommand):
             self._check_cron_jobs_seeded,
             self._check_runtime_endpoint,
         ]
+        if options["gateway_only"]:
+            checks = checks[:5]
         for check in checks:
             passed = check(tenant)
             if not passed:
@@ -80,8 +85,9 @@ class Command(BaseCommand):
     def _check_dns(self, tenant: Tenant) -> bool:
         self.stdout.write("\n2. Container FQDN resolves (DNS)")
         fqdn = tenant.container_fqdn
+        endpoint = urlsplit(gateway_base_url(tenant))
         try:
-            addrs = socket.getaddrinfo(fqdn, 443)
+            addrs = socket.getaddrinfo(endpoint.hostname, endpoint.port or 443)
             ip = addrs[0][4][0] if addrs else "(unknown)"
             self.stdout.write(f"   {fqdn} → {ip}")
             self.stdout.write(self.style.SUCCESS("   PASS"))
@@ -96,7 +102,14 @@ class Command(BaseCommand):
 
         secret_name = f"tenant-{tenant.id}-internal-key"
         self.stdout.write(f"   secret: {secret_name}")
-        value = read_key_vault_secret(secret_name)
+        from apps.cron.gateway_client import get_gateway_token_for_tenant
+        from apps.orchestrator.local_test import local_root
+
+        value = (
+            get_gateway_token_for_tenant(tenant)
+            if local_root(tenant.id) is not None
+            else read_key_vault_secret(secret_name)
+        )
         if value:
             self.stdout.write(f"   length: {len(value)} chars")
             self.stdout.write(self.style.SUCCESS("   PASS"))
@@ -109,7 +122,7 @@ class Command(BaseCommand):
         self.stdout.write("\n4. Gateway reachable (health check)")
         import requests
 
-        url = f"https://{tenant.container_fqdn}/health"
+        url = f"{gateway_base_url(tenant)}/health"
         self.stdout.write(f"   GET {url}")
         try:
             resp = requests.get(url, timeout=5)
@@ -207,13 +220,15 @@ class Command(BaseCommand):
 
         # Use the container FQDN to hit the runtime endpoint on the Gateway,
         # which proxies back to Django. This tests the full round-trip.
-        url = f"https://{tenant.container_fqdn}/api/v1/integrations/runtime/{tenant.id}/daily-note/append/"
+        url = f"{gateway_base_url(tenant)}/api/v1/integrations/runtime/{tenant.id}/daily-note/append/"
         self.stdout.write(f"   POST {url}")
         try:
             resp = requests.post(
                 url,
                 json={
-                    "content": "[health-check] Gateway→Django round-trip OK",
+                    "content": "[NBHD E2E SYNTHETIC] Gateway health check"
+                    if tenant.is_synthetic
+                    else "[health-check] Gateway→Django round-trip OK",
                     "date": "1970-01-01",
                     "section_slug": "health-check",
                 },

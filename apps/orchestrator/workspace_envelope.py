@@ -182,6 +182,13 @@ def render_managed_region(tenant: Tenant) -> str:
         parts.append(body)
         parts.append("")
 
+    if getattr(settings, "LOCAL_TEST_ROOT", ""):
+        from .local_test import local_root
+
+        local_root(tenant.id)
+        facts = (tenant.user.preferences or {}).get("local_test_persona_v3", [])
+        if facts:
+            parts.extend(["## Harness persona v3 — confirmed facts", *[f"- {fact}" for fact in facts], ""])
     parts.append(END_MARKER)
     parts.append("")  # trailing newline so concatenation is clean
 
