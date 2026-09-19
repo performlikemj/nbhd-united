@@ -28,8 +28,9 @@ is still blocked on external prerequisites. No real chat or sim result is claime
 - Post-signup `prepare_local_test_tenant` uses `provision_tenant` under Azure mock,
   with the fixed install tenant UUID, synthetic/non-sink flags, starter tier,
   $1/100k-token caps, no exemption/credits/Stripe and a 30-day trial.
-- Persona import accepts harness v3 confirmed facts and renders them from user
-  preferences into the managed USER.md region. No facts were invented.
+- Persona import accepts the actual harness v3 manifest, retaining fact IDs and
+  citations in the managed USER.md region. All 26 facts and their source digest
+  were verified against the canonical harness persona; no facts were invented.
 - `prove_local_sautai` drives the installed gateway plugin → runtime view → real
   job/task → `sautai_client` → local sim, with a fresh operator-confirmed fixture
   week and strict ready/result/identity checks. It has not yet been run live.
@@ -61,13 +62,20 @@ Full setup, exact commands and hand-off contract:
 - Both plists pass `plutil -lint`. Seatbelt profile parses successfully.
 - Network guard rejects remote hosts, port 10443 and host Postgres 5432. No
   personal gateway health request was made; these were guard-function checks.
-- Full `make docker-gate`: running at report draft time (pinned Linux dependency
-  install). `.state` is now excluded from gate snapshots: the initial attempt
-  encountered the live Unix socket and nested snapshot path; it was stopped and
-  restarted after fixing the snapshot exclusion.
+- Final `make docker-gate` against implementation commit `90bbe080`:
+  **both Linux legs passed**, **9,038 backend tests in 531.544s**, plus frontend
+  lint/build. Earlier snapshots also passed (9,034 and 9,036 backend tests).
+  The final focused suite passed **7 adapter tests** in 6.271s, including native
+  gateway boot, canonical persona import, and the hand-off disconnect regression.
+  The actual 26-fact manifest imports with citations; the documented Node
+  hand-off adapter passes syntax validation.
+- `.state` is excluded from Docker snapshots: the initial attempt encountered
+  the live Unix socket and nested snapshot path; it was stopped and restarted
+  after fixing the exclusion.
+
 
 Machine-local logs: `deploy/local-test/.state/{migrate,ruff-check,ruff-format,
-local-adapter-tests,gateway-boot-tests,targeted-tests,pii-smoke,docker-gate}.log`.
+local-adapter-tests,gateway-boot-tests,targeted-tests,pii-smoke,docker-gate,docker-gate-final,final-adapter-tests}.log`.
 They are ignored, not committed. No password/reply/token values in this report.
 
 ## Gateway URL call-site inventory
@@ -143,17 +151,26 @@ Ollama uses a public no-auth dummy client string.
 `SAUTAI_M2M_BASE_URL` is exactly `http://127.0.0.1:8000`.
 `SAUTAI_PLATFORM_SECRET` remains blank on disk. The actual sim lane must send its
 in-memory secret plus actual synthetic sautai user ID over the private socket;
-Django holds the secret only in RAM. The README gives a sim/run.mjs adapter
-contract, not a claim that the other lane has implemented it. Re-hand-off after
-restart. No substitute secret, fake plan or fake success response was created.
+Django holds the secret only in RAM. The README gives an adapter tied to the
+actual `sim/run.mjs`
+`handshakeSecret` and `yuki-week.mjs` `linked.sautai_user_id` variables. The sim
+tears down its backend in `finally`, so proof must be awaited inside the journey,
+with the actual NBHD tenant UUID used during link resolution. This does not
+claim that the other lane has integrated or invoked the adapter. Re-hand-off
+after restart. The listener now survives clients/probes disconnecting early.
+No substitute secret, fake plan or fake success response was created.
 
 ## Remaining acceptance prerequisites
 
 1. MJ must create the account at **http://127.0.0.1:18080/local-test/signup/** after
    the orchestrator loads the Django plist. At last check the local DB contained
    **zero accounts and zero tenants**. No account was manufactured to bypass MJ.
-2. Supply/export the harness persona v3 confirmed facts; this lane has not
-   received the source path/content. Run the documented preparation command.
+2. After signup, run the documented tenant preparation command with the verified
+   `/Users/mjjones/worktrees/sautai-yuki-lane/sim/persona/yuki.json`. Its 26 facts
+   match `/Users/mjjones/Projects/harness/core/personas/yuki.md` version 3 and
+   source SHA-256 `811c280b12d42f349632942a6ad72487e585b41121276e3c4aed2b41c5d18fe6`.
+   A generated copy is ready at `deploy/local-test/.state/yuki-v3.json`;
+   actual DB/USER.md seeding awaits MJ’s account.
 3. The loanarmy process guard detects an active process; an actual launcher check
    confirmed it refuses startup. Do not start
    inference until the lane/orchestrator confirms a safe run window; this lane
@@ -172,5 +189,18 @@ MJ types the password. Do not pass it as an argument, log it, or add it to env.
 
 No Azure calls, production endpoints, Stripe/APNs/email, personal gateway,
 Ollama restart, host Postgres databases or loanarmy jobs were used. No plists
-loaded. No push to main or merge. Git/draft-PR status and final gate results will
-be appended after the local gates finish.
+loaded. No push to main or merge. Final state check: Compose services up; Django
+18080 and gateway 19443 free; zero accounts/tenants; loanarmy guard still active.
+
+## Review handoff
+
+Implementation commits: `d866edfc`, `c6890085`, `90bbe080`; documentation
+checkpoint: `c18e582f`. All changes use explicit-path commits on
+`feat/yuki-local-test-stack`. The feature branch is prepared for a **draft PR**
+under the repository workflow; keep it draft until the live acceptance items
+above are resolved. The final response supplies the resulting PR link.
+
+This report is final for the work performed in this lane. S2 live acceptance
+remains incomplete; neither a real Yuki chat reply nor a real sautai job result
+has been observed. The prepared scripts and verified persona remove local
+implementation setup work from the remaining operator handoff.

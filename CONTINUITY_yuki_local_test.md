@@ -1,41 +1,58 @@
-# S2 local Yuki test stack
+# S2 local Yuki test stack — current handoff
 
-Approved MJ 2026-09-19. Worktree feat/yuki-local-test-stack from 9dee7814.
-No prior S2 files/commits survived at initial status check.
+Approved MJ 2026-09-19. Worktree `/Users/mjjones/worktrees/united-yuki-test`,
+branch `feat/yuki-local-test-stack`, based on `9dee7814` from origin/main.
+Implementation commits: `d866edfc`, `c6890085`, `90bbe080`; documentation checkpoint
+`c18e582f`. Always inspect git status/log first; never reset or start over.
 
-Fences: worktree, ~/openclaw-yuki-test, ~/codex-runs logs only. Never personal
-OpenClaw state/10443, production, Azure, email, Stripe, APNs, postgres16,
-loanarmy GPU jobs, or Ollama restart. Plists written here, never loaded by agent.
+## Fences
 
-Plan: shared guarded gateway URL helper; isolated environment/Compose installer;
-local mock share + stable mock crypto; same config apply path and runtime plugins;
-MJ signup then synthetic tenant provisioning; metadata-only proof; gates/report.
+Writes: this worktree, `~/openclaw-yuki-test`, `~/codex-runs` logs only.
+Never personal OpenClaw home/gateway 10443, production/Azure, email/Stripe/APNs,
+host postgres16 databases, loanarmy jobs, or Ollama restart. Both generated
+launchd plists remain unloaded by Codex. Only the orchestrator loads them.
+MJ alone creates the real account/password through local signup; never create
+an account to bypass that requirement or read the password from Keychain.
 
-Pending external inputs: harness persona v3 confirmed facts, sautai lane in-memory
-secret hand-off, MJ signup, orchestrator plist loading. Do not invent these.
-Read CLAUDE.md, README, docs/agents/*, BYOK guide, required source paths.
-Actual generator is generate_openclaw_config (no build_openclaw_config symbol).
-OpenClaw help checked with HOME/STATE_DIR/CONFIG_PATH isolated in test home.
-Ollama tags confirms qwen3.8:27b-obliterated-q8 available. Docker daemon reachable;
-Compose CLI absent initially. Use project nbhd-yuki-test and dedicated loopback
-ports 55441 (Postgres), 56381 (Redis), 18080 (Django), 19443 (gateway).
+## Delivered and running state
 
-Implementation now in deploy/local-test and guarded apps/orchestrator helpers.
-Compose running dedicated nbhd-yuki-test project; migration complete; native OC
-schema and sandboxed boot tests pass, no inference. 135 targeted tests passed;
-expanded tests and Docker gate pending. Temporary Django HTTP smoke process was stopped and both service ports verified
-free; no launchd jobs loaded. Do not act on stale PIDs from earlier logs. DB has no accounts
-or tenants (MJ signup not received). Persona and sim handoff still missing.
-Loanarmy process detected; do not run inference. Native OC hardcodes lifecycle
-locks under /tmp; process-local Node loader shim now redirects into .state/tmp.
-Docker gate initially stopped due nested .state snapshot; exclusion added.
-REPORT-S2.md and deploy/local-test/README.md carry current contract/status.
+- `deploy/local-test/README.md` contains exact install, signup, provisioning,
+  orchestrator startup, real sim handoff and proof commands.
+- Own Compose Postgres/Redis are up at 55441/56381, DB/user `nbhd_yuki_test`.
+  Migrations applied. Last count: zero accounts, zero tenants.
+- Django 18080 and gateway 19443 are free; owned smoke processes were stopped.
+  Never kill a stale PID from old logs. Loanarmy process still detected; the
+  actual gateway startup guard was verified to refuse startup.
+- Generated secrets exist only in ignored env/application persistence as detailed
+  in REPORT-S2.md. Never print values. SAUTAI_PLATFORM_SECRET is blank on disk.
+- OpenClaw 2026.9.1 and existing Ollama model qwen3.8:27b-obliterated-q8 verified.
+  No inference/pull/restart. Native config and sandboxed gateway boot pass.
+- Canonical persona: `/Users/mjjones/Projects/harness/core/personas/yuki.md` v3.
+  All 26 facts match sibling `sautai-yuki-lane/sim/persona/yuki.json`, digest
+  `811c280b12d42f349632942a6ad72487e585b41121276e3c4aed2b41c5d18fe6`.
+  Generated manifest ready at `.state/yuki-v3.json` under deploy/local-test;
+  actual importer reads all 26 with citations. Actual tenant seeding awaits MJ.
+- Real sim variables are `sim/run.mjs` handshakeSecret and journey
+  `yuki-week.mjs` linked.sautai_user_id. README adapter must be integrated by that
+  lane and proof awaited before its finally teardown. No handoff received.
 
-Commits d866edfc + c6890085 preserve implementation. Final named-runner targeted
-suite: 143 passed. Runtime num_ctx auto-injection explicitly disabled after
-installed-source inspection. `.state/docker-gate.log` holds the first full Linux
-gate (snapshot started before c6890085). It must be rerun against current tree
-before pushing; caches in .state/docker-gate-cache avoid download repetition.
-No push/draft PR yet: pre-push Docker gate still pending. All external acceptance
-prerequisites remain pending. REPORT-S2 must get final gate/git status before
-handback. Actual loanarmy startup refusal verified without starting gateway.
+## Validation and finishing work
+
+143 targeted tests passed before last fixes. Final seven adapter tests passed,
+including native gateway boot and disconnect regression. Ruff lint/format,
+migration drift, HTTP signup/health, plists and offline CPU PII checks passed.
+First Docker gate passed 9034 tests and frontend; second passed 9036 in 570.757s
+and frontend. FINAL gate against `90bbe080` passed BOTH legs: **9038 tests in
+531.544s** and frontend lint/build. Log: deploy/local-test/.state/docker-gate-final.log.
+No test/gate process remains. Code is verified; no further code changes needed.
+
+Final REPORT-S2 and this continuity file are ready for explicit-path commit,
+then feature push + draft PR per workflow.md. Never push main or merge. The
+ignored .state/pr-body.md is updated for the final gate/persona state. Inspect
+git/gh state before repeating publication if interrupted here.
+
+Live acceptance remains pending: orchestrator loads Django; MJ signs up at
+http://127.0.0.1:18080/local-test/signup/; prepare tenant with the manifest;
+loanarmy-safe inference window; orchestrator loads gateway; genuine sim token
+handoff and both real proofs. Never claim unit or disposable gateway boot tests
+prove actual Yuki chat/sautai success. REPORT-S2.md explicitly records the gap.
