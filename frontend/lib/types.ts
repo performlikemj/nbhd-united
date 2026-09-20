@@ -628,12 +628,21 @@ export interface GraphData {
 }
 
 // Horizons
+export interface HorizonsGoalTask {
+  id: string;
+  title: string;
+  status: string;
+  due_date: string | null;
+}
+
 export interface HorizonsGoal {
   id: string;
   title: string;
   slug: string;
   preview: string;
   markdown?: string;
+  status?: string;
+  tasks?: HorizonsGoalTask[];
   created_at: string;
   updated_at: string;
 }

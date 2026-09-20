@@ -77,6 +77,9 @@ import {
   updatePurpose,
   completeTask,
   reopenTask,
+  createGoalTask,
+  updateGoalNotes,
+  achieveGoal,
   fetchHorizons,
   fetchJournalStatus,
   fetchUsageHistory,
@@ -326,6 +329,7 @@ export function useCompleteTaskMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (taskId: string) => completeTask(taskId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["horizons"] }),
     // CurrentStatusCard shows an inline "couldn't save — retry" on failure, so
     // opt out of the global mutation error toast (avoid a double signal).
     meta: { skipErrorToast: true },
@@ -345,9 +349,38 @@ export function useReopenTaskMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (taskId: string) => reopenTask(taskId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["horizons"] }),
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["journal-status"] });
     },
+  });
+}
+
+export function useCreateGoalTaskMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createGoalTask,
+    meta: { skipErrorToast: true },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["horizons"] }),
+  });
+}
+
+export function useUpdateGoalNotesMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, description }: { id: string; description: string }) =>
+      updateGoalNotes(id, description),
+    meta: { skipErrorToast: true },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["horizons"] }),
+  });
+}
+
+export function useAchieveGoalMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: achieveGoal,
+    meta: { skipErrorToast: true },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["horizons"] }),
   });
 }
 

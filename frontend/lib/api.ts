@@ -526,7 +526,11 @@ export function fetchUsageSummary(): Promise<UsageSummary> {
 }
 
 export function fetchHorizons(): Promise<import("@/lib/types").HorizonsData> {
-  return apiFetch<import("@/lib/types").HorizonsData>("/api/v1/dashboard/horizons/");
+  // Mutations invalidate React Query and the server tag; bypass the browser's
+  // max-age cache too so a refetch immediately shows the saved checklist.
+  return apiFetch<import("@/lib/types").HorizonsData>("/api/v1/dashboard/horizons/", {
+    cache: "no-store",
+  });
 }
 
 // First page of the existing cross-channel chat feed. Keep the response
@@ -560,6 +564,24 @@ export function completeTask(taskId: string): Promise<unknown> {
 
 export function reopenTask(taskId: string): Promise<unknown> {
   return apiFetch<unknown>(`/api/v1/journal/tasks/${taskId}/reopen/`, { method: "POST" });
+}
+
+export function createGoalTask(data: { title: string; parent_goal_id: string }): Promise<unknown> {
+  return apiFetch<unknown>("/api/v1/journal/tasks/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateGoalNotes(id: string, description: string): Promise<unknown> {
+  return apiFetch<unknown>(`/api/v1/journal/goals/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify({ description }),
+  });
+}
+
+export function achieveGoal(id: string): Promise<unknown> {
+  return apiFetch<unknown>(`/api/v1/journal/goals/${id}/achieve/`, { method: "POST" });
 }
 
 export function approveExtraction(id: string): Promise<{ id: string; status: string }> {
