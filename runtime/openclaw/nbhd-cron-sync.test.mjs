@@ -17,7 +17,7 @@ const CRONS_FILE = path.join(dir, "nbhd-crons.json");
 process.env.NBHD_INTERNAL_API_KEY = KEY;
 process.env.NBHD_CRONS_FILE = CRONS_FILE;
 
-const { isSafeJob, buildAddArgs, sameCron, reconcileOnce, msToDuration, readSignedJobs } = await import("./nbhd-cron-sync.mjs");
+const { isSafeJob, buildAddArgs, sameCron, reconcileOnce, msToDuration, atFireMs, readSignedJobs } = await import("./nbhd-cron-sync.mjs");
 
 function signDoc(jobs, { badSig = false, tamper = false } = {}) {
   const signed = JSON.stringify(jobs);
@@ -47,6 +47,19 @@ test("msToDuration", () => {
   assert.equal(msToDuration(86400000), "1d");
   assert.equal(msToDuration(604800000), "7d");
   assert.equal(msToDuration(500), null);
+});
+
+test("atFireMs: numeric and ISO times; invalid or absent values", () => {
+  const iso = "2026-09-20T12:00:00Z";
+  const ms = Date.parse(iso);
+  assert.equal(atFireMs({ atMs: ms }), ms);
+  assert.equal(atFireMs({ at: ms }), ms);
+  assert.equal(atFireMs({ at: iso }), ms);
+  assert.equal(atFireMs({ atMs: ms, at: ms + 1000 }), ms);
+  assert.equal(atFireMs({ atMs: 0 }), 0);
+  for (const schedule of [undefined, null, "invalid", {}, { at: "invalid" }, { at: null }, { atMs: NaN }]) {
+    assert.equal(atFireMs(schedule), null);
+  }
 });
 
 test("buildAddArgs: every + agentTurn → --no-deliver, never --command/--script", () => {
@@ -234,6 +247,47 @@ test("reconcileOnce: unchanged skips add; fallback-only change applies; failed a
   calls.length = 0;
   assert.equal((await reconcileOnce({ run })).removed, 0);
   assert.deepEqual(calls.map(args => args[1]), ["list", "add"]);
+});
+
+test("reconcileOnce: past or undetermined one-shots absent from current are skipped", async t => {
+  const now = Date.parse("2026-09-20T12:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  for (const time of [
+    { at: new Date(now - 1000).toISOString() },
+    { at: now - 1000 }, { atMs: now - 1000 },
+    { at: now }, { at: "invalid" }, {},
+  ]) {
+    const job = typedJob();
+    job.schedule = { kind: "at", ...time };
+    await writeFile(CRONS_FILE, signDoc([job]));
+    const calls = [];
+    const run = async args => {
+      calls.push(args);
+      return JSON.stringify({ jobs: [] });
+    };
+    // A stale signed file must remain harmless across repeated polls.
+    for (let poll = 0; poll < 2; poll++) {
+      assert.deepEqual(await reconcileOnce({ run }), { applied: 0, removed: 0, skipped: 1, ok: true });
+    }
+    assert.deepEqual(calls, [["cron", "list", "--json"], ["cron", "list", "--json"]]);
+  }
+});
+
+test("reconcileOnce: future one-shot absent from current is added", async t => {
+  const now = Date.parse("2026-09-20T12:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const at = new Date(now + 60000).toISOString();
+  const job = typedJob();
+  job.schedule = { kind: "at", at };
+  await writeFile(CRONS_FILE, signDoc([job]));
+  const calls = [];
+  const result = await reconcileOnce({ run: async args => {
+    calls.push(args);
+    return JSON.stringify({ jobs: [] });
+  } });
+  assert.deepEqual(result, { applied: 1, removed: 0, skipped: 0, ok: true });
+  assert.deepEqual(calls.map(args => args[1]), ["list", "add"]);
+  assert.equal(calls[1][calls[1].indexOf("--at") + 1], at);
 });
 
 test("reconcileOnce: signature and kind controls hold; removals stay in nbhd namespace", async () => {

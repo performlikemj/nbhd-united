@@ -95,6 +95,17 @@ export function msToDuration(ms) {
   return null;
 }
 
+export function atFireMs(schedule) {
+  if (!schedule || typeof schedule !== "object") return null;
+  if (Number.isFinite(schedule.atMs)) return Number(schedule.atMs);
+  if (typeof schedule.at === "number") return schedule.at;
+  if (typeof schedule.at === "string") {
+    const t = Date.parse(schedule.at);
+    return Number.isFinite(t) ? t : null;
+  }
+  return null;
+}
+
 // Build a SAFE `openclaw cron add` argv from extracted job fields. Returns null
 // for anything unmappable. Only ever emits --message / --system-event.
 export function buildAddArgs(job) {
@@ -230,6 +241,11 @@ export async function reconcileOnce({ run = oc } = {}) {
   for (const job of jobs) {
     if (job && job.enabled === false) continue;
     if (!isSafeJob(job)) { warn("REFUSED unsafe job:", job && job.name); skipped++; continue; }
+    const sched = job.schedule || {};
+    if (sched.kind === "at") {
+      const fire = atFireMs(sched);
+      if (fire === null || fire <= Date.now()) { skipped++; continue; }
+    }
     const args = buildAddArgs(job);
     if (!args) { warn("skip unmappable job:", job && job.name); skipped++; continue; }
     desiredKeys.add(String(job.declarationKey));
