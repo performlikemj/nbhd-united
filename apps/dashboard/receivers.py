@@ -29,9 +29,8 @@ Models covered:
   is not bumped and a stale-cache refetch can transiently show already-
   dismissed/approved extractions until the TTL expires.
 
-``Task`` is intentionally excluded — HorizonsView doesn't surface Task
-state, and ``compute_signals`` doesn't read Task. Add a receiver here
-if that changes.
+``Task`` is now surfaced in HorizonsView's goal checklists. Task saves and
+deletes bump the dashboard tag so steps and completion state refresh immediately.
 """
 
 from __future__ import annotations
@@ -43,7 +42,7 @@ from django.dispatch import receiver
 
 from apps.common.cache import bump_tag
 from apps.insights.models import AssistantInsight, UserVoicePref
-from apps.journal.models import Document, Goal, PendingExtraction
+from apps.journal.models import Document, Goal, PendingExtraction, Task
 
 logger = logging.getLogger("nbhd.cache")
 
@@ -82,6 +81,12 @@ def _bump_on_user_voice_pref(sender, instance, **kwargs):
 @receiver(post_save, sender=Goal)
 @receiver(post_delete, sender=Goal)
 def _bump_on_goal(sender, instance, **kwargs):
+    _bump_for(instance)
+
+
+@receiver(post_save, sender=Task)
+@receiver(post_delete, sender=Task)
+def _bump_on_task(sender, instance, **kwargs):
     _bump_for(instance)
 
 

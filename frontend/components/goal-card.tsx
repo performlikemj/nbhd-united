@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { GoalWorkCard } from "@/components/horizons/goal-work-card";
 import { stripMarkdown } from "@/lib/format";
 import { HorizonsGoal } from "@/lib/types";
 
@@ -81,7 +82,13 @@ export function GoalCard({ goal }: { goal: HorizonsGoal }) {
     "group block glass-card-horizons border-l-2 border-l-accent p-5 md:p-6";
 
   if (isTypedGoal) {
-    return <div className={cardClasses}>{cardContent}</div>;
+    return (
+      <GoalWorkCard
+        goal={goal}
+        displayTitle={displayTitle}
+        updatedLabel={formatDate(goal.updated_at)}
+      />
+    );
   }
 
   return (

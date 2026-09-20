@@ -248,13 +248,14 @@ class HorizonsView(APIView):
         # the same dict shape the frontend expects (description → markdown,
         # synthesized slug from id since typed Goals don't have a slug column).
         # Local import — see feedback_local_reimport_pattern memory.
-        from apps.journal.models import Goal
+        from apps.journal.models import Goal, Task
 
         typed_goals_qs = Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE).order_by("-updated_at")
+        # Completed migrated goals must not reappear as their legacy documents.
         migrated_doc_ids = list(
-            typed_goals_qs.exclude(migrated_from_document_id__isnull=True).values_list(
-                "migrated_from_document_id", flat=True
-            )
+            Goal.objects.filter(tenant=tenant)
+            .exclude(migrated_from_document_id__isnull=True)
+            .values_list("migrated_from_document_id", flat=True)
         )
 
         typed_goals = [
@@ -263,6 +264,7 @@ class HorizonsView(APIView):
                 "title": g.title,
                 "slug": f"typed:{g.id}",
                 "markdown": g.description or "",
+                "status": g.status,
                 "pii_receipts": g.pii_receipts or {},
                 "created_at": g.created_at,
                 "updated_at": g.updated_at,
@@ -299,9 +301,24 @@ class HorizonsView(APIView):
         from apps.pii.authoring import receipt_placeholders, resolve_receipt_values
         from apps.pii.redactor import rehydrate_for_tenant
 
+        # One tenant-scoped query for the whole checklist, preserving step order.
+        tasks_by_goal: dict = {}
+        typed_ids = [goal["id"] for goal in typed_goals]
+        for task in Task.objects.filter(tenant=tenant, parent_goal_id__in=typed_ids).order_by("created_at"):
+            tasks_by_goal.setdefault(task.parent_goal_id, []).append(
+                {
+                    "id": str(task.id),
+                    "title": rehydrate_for_tenant(tenant, task.title or ""),
+                    "status": task.status,
+                    "due_date": task.due_date.isoformat() if task.due_date else None,
+                }
+            )
+
         for goal in goals:
             goal["title"] = rehydrate_for_tenant(tenant, goal["title"] or "")
             goal["markdown"] = rehydrate_for_tenant(tenant, goal["markdown"] or "")
+            goal["tasks"] = tasks_by_goal.get(goal["id"], []) if "status" in goal else []
+            goal.setdefault("status", "active")
 
         # 2. Pending goal/task extractions (exclude expired). Purpose
         # hypotheses render as their own North Star card below, not here.
@@ -485,6 +502,8 @@ class HorizonsView(APIView):
                         "slug": g["slug"],
                         "preview": _clean_markdown_preview(g["markdown"] or ""),
                         "markdown": g["markdown"] or "",
+                        "status": g["status"],
+                        "tasks": g["tasks"],
                         "pii_receipts": resolve_receipt_values(
                             g.get("pii_receipts") or {},
                             getattr(tenant, "pii_entity_map", None),
