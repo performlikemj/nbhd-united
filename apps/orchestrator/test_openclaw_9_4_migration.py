@@ -26,6 +26,8 @@ def _sample_5_28_config() -> dict:
                 "pdfMaxBytesMb": 10,
                 "envelopeTimezone": "user",
                 "userTimezone": "Asia/Tokyo",
+                "bootstrapMaxChars": 26000,
+                "bootstrapTotalMaxChars": 80000,
                 "compaction": {
                     "memoryFlush": {
                         "enabled": True,
@@ -66,6 +68,11 @@ class OpenClaw94MigrationTransformTest(SimpleTestCase):
         d = self.cfg["agents"]["defaults"]
         self.assertEqual(d["pdfMaxMb"], 10)
         self.assertNotIn("pdfMaxBytesMb", d)
+
+    def test_bootstrap_budgets_survive_migration(self):
+        defaults = self.cfg["agents"]["defaults"]
+        self.assertEqual(defaults["bootstrapMaxChars"], 26000)
+        self.assertEqual(defaults["bootstrapTotalMaxChars"], 80000)
 
     def test_envelope_timezone_dropped(self):
         self.assertNotIn("envelopeTimezone", self.cfg["agents"]["defaults"])
