@@ -44,6 +44,7 @@ from .views import (
     JournalEntryDetailView,
     JournalEntryListCreateView,
     MemoryView,
+    MoodCheckInView,
     TemplateDetailView,
     TemplateListCreateView,
     WeeklyReviewDetailView,
@@ -51,6 +52,7 @@ from .views import (
 )
 
 urlpatterns = [
+    path("mood/", MoodCheckInView.as_view(), name="journal-mood"),
     # ── v2 Document API ──────────────────────────────────────────────────
     path("documents/", DocumentListCreateView.as_view(), name="document-list-create"),
     path("documents/<str:kind>/<path:slug>/append/", DocumentAppendView.as_view(), name="document-append"),

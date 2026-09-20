@@ -1,4 +1,4 @@
-"""USER.md sections sourced from journal Documents.
+"""USER.md sections sourced from journal state.
 
 Three sections live here because they all derive from ``Document``:
 
@@ -7,16 +7,17 @@ Three sections live here because they all derive from ``Document``:
 - **Recent journal** — last few daily-note Documents (excluding today, which is
   volatile and loaded by the agent via ``nbhd_daily_note_get``).
 
-Each registers as its own section so they appear under separate headings,
-but all share the ``Document`` model for refresh triggers — a single Document
-save triggers one debounced USER.md push that re-renders everything.
+Document sections share a refresh trigger. Mood self-reports and North Star
+purposes register their own model triggers below.
 """
 
 from __future__ import annotations
 
 from datetime import date as _date
 
-from apps.journal.models import Document
+from django.db.models import Q
+
+from apps.journal.models import Document, JournalEntry
 from apps.orchestrator.envelope_registry import register_section
 from apps.tenants.models import Tenant
 
@@ -25,6 +26,33 @@ from apps.tenants.models import Tenant
 # circular ``apps.journal.envelope -> apps.journal.services`` problem at
 # Django startup.
 _STARTER_CACHE: dict[str, str] = {}
+
+
+@register_section(
+    key="mood",
+    heading="## Mood",
+    enabled=lambda t: t.mood_context_enabled,
+    refresh_on=(JournalEntry,),
+    order=15,
+)
+def render_mood(tenant: Tenant) -> str:
+    """Latest self-report, one line with a UTF-8 byte cap on the feeling."""
+    from apps.pii.redactor import rehydrate_for_tenant
+
+    entry = (
+        JournalEntry.objects.filter(tenant=tenant)
+        .filter(Q(energy_score__isnull=False) | Q(energy__in=JournalEntry.Energy.values))
+        .order_by("-date", "-created_at", "-pk")
+        .first()
+    )
+    if entry is None:
+        return ""
+    feeling = " ".join(rehydrate_for_tenant(tenant, entry.mood or "").split())
+    if len(feeling.encode("utf-8")) > 160:
+        feeling = feeling.encode("utf-8")[:157].decode("utf-8", errors="ignore").rstrip() + "…"
+    energy = f"{entry.energy_score}/10" if entry.energy_score is not None else entry.energy
+    feeling_suffix = f' "{feeling}"' if feeling else ""
+    return f"Latest: {energy}{feeling_suffix} — {entry.date.isoformat()}."
 
 
 def render_client_conversation_digest(tenant: Tenant) -> str:
