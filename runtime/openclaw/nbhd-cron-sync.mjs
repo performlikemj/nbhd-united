@@ -98,6 +98,7 @@ export function msToDuration(ms) {
 // Build a SAFE `openclaw cron add` argv from extracted job fields. Returns null
 // for anything unmappable. Only ever emits --message / --system-event.
 export function buildAddArgs(job) {
+  if (!isSafeJob(job)) return null;
   const decl = String(job.declarationKey || "");
   if (!decl.startsWith(DECL_PREFIX)) return null; // Django must stamp the key
   const name = String(job.displayName || job.name || decl);
@@ -127,6 +128,21 @@ export function buildAddArgs(job) {
     const msg = p.message ?? p.text ?? "";
     if (!String(msg).trim()) return null;
     args.push("--message", String(msg));
+    // Individual flags from 2026.9.4 registerCronMutationOptions. --json is
+    // output-only. These are agentTurn parameters, never new payload kinds.
+    if (p.model != null) args.push("--model", String(p.model));
+    if (p.fallbacks != null) args.push("--fallbacks", cliList(p.fallbacks));
+    if (p.timeoutSeconds != null) args.push("--timeout-seconds", String(p.timeoutSeconds));
+    if (p.toolsAllow != null) {
+      const tools = cliList(p.toolsAllow);
+      // The CLI turns an empty list into undefined (default tools). Refuse
+      // instead of widening a declaration that explicitly allows no tools.
+      if (!tools.split(/[,\s]+/u).some(Boolean)) return null;
+      args.push("--tools", tools);
+    }
+    if (p.lightContext === true) args.push("--light-context");
+    // cron ADD has no --no-light-context (EDIT only); false becomes absent.
+    // Likewise --tools "" cannot express an explicit empty allowlist in 9.4.
   } else if (p.kind === "systemEvent") {
     args.push("--system-event", String(p.text ?? p.message ?? p.event ?? "heartbeat"));
   } else {
@@ -146,7 +162,32 @@ export function buildAddArgs(job) {
 
   if (job.wakeMode === "now" || job.wakeMode === "next-heartbeat") args.push("--wake", job.wakeMode);
   if (typeof job.agentId === "string" && job.agentId) args.push("--agent", job.agentId);
+  if (job.description != null) args.push("--description", String(job.description));
   return args;
+}
+
+function cliList(value) {
+  return Array.isArray(value) ? value.join(",") : String(value);
+}
+
+// Compare exactly the fields this adapter can apply, including all agentTurn
+// controls and the enforcement contract in description. Runtime timestamps and
+// schedule anchors are intentionally ignored by the argv projection.
+export function sameCron(current, desired) {
+  const normalize = (job) => {
+    if (!job) return null;
+    const copy = structuredClone(job);
+    copy.wakeMode ||= "now"; // cron add's default, returned explicitly by list
+    // OpenClaw can supply its default tool policy when the declaration omits
+    // toolsAllow. Do not continually try to clear that runtime-owned default.
+    if (desired?.payload?.toolsAllow == null && copy.payload?.toolsAllowIsDefault) {
+      delete copy.payload.toolsAllow;
+    }
+    return buildAddArgs(copy);
+  };
+  const a = normalize(current);
+  const b = normalize(desired);
+  return a !== null && b !== null && JSON.stringify(a) === JSON.stringify(b);
 }
 
 async function oc(args) {
@@ -160,21 +201,28 @@ async function oc(args) {
   return stdout;
 }
 
-async function listNbhdDeclarations() {
-  const out = await oc(["cron", "list", "--json"]);
+async function listNbhdDeclarations(run) {
+  const out = await run(["cron", "list", "--json"]);
   const doc = JSON.parse(out);
   const rows = Array.isArray(doc) ? doc : (doc && Array.isArray(doc.jobs) ? doc.jobs : []);
   return rows
-    .filter((r) => r && typeof r.declarationKey === "string" && r.declarationKey.startsWith(DECL_PREFIX))
-    .map((r) => ({ id: r.id, declarationKey: r.declarationKey }));
+    .filter((r) => r && typeof r.declarationKey === "string" && r.declarationKey.startsWith(DECL_PREFIX));
 }
 
-// One reconcile pass: upsert every desired nbhd:* cron, then remove nbhd:* crons
-// that are no longer desired. Idempotent (declaration-key upsert), so it is safe
-// to run on a loop.
-export async function reconcileOnce() {
+// One reconcile pass: upsert missing/changed nbhd:* crons, then remove nbhd:*
+// crons that are no longer desired. A failed upsert retains the existing job
+// for the next retry. The injected runner lets tests exercise this without RPC.
+export async function reconcileOnce({ run = oc } = {}) {
   const jobs = await readSignedJobs();
   if (jobs === null) return { applied: 0, removed: 0, skipped: 0, ok: false };
+
+  let current;
+  try { current = await listNbhdDeclarations(run); }
+  catch (e) {
+    warn("cron list failed, skipping reconcile:", e && e.message);
+    return { applied: 0, removed: 0, skipped: 0, ok: false };
+  }
+  const currentByKey = new Map(current.map(row => [row.declarationKey, row]));
 
   const desiredKeys = new Set();
   let applied = 0;
@@ -184,9 +232,10 @@ export async function reconcileOnce() {
     if (!isSafeJob(job)) { warn("REFUSED unsafe job:", job && job.name); skipped++; continue; }
     const args = buildAddArgs(job);
     if (!args) { warn("skip unmappable job:", job && job.name); skipped++; continue; }
+    desiredKeys.add(String(job.declarationKey));
+    if (sameCron(currentByKey.get(job.declarationKey), job)) continue;
     try {
-      await oc(args);
-      desiredKeys.add(String(job.declarationKey));
+      await run(args);
       applied++;
     } catch (e) {
       warn("cron add failed for", job && job.name, "-", (e && e.message ? e.message : e));
@@ -194,12 +243,9 @@ export async function reconcileOnce() {
   }
 
   let removed = 0;
-  let current;
-  try { current = await listNbhdDeclarations(); }
-  catch (e) { warn("cron list failed, skipping removals:", e && e.message); return { applied, removed, skipped, ok: true }; }
   for (const row of current) {
     if (!desiredKeys.has(row.declarationKey)) {
-      try { await oc(["cron", "rm", row.id]); removed++; }
+      try { await run(["cron", "rm", row.id]); removed++; }
       catch (e) { warn("cron rm failed for", row.id, "-", e && e.message); }
     }
   }

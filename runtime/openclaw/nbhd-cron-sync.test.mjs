@@ -3,20 +3,21 @@
 //
 // Env is set BEFORE the dynamic import so the module's module-level KEY /
 // CRONS_FILE constants pick up the test values.
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { writeFile, mkdtemp } from "node:fs/promises";
+import { writeFile, mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 const KEY = "test-internal-key-abc123";
 const dir = await mkdtemp(path.join(tmpdir(), "nbhd-cron-sync-"));
+after(() => rm(dir, { recursive: true, force: true }));
 const CRONS_FILE = path.join(dir, "nbhd-crons.json");
 process.env.NBHD_INTERNAL_API_KEY = KEY;
 process.env.NBHD_CRONS_FILE = CRONS_FILE;
 
-const { isSafeJob, buildAddArgs, msToDuration, readSignedJobs } = await import("./nbhd-cron-sync.mjs");
+const { isSafeJob, buildAddArgs, sameCron, reconcileOnce, msToDuration, readSignedJobs } = await import("./nbhd-cron-sync.mjs");
 
 function signDoc(jobs, { badSig = false, tamper = false } = {}) {
   const signed = JSON.stringify(jobs);
@@ -102,4 +103,182 @@ test("readSignedJobs: tampered payload → null (sig mismatch)", async () => {
 test("readSignedJobs: unsigned/plain jobs array → null", async () => {
   await writeFile(CRONS_FILE, JSON.stringify([{ declarationKey: "nbhd:1" }]));
   assert.equal(await readSignedJobs(), null);
+});
+
+const typedJob = () => ({
+  declarationKey: "nbhd:typed", name: "Typed reminder", agentId: "main",
+  schedule: { kind: "every", everyMs: 60000 },
+  payload: {
+    kind: "agentTurn", message: "Send the reminder\nThen stop.",
+    model: "v4-flash", fallbacks: ["v4-pro", "provider/backup"],
+    timeoutSeconds: 90, toolsAllow: ["nbhd_send_to_user", "read"], lightContext: true,
+  },
+  description: 'nbhd.v1 {"v":1,"check":{"kind":"contains","text":"東京"}}',
+  delivery: { mode: "none" },
+});
+
+test("buildAddArgs: each supported typed field uses its individual CLI flag", () => {
+  const job = typedJob();
+  const args = buildAddArgs(job);
+  for (const [flag, value] of [
+    ["--model", "v4-flash"], ["--fallbacks", "v4-pro,provider/backup"],
+    ["--timeout-seconds", "90"], ["--tools", "nbhd_send_to_user,read"],
+    ["--description", job.description], ["--agent", "main"],
+  ]) {
+    assert.ok(args.includes(flag));
+    assert.equal(args[args.indexOf(flag) + 1], value);
+  }
+  assert.ok(args.includes("--light-context"));
+  assert.ok(!args.includes("--json"));
+});
+
+test("buildAddArgs: absent fields omitted; explicit false and empty tools are add CLI gaps", () => {
+  const job = typedJob();
+  job.payload = { kind: "agentTurn", message: "hi" };
+  delete job.description;
+  delete job.agentId;
+  const args = buildAddArgs(job);
+  for (const flag of ["--model", "--fallbacks", "--timeout-seconds", "--tools", "--light-context", "--no-light-context", "--description", "--agent"]) {
+    assert.ok(!args.includes(flag));
+  }
+  job.payload.lightContext = false;
+  assert.deepEqual(buildAddArgs(job), args);
+  job.payload.fallbacks = [];
+  const emptyFallbacks = buildAddArgs(job);
+  assert.equal(emptyFallbacks[emptyFallbacks.indexOf("--fallbacks") + 1], "");
+  job.payload.toolsAllow = [];
+  assert.equal(buildAddArgs(job), null);
+});
+
+test("buildAddArgs: parameters never enable a command/script payload or field", () => {
+  for (const kind of ["command", "script", "unknown"]) {
+    const job = typedJob();
+    job.payload.kind = kind;
+    assert.equal(buildAddArgs(job), null);
+  }
+  for (const key of ["command", "commandArgv", "command_argv", "commandInput", "commandCwd", "commandEnv", "script"]) {
+    const job = typedJob();
+    job.payload.nested = { [key]: "evil" };
+    assert.equal(isSafeJob(job), false);
+    assert.equal(buildAddArgs(job), null);
+  }
+  const event = typedJob();
+  event.payload.kind = "systemEvent";
+  const args = buildAddArgs(event);
+  assert.ok(args.includes("--system-event"));
+  for (const flag of ["--model", "--fallbacks", "--timeout-seconds", "--tools", "--light-context", "--command", "--script"]) {
+    assert.ok(!args.includes(flag));
+  }
+});
+
+for (const [field, changed] of [
+  ["model", "v4-pro"], ["fallbacks", ["v4-pro"]], ["timeoutSeconds", 120],
+  ["toolsAllow", ["nbhd_send_to_user"]], ["lightContext", false],
+]) {
+  test(`sameCron: ${field}-only changes and removal require an upsert`, () => {
+    const current = typedJob();
+    const desired = structuredClone(current);
+    assert.equal(sameCron(current, desired), true);
+    desired.payload[field] = changed;
+    assert.equal(sameCron(current, desired), false);
+    delete desired.payload[field];
+    assert.equal(sameCron(current, desired), false);
+  });
+}
+
+test("sameCron: contract-only change detected; runtime state ignored", () => {
+  const current = typedJob();
+  const desired = typedJob();
+  current.id = "runtime-id";
+  current.state = { nextRunAtMs: 99999 };
+  current.schedule.anchorMs = 1234;
+  current.wakeMode = "now";
+  assert.equal(sameCron(current, desired), true);
+  desired.description += " ";
+  assert.equal(sameCron(current, desired), false);
+  delete desired.description;
+  assert.equal(sameCron(current, desired), false);
+  assert.equal(sameCron(undefined, desired), false);
+});
+
+test("sameCron: fallback order and explicit empty override are significant", () => {
+  const current = typedJob();
+  const desired = typedJob();
+  desired.payload.fallbacks.reverse();
+  assert.equal(sameCron(current, desired), false);
+  current.payload.fallbacks = [];
+  delete desired.payload.fallbacks;
+  assert.equal(sameCron(current, desired), false);
+});
+
+test("reconcileOnce: unchanged skips add; fallback-only change applies; failed add is retained", async () => {
+  const desired = typedJob();
+  await writeFile(CRONS_FILE, signDoc([desired]));
+  const current = { ...typedJob(), id: "runtime-id" };
+  const calls = [];
+  let failAdd = false;
+  const run = async args => {
+    calls.push(args);
+    if (args[1] === "list") return JSON.stringify({ jobs: [current, { id: "operator", declarationKey: "operator:keep" }] });
+    if (args[1] === "add" && failAdd) throw new Error("synthetic failure");
+    return "{}";
+  };
+  assert.equal((await reconcileOnce({ run })).applied, 0);
+  assert.deepEqual(calls.map(args => args[1]), ["list"]);
+  current.payload.fallbacks = [];
+  calls.length = 0;
+  assert.equal((await reconcileOnce({ run })).applied, 1);
+  assert.deepEqual(calls.map(args => args[1]), ["list", "add"]);
+  assert.ok(calls[1].includes("v4-pro,provider/backup"));
+  failAdd = true;
+  calls.length = 0;
+  assert.equal((await reconcileOnce({ run })).removed, 0);
+  assert.deepEqual(calls.map(args => args[1]), ["list", "add"]);
+});
+
+test("reconcileOnce: signature and kind controls hold; removals stay in nbhd namespace", async () => {
+  const unsafe = typedJob();
+  unsafe.payload.command = "evil";
+  await writeFile(CRONS_FILE, signDoc([unsafe]));
+  const calls = [];
+  const run = async args => {
+    calls.push(args);
+    return JSON.stringify({ jobs: [
+      { id: "stale", declarationKey: "nbhd:stale" },
+      { id: "keep", declarationKey: "operator:keep" },
+    ] });
+  };
+  const result = await reconcileOnce({ run });
+  assert.equal(result.skipped, 1);
+  assert.equal(result.applied, 0);
+  assert.deepEqual(calls, [["cron", "list", "--json"], ["cron", "rm", "stale"]]);
+  await writeFile(CRONS_FILE, signDoc([typedJob()], { badSig: true }));
+  calls.length = 0;
+  assert.equal((await reconcileOnce({ run })).ok, false);
+  assert.deepEqual(calls, []);
+});
+
+test("reconcileOnce: list failure makes no mutations", async () => {
+  await writeFile(CRONS_FILE, signDoc([typedJob()]));
+  const calls = [];
+  const result = await reconcileOnce({ run: async args => {
+    calls.push(args);
+    throw new Error("synthetic list failure");
+  } });
+  assert.equal(result.ok, false);
+  assert.deepEqual(calls, [["cron", "list", "--json"]]);
+});
+
+test("pinned 9.4 source registers each emitted flag; negative light context is edit-only", async () => {
+  const root = process.env.OPENCLAW_PACKAGE_ROOT || "/tmp/openclaw-src-9.4/package";
+  const source = await readFile(path.join(root, "dist/cron-cli-BTI9dsDQ.mjs"), "utf8");
+  const start = source.indexOf("function registerCronMutationOptions(");
+  const end = source.indexOf("\n}", start);
+  const options = source.slice(start, end);
+  for (const flag of ["--model <model>", "--fallbacks <list>", "--timeout-seconds <n>", "--tools <list>", "--light-context", "--description <text>", "--agent <id>"]) {
+    assert.ok(options.includes(`.option("${flag}"`), flag);
+  }
+  assert.ok(!options.includes('"--no-light-context"'));
+  assert.ok(source.includes('.option("--no-light-context", "Disable lightweight bootstrap context for agent jobs")'));
+  assert.ok(source.includes("lightContext: opts.lightContext === true ? true : void 0"));
 });
