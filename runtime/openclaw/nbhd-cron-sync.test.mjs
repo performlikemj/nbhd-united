@@ -227,6 +227,20 @@ test("sameCron: unpinned wake mode ignores the container default; pinned differe
   assert.equal(sameCron(current, desired), true);
 });
 
+test("sameCron: container's default tool wildcard ['*'] is not drift when unpinned", () => {
+  // Reproduces the canary churn: a bare cron (message only, no tool policy) is
+  // added, and `cron list` echoes the container's default toolsAllow:["*"]
+  // back WITHOUT a toolsAllowIsDefault marker. That must not read as drift.
+  const desired = typedJob();
+  delete desired.payload.toolsAllow;
+  const current = structuredClone(desired);
+  current.payload.toolsAllow = ["*"];
+  assert.equal(sameCron(current, desired), true);
+  // A real (non-wildcard) policy the declaration no longer pins is still an upsert.
+  current.payload.toolsAllow = ["nbhd_send_to_user"];
+  assert.equal(sameCron(current, desired), false);
+});
+
 test("sameCron: fallback order and explicit empty override are significant", () => {
   const current = typedJob();
   const desired = typedJob();

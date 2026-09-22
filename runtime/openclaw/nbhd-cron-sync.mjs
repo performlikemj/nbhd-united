@@ -191,9 +191,17 @@ export function sameCron(current, desired) {
     // Leave the container's wake mode alone unless the declaration pins it.
     if (desired?.wakeMode == null) delete copy.wakeMode;
     else copy.wakeMode ||= "now";
-    // OpenClaw can supply its default tool policy when the declaration omits
-    // toolsAllow. Do not continually try to clear that runtime-owned default.
-    if (desired?.payload?.toolsAllow == null && copy.payload?.toolsAllowIsDefault) {
+    // OpenClaw supplies its default tool policy when the declaration omits
+    // toolsAllow: the "all tools" wildcard ["*"], and in some builds a
+    // toolsAllowIsDefault marker. `cron list` echoes ["*"] back WITHOUT the
+    // marker, so a bare cron's current row carries toolsAllow:["*"] while its
+    // declaration has none — match on the wildcard too, or every bare cron
+    // re-adds each poll. A declaration that pins a real (non-wildcard) list
+    // still compares, so removing a pinned policy is still detected.
+    const ct = copy.payload?.toolsAllow;
+    const ctIsDefault =
+      copy.payload?.toolsAllowIsDefault || (Array.isArray(ct) && ct.length === 1 && ct[0] === "*");
+    if (desired?.payload?.toolsAllow == null && ctIsDefault) {
       delete copy.payload.toolsAllow;
     }
     return buildAddArgs(copy);
