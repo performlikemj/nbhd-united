@@ -188,7 +188,9 @@ export function sameCron(current, desired) {
   const normalize = (job) => {
     if (!job) return null;
     const copy = structuredClone(job);
-    copy.wakeMode ||= "now"; // cron add's default, returned explicitly by list
+    // Leave the container's wake mode alone unless the declaration pins it.
+    if (desired?.wakeMode == null) delete copy.wakeMode;
+    else copy.wakeMode ||= "now";
     // OpenClaw can supply its default tool policy when the declaration omits
     // toolsAllow. Do not continually try to clear that runtime-owned default.
     if (desired?.payload?.toolsAllow == null && copy.payload?.toolsAllowIsDefault) {

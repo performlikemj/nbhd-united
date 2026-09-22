@@ -214,6 +214,19 @@ test("sameCron: contract-only change detected; runtime state ignored", () => {
   assert.equal(sameCron(undefined, desired), false);
 });
 
+test("sameCron: unpinned wake mode ignores the container default; pinned differences matter", () => {
+  const current = typedJob();
+  const desired = typedJob();
+  current.wakeMode = "next-heartbeat";
+  assert.equal(sameCron(current, desired), true);
+  desired.wakeMode = null;
+  assert.equal(sameCron(current, desired), true);
+  desired.wakeMode = "now";
+  assert.equal(sameCron(current, desired), false);
+  desired.wakeMode = "next-heartbeat";
+  assert.equal(sameCron(current, desired), true);
+});
+
 test("sameCron: fallback order and explicit empty override are significant", () => {
   const current = typedJob();
   const desired = typedJob();
