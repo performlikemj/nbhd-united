@@ -381,7 +381,19 @@ def resolve_user_channel(user) -> str | None:
 
 
 class SendToUserSerializer(serializers.Serializer):
-    message = serializers.CharField(max_length=8192)
+    message = serializers.CharField(max_length=8192, allow_blank=True)
+    panels = serializers.JSONField(required=False, allow_null=True)
+
+    def validate_panels(self, value):
+        from apps.router.panels import validate_panels
+
+        return validate_panels(value)
+
+    def validate(self, data):
+        if not data.get("message") and not data.get("panels"):
+            raise serializers.ValidationError("message or valid panels required")
+        return data
+
     thread_id = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=64)
     parse_mode = serializers.ChoiceField(
         choices=["Markdown", "HTML", "plain"],
@@ -498,6 +510,7 @@ class CronDeliveryView(APIView):
         # quote-reply excerpt) are stored placeholder-space; only the copy
         # actually sent to the user is rehydrated.
         placeholder_message_text = serializer.validated_data["message"]
+        panels = serializer.validated_data.get("panels", [])
         parse_mode = serializer.validated_data.get("parse_mode", "Markdown")
 
         from apps.router.models import ChatThread
@@ -673,6 +686,7 @@ class CronDeliveryView(APIView):
                     # the send carried no marker.
                     journal_link=journal_link,
                     quick_replies=quick_replies,
+                    panels=panels,
                     artifact_dedup_key=artifact_dedup_key,
                     thread_id=thread_id,
                 )
@@ -729,6 +743,7 @@ class CronDeliveryView(APIView):
                     job_name=job_name,
                     journal_link=journal_link,
                     quick_replies=quick_replies,
+                    panels=panels,
                     artifact_dedup_key=artifact_dedup_key,
                     thread_id=thread_id,
                 )
@@ -819,6 +834,7 @@ class CronDeliveryView(APIView):
                 # the send carried no marker.
                 journal_link=journal_link,
                 quick_replies=quick_replies,
+                panels=panels,
                 artifact_dedup_key=artifact_dedup_key,
                 thread_id=thread_id,
             )

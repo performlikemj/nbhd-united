@@ -85,6 +85,7 @@ from datetime import UTC, datetime
 from django.utils.dateparse import parse_datetime
 
 from apps.orchestrator.first_session_welcome import FIRST_SESSION_WELCOME_JOB_NAME
+from apps.router.panels import rehydrate_panels
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,7 @@ def _row(
     redaction_reason=_UNSET,
     quick_replies=None,
     journal_link=None,
+    panels=None,
 ):
     """A single message row + its (created_at, id) sort key.
 
@@ -215,6 +217,8 @@ def _row(
     # Quick-reply button labels (iOS-only; assistant rows only). Omitted
     # entirely when empty, same convention as the redaction keys above —
     # older iOS builds ignore unknown keys anyway.
+    if panels:
+        msg["panels"] = panels
     if quick_replies:
         msg["quick_replies"] = quick_replies
     # "View in Journal" deep-link (iOS-only; assistant rows only — app + cron).
@@ -267,7 +271,9 @@ def _app_rows(m, main_thread_id, entity_map=None, *, user_text=None):
     # Also emit a bare marker-only assistant row in the (expected rare) case the
     # agent's entire final reply was a marker line — reply_text strips to empty,
     # but the quick-reply buttons / journal-link chip must not silently vanish.
-    if m.status == AppChatMessage.Status.READY and ((m.reply_text or "").strip() or m.quick_replies or m.journal_link):
+    if m.status == AppChatMessage.Status.READY and (
+        (m.reply_text or "").strip() or m.quick_replies or m.journal_link or m.panels
+    ):
         out.append(
             _row(
                 row_id=f"app:{m.id}:1",
@@ -291,6 +297,7 @@ def _app_rows(m, main_thread_id, entity_map=None, *, user_text=None):
                 # inserting a duplicate. The client dedups by (client_msg_id, role).
                 client_msg_id=m.client_msg_id,
                 reply_redactions=m.reply_redactions,
+                panels=rehydrate_panels(m.panels, entity_map, tenant_id=m.tenant_id),
                 # Stored PLACEHOLDER-space (parsed before reply_text is
                 # rehydrated) — rehydrate via the SAME shared helper the
                 # detail seam calls (chat_views._serialize_message) so a
@@ -359,7 +366,7 @@ def _proactive_rows(p, main_thread_id, entity_map=None):
 
     # Keep a marker-only row: stripping can legitimately leave no prose, but
     # the pills/chip are still the proactive payload the app needs to render.
-    if not (p.message_text or "").strip() and not p.quick_replies and not p.journal_link:
+    if not (p.message_text or "").strip() and not p.quick_replies and not p.journal_link and not p.panels:
         return []
     return [
         _row(
@@ -368,6 +375,7 @@ def _proactive_rows(p, main_thread_id, entity_map=None):
             role="assistant",
             text=_rehydrate(p.message_text, entity_map, tenant_id=p.tenant_id),
             source="cron",
+            panels=rehydrate_panels(p.panels, entity_map, tenant_id=p.tenant_id),
             thread_id=str(p.thread_id) if p.thread_id else main_thread_id,
             quick_replies=rehydrate_quick_replies(
                 p.quick_replies, entity_map, tenant_id=p.tenant_id, channel="cron_feed"

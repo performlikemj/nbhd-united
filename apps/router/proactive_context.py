@@ -103,6 +103,7 @@ def record_proactive_outbound(
     job_name: str = "",
     journal_link: dict | None = None,
     quick_replies: list[str] | None = None,
+    panels: list[dict] | None = None,
     artifact_dedup_key: str | None = None,
     thread_id=None,
 ) -> ProactiveOutbound | None:
@@ -126,6 +127,9 @@ def record_proactive_outbound(
         from apps.pii.egress import redact_known_values
 
         message_text = redact_known_values(tenant, message_text, seam="proactive_outbound_storage")
+        from apps.router.panels import prepare_panels
+
+        panels = prepare_panels(tenant, panels)
         transcript_redaction = None
         transcript_quarantine = None
         if getattr(tenant, "recall_capture_enabled", False):
@@ -186,6 +190,7 @@ def record_proactive_outbound(
                 # row across every delivery channel for the iOS feed and the
                 # deterministic model-facing offer set below.
                 quick_replies=quick_replies,
+                panels=panels or None,
             )
             if transcript_redaction is not None or transcript_quarantine is not None:
                 try:

@@ -377,6 +377,10 @@ class ProactiveOutbound(models.Model):
     # ``apps.router.quick_replies.extract_quick_replies``). Stored in
     # PII-placeholder space and rehydrated only at the owner-facing ``?since=``
     # feed. null/absent means the send carried no valid marker.
+    panels = models.JSONField(
+        null=True, blank=True, help_text="Live panel references attached to the assistant message."
+    )
+
     quick_replies = models.JSONField(null=True, blank=True, default=None)
 
     class Meta:
@@ -849,6 +853,10 @@ class AppChatMessage(models.Model):
     # means the turn carried no marker (or predates the feature) — the two
     # are indistinguishable and both mean "show no buttons". iOS-only for
     # now; Telegram/LINE strip the marker but never populate this field.
+    panels = models.JSONField(
+        null=True, blank=True, help_text="Live panel references attached to the assistant message."
+    )
+
     quick_replies = models.JSONField(null=True, blank=True, default=None)
     # A tappable "View in Journal" deep-link parsed from a trailing
     # ``[[journal-link: kind|slug|title]]`` marker on the assistant reply (see

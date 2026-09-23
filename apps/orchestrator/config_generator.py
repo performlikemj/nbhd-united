@@ -702,6 +702,10 @@ def _build_morning_briefing_prompt(tenant) -> str:
 
     prompt = _MORNING_BRIEFING_PROMPT_TEMPLATE.format(weather_step=weather_step)
     prompt = _with_morning_briefing_away_tour_pill(prompt, tenant)
+    from apps.router.panels import MORNING_PANEL_INSTRUCTION, chat_panels_enabled
+
+    if chat_panels_enabled(tenant):
+        prompt += "\n\n" + MORNING_PANEL_INSTRUCTION
     return _with_proactive_suggestions(prompt, tenant, monday_defer=True)
 
 

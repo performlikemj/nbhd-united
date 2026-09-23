@@ -744,8 +744,10 @@ def relay_ai_response_to_line(
     # The journal deep-link chip is likewise iOS-only — LINE has no transport
     # for it, so strip its marker too.
     from apps.router.journal_link import extract_journal_link
+    from apps.router.panels import extract_panels
     from apps.router.quick_replies import extract_quick_replies
 
+    ai_text, _panels = extract_panels(ai_text)
     ai_text, _quick_replies = extract_quick_replies(ai_text, tenant_id=tenant.id, channel="line")
     ai_text, _journal_link = extract_journal_link(ai_text, tenant_id=tenant.id, channel="line")
 

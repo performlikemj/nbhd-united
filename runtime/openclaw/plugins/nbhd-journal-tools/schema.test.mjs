@@ -461,3 +461,29 @@ test("send_to_user forwards runtime cron identity even without model job_name", 
     await tools.nbhd_send_to_user.execute("call-1", { message: "Nice work", cron_job_id: "forged" });
   }
 });
+
+test("send_to_user carries the generated panel reference schema and forwards panels", async (t) => {
+  const saved = { ...process.env };
+  t.after(() => { process.env = saved; });
+  process.env.NBHD_API_BASE_URL = "https://nbhd.test";
+  process.env.NBHD_TENANT_ID = "tenant-test";
+  process.env.NBHD_INTERNAL_API_KEY = "test-key";
+  const panels = [{ kind: "sleep", params: { range: "last_night" }, title: "Last night" }];
+  const bodies = [];
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return { ok: true, status: 200, async text() { return "{}"; } };
+  });
+  const tool = collectTools().nbhd_send_to_user;
+  const schema = tool.parameters.properties.panels;
+  assert.equal(schema.maxItems, 6);
+  assert.equal(schema.items.additionalProperties, false);
+  assert.equal(schema.items.properties.params.additionalProperties, false);
+  assert.equal(schema.items.properties.title.maxLength, 60);
+  assert.equal(schema.items.properties.params.properties.duration_seconds.maximum, 14400);
+  for (const kind of schema.items.properties.kind.enum) assert.ok(tool.description.includes(kind));
+  for (const message of ["Good morning", ""]) {
+    await tool.execute("call-panels", { message, panels });
+    assert.deepEqual(bodies.at(-1), { message, panels });
+  }
+});
