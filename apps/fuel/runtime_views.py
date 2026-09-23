@@ -118,12 +118,16 @@ class _FuelResponseGuard(KnownValueResponseGuardMixin):
             "reason",
             "repeat_reason",
             "summary",
+            "logged_sets_summary",
         }
     )
 
     def finalize_response(self, request, response, *args, **kwargs):
         """Keep server-owned catalog refs outside tenant substitution."""
+        from .authoring import logged_actuals_paths, restore_logged_actuals
+
         refs: list[tuple[tuple[str | int, ...], dict]] = []
+        actuals = logged_actuals_paths(response.data) if hasattr(response, "data") else []
 
         def collect(value, path=()):
             if isinstance(value, dict):
@@ -145,6 +149,7 @@ class _FuelResponseGuard(KnownValueResponseGuardMixin):
                 for part in path[:-1]:
                     current = current[part]
                 current[path[-1]] = ref
+            guarded.data = restore_logged_actuals(guarded.data, actuals)
         return guarded
 
 
@@ -183,6 +188,11 @@ def _serialize_workout_summary_card(workout: Workout) -> dict:
     for key in ("distance_km", "avg_hr", "peak_hr", "calories"):
         if isinstance(detail.get(key), int | float):
             entry[key] = detail[key]
+    from .set_contract import logged_sets_summary
+
+    actuals = logged_sets_summary(detail)
+    if actuals:
+        entry["logged_sets_summary"] = actuals
     return entry
 
 
@@ -614,8 +624,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
                 detail={"rpe_clamped": True},
             )
 
-        from apps.pii.store_authoring import author_store_fields
-
+        from .authoring import author_store_fields
         from .cardio import materialize_prescription
 
         if workout_status == WorkoutStatus.PLANNED:
@@ -821,10 +830,10 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             updated_fields.append("notes")
 
         if "detail_json" in data and isinstance(data["detail_json"], dict):
-            from .set_contract import normalize_detail, validate_detail, validate_flat_detail
+            from .set_contract import normalize_detail, preserve_logged_sets, validate_detail, validate_flat_detail
 
             nd, ncat = normalize_detail(
-                data["detail_json"],
+                preserve_logged_sets(data["detail_json"], stored_detail),
                 workout.category,
                 activity=workout.activity,
                 explicit_duration_minutes=workout.duration_minutes
@@ -912,7 +921,7 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                 return Response(pres_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
 
         if updated_fields:
-            from apps.pii.store_authoring import author_store_fields
+            from .authoring import author_store_fields
 
             pii_values = {
                 field: getattr(workout, field)
@@ -2428,7 +2437,7 @@ def _author_plan_expansion_inputs(
     to the same weeks in both functions, and it keys the returned dict, so a
     mid-plan regen cannot look up an entry this function never authored.
     """
-    from apps.pii.store_authoring import author_store_fields
+    from .authoring import author_store_fields
 
     week_overrides = week_overrides or {}
     authored_workouts = {}
@@ -3000,7 +3009,7 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
             return Response(rotation_error, status=status.HTTP_400_BAD_REQUEST)
         normalized_schedule = _attach_plan_policy(normalized_schedule, plan_policy)
 
-        from apps.pii.store_authoring import author_store_fields
+        from .authoring import author_store_fields
 
         authored_plan, plan_receipts = author_store_fields(
             tenant,
@@ -3408,7 +3417,7 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                 return Response(rotation_error, status=status.HTTP_400_BAD_REQUEST)
 
         if updated_fields:
-            from apps.pii.store_authoring import author_store_fields
+            from .authoring import author_store_fields
 
             pii_values = {
                 field: getattr(plan, field)
