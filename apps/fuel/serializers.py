@@ -4,8 +4,9 @@ import logging
 
 from rest_framework import serializers
 
-from apps.pii.store_authoring import OwnerStoreSerializerMixin, author_store_fields, owner_store_representation
+from apps.pii.store_authoring import OwnerStoreSerializerMixin, owner_store_representation
 
+from .authoring import author_store_fields
 from .models import (
     BodyWeightLog,
     FuelGoal,
@@ -233,6 +234,11 @@ class WorkoutSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
         """Basic shape validation per category."""
         if not isinstance(value, dict):
             raise serializers.ValidationError("detail_json must be an object.")
+        from .set_contract import logged_detail_errors
+
+        errors = logged_detail_errors(value)
+        if errors:
+            raise serializers.ValidationError([f"{_loc_path(e['loc'])}: {e['msg']}" for e in errors])
         return value
 
     def validate_rpe(self, value):

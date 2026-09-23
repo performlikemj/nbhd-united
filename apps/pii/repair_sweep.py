@@ -16,6 +16,7 @@ from django.db import transaction
 from django.db.models import Case, IntegerField, Q, Value, When
 from django.utils import timezone
 
+from apps.fuel.authoring import logged_actuals_paths, restore_logged_actuals
 from apps.pii.alerts import send_rate_alert
 from apps.pii.authoring import _aggregate_json_receipts, author_json_paths, author_text
 from apps.pii.store_registry import CARDIO_TRAVERSAL_VERSION, PlaceholderStore, registered_stores, rewrite_json_path
@@ -92,7 +93,7 @@ def _json_progress(old_receipt: Any, value: Any) -> tuple[int, dict[str, Any] | 
     progress = old_receipt.get(_PARTIAL_JSON_PROGRESS)
     if not isinstance(progress, dict) or (
         progress.get("source_digest") != _json_digest(value)
-        or progress.get("traversal_version") != CARDIO_TRAVERSAL_VERSION
+        or progress.get("traversal_version") != f"{CARDIO_TRAVERSAL_VERSION}:logged-actuals-v1"
     ):
         return 0, None
     cursor = progress.get("cursor")
@@ -126,7 +127,7 @@ def _partial_json_receipt(
         _PARTIAL_JSON_PROGRESS: {
             "cursor": cursor,
             "source_digest": _json_digest(value),
-            "traversal_version": CARDIO_TRAVERSAL_VERSION,
+            "traversal_version": f"{CARDIO_TRAVERSAL_VERSION}:logged-actuals-v1",
             "aggregate": aggregate,
         },
     }
@@ -148,6 +149,22 @@ def _author_json_chunk(
     budget: _DetectorWorkBudget,
 ) -> _JSONRepairChunk:
     """Author a deterministic JSON leaf window without exceeding ``budget``."""
+    # Use the same strict snapshots as Fuel's live authoring/egress. Shield the
+    # complete validated object before registry traversal, so neither timestamps
+    # nor numbers can change or consume a prose/detector cursor slot. Keep this
+    # exemption scoped to the registered workout detail and plan fields.
+    actuals = (
+        logged_actuals_paths(value)
+        if (model_label, field)
+        in {
+            ("fuel.Workout", "detail_json"),
+            ("fuel.WorkoutTemplate", "detail_json"),
+            ("fuel.WorkoutPlan", "schedule_json"),
+            ("fuel.WorkoutPlan", "week_overrides"),
+        }
+        else []
+    )
+    value = restore_logged_actuals(value, [(path, {}) for path, _logged in actuals])
     leaf_receipts: list[dict[str, Any]] = []
     leaves_seen = 0
     texts_authored = 0
@@ -196,7 +213,7 @@ def _author_json_chunk(
             model_label=model_label,
         )
         return _JSONRepairChunk(
-            value=authored.value,
+            value=restore_logged_actuals(authored.value, actuals),
             receipt=authored.receipt,
             texts_authored=0,
             next_cursor=0,
@@ -205,7 +222,7 @@ def _author_json_chunk(
 
     if not leaf_receipts:
         return _JSONRepairChunk(
-            value=value,
+            value=restore_logged_actuals(value, actuals),
             receipt=None,
             texts_authored=0,
             next_cursor=cursor,
@@ -214,7 +231,7 @@ def _author_json_chunk(
 
     next_cursor = cursor + texts_authored
     return _JSONRepairChunk(
-        value=authored_value,
+        value=restore_logged_actuals(authored_value, actuals),
         receipt=_aggregate_json_receipts(leaf_receipts, writer="background"),
         texts_authored=texts_authored,
         next_cursor=next_cursor,

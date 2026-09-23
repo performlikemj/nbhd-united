@@ -21,9 +21,12 @@ by ``apps.common.llm_lookups``; this module never invents new values.
 
 from __future__ import annotations
 
+import re
+from collections import Counter
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from apps.common.llm_lookups import (
     CARDIO_EFFORTS,
@@ -406,6 +409,192 @@ def normalize_detail(
 # ── Typed set contract (Phase 2 / #593) ───────────────────────────────
 
 
+class _Logged(BaseModel):
+    """Actuals are strict machine data; keep the original JSON when persisting.
+
+    See LOGGED_SETS.md. UTC strings are validated, never reformatted/coerced.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    at: str
+
+    @field_validator("at")
+    @classmethod
+    def utc_timestamp(cls, value):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)", value):
+            raise ValueError("at must be an ISO-8601 UTC timestamp ending in Z or +00:00")
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return value
+
+
+class LoggedWeightedReps(_Logged):
+    reps: int = Field(ge=0)
+    weight: float = Field(ge=0)  # kg
+
+
+class LoggedBodyweightReps(_Logged):
+    reps: int = Field(ge=0)
+
+
+class LoggedHoldTime(_Logged):
+    hold_s: int = Field(ge=0)
+
+
+class LoggedSkipped(_Logged):
+    skipped: bool
+
+    @field_validator("skipped")
+    @classmethod
+    def must_be_true(cls, value):
+        if value is not True:
+            raise ValueError("skipped must be true; omit logged for an unperformed set")
+        return value
+
+
+_LOGGED_MODELS = {
+    METRIC_WEIGHTED_REPS: LoggedWeightedReps,
+    METRIC_BODYWEIGHT_REPS: LoggedBodyweightReps,
+    METRIC_HOLD_TIME: LoggedHoldTime,
+}
+
+
+def _validate_logged(s: dict, exercise_name: str = ""):
+    logged = s["logged"]
+    model = (
+        LoggedSkipped
+        if isinstance(logged, dict) and "skipped" in logged
+        else _LOGGED_MODELS[set_metric(s, exercise_name=exercise_name)]
+    )
+    return model.model_validate(logged)
+
+
+def logged_detail_errors(detail: Any) -> list[dict]:
+    """Validate actuals for every category, independently of legacy prescriptions."""
+    errors = []
+    if not isinstance(detail, dict):
+        return errors
+    for key in ("exercises", "skills"):
+        items = detail.get(key)
+        if not isinstance(items, list):
+            continue
+        for i, ex in enumerate(items):
+            if not isinstance(ex, dict) or not isinstance(ex.get("sets"), list):
+                continue
+            for j, s in enumerate(ex["sets"]):
+                if not isinstance(s, dict) or "logged" not in s:
+                    continue
+                try:
+                    _validate_logged(s, str(ex.get("name") or ""))
+                except ValidationError as exc:
+                    for err in exc.errors(include_url=False, include_context=False, include_input=False):
+                        errors.append({**err, "loc": [key, i, "sets", j, "logged", *err["loc"]]})
+    return errors
+
+
+def preserve_logged_sets(incoming: dict, stored: Any) -> dict:
+    """Recover omitted actuals on unchanged sets during assistant rewrites.
+
+    Exercise names must be unique (case-insensitive) in both details. Sets match
+    by ordinal and prescription, never by weight/reps alone across exercises.
+    Explicit logged input wins and is subsequently validated. An explicit empty
+    exercise list still removes exercises; omitted containers with logs survive.
+    """
+    if not isinstance(stored, dict):
+        return incoming
+
+    def exercises(detail):
+        return [
+            ex
+            for key in ("exercises", "skills")
+            if isinstance(detail.get(key), list)
+            for ex in detail[key]
+            if isinstance(ex, dict)
+        ]
+
+    def name(ex):
+        return str(ex.get("name") or "").strip().casefold()
+
+    out = dict(incoming)
+    if not any(key in incoming for key in ("exercises", "skills")):
+        for key in ("exercises", "skills"):
+            items = stored.get(key)
+            if isinstance(items, list) and any(
+                isinstance(ex, dict)
+                and isinstance(ex.get("sets"), list)
+                and any(isinstance(s, dict) and "logged" in s for s in ex["sets"])
+                for ex in items
+            ):
+                out[key] = items
+    old = exercises(stored)
+    old_counts = Counter(name(ex) for ex in old)
+    new_counts = Counter(name(ex) for ex in exercises(out))
+    by_name = {name(ex): ex for ex in old if name(ex) and old_counts[name(ex)] == 1}
+    for key in ("exercises", "skills"):
+        if not isinstance(out.get(key), list):
+            continue
+        rebuilt = []
+        for ex in out[key]:
+            previous = by_name.get(name(ex)) if isinstance(ex, dict) else None
+            if not previous or new_counts[name(ex)] != 1 or not isinstance(ex.get("sets"), list):
+                rebuilt.append(ex)
+                continue
+            old_sets = previous.get("sets")
+            old_sets = old_sets if isinstance(old_sets, list) else []
+            sets = []
+            for index, s in enumerate(ex["sets"]):
+                prior = old_sets[index] if index < len(old_sets) else None
+                if isinstance(s, dict) and "logged" not in s and isinstance(prior, dict) and "logged" in prior:
+                    a = coerce_set(s, exercise_name=name(ex))
+                    b = coerce_set(prior, exercise_name=name(ex))
+                    if all(a.get(k) == b.get(k) for k in ("type", "reps", "weight", "hold_s")):
+                        try:
+                            _validate_logged(prior, name(ex))
+                        except ValidationError:
+                            pass
+                        else:
+                            s = {**s, "logged": dict(prior["logged"])}
+                sets.append(s)
+            rebuilt.append({**ex, "sets": sets})
+        out[key] = rebuilt
+    return out
+
+
+def logged_sets_summary(detail: Any) -> list[str]:
+    """Summarize actuals only; never substitute the prescription for missing logs."""
+    summaries = []
+    if not isinstance(detail, dict):
+        return summaries
+    for key in ("exercises", "skills"):
+        if not isinstance(detail.get(key), list):
+            continue
+        for ex in detail[key]:
+            if not isinstance(ex, dict) or not isinstance(ex.get("sets"), list):
+                continue
+            doses = Counter()
+            skipped = 0
+            for s in ex["sets"]:
+                if not isinstance(s, dict) or "logged" not in s:
+                    continue
+                try:
+                    actual = _validate_logged(s, str(ex.get("name") or ""))
+                except ValidationError:
+                    continue
+                if isinstance(actual, LoggedSkipped):
+                    skipped += 1
+                elif isinstance(actual, LoggedWeightedReps):
+                    doses[f"{actual.reps} @ {actual.weight:g} kg"] += 1
+                elif isinstance(actual, LoggedBodyweightReps):
+                    doses[f"{actual.reps} reps"] += 1
+                else:
+                    doses[f"{actual.hold_s}s"] += 1
+            parts = [f"{count}×{dose} logged" for dose, count in doses.items()]
+            if skipped:
+                parts.append(f"{skipped} skipped")
+            if parts:
+                summaries.append(f"{ex.get('name') or 'Exercise'}: {', '.join(parts)}")
+    return summaries
+
+
 class _SetModel(BaseModel):
     """Base for typed shapes — tolerate extra keys (``est_1rm``, ``pr``,
     …) that consumers stamp onto stored sets."""
@@ -419,16 +608,19 @@ class WeightedRepsSet(_SetModel):
     type: Literal[METRIC_WEIGHTED_REPS]
     reps: int = Field(ge=0)
     weight: float = Field(ge=0)
+    logged: LoggedWeightedReps | LoggedSkipped = Field(default=None)
 
 
 class BodyweightRepsSet(_SetModel):
     type: Literal[METRIC_BODYWEIGHT_REPS]
     reps: int = Field(ge=0)
+    logged: LoggedBodyweightReps | LoggedSkipped = Field(default=None)
 
 
 class HoldTimeSet(_SetModel):
     type: Literal[METRIC_HOLD_TIME]
     hold_s: int = Field(ge=0)
+    logged: LoggedHoldTime | LoggedSkipped = Field(default=None)
 
 
 TypedSet = Annotated[
@@ -494,6 +686,9 @@ def validate_detail(detail: Any, category: str) -> tuple[Any, Any]:
     # used immediately, so the lint-autofix can't reap it.
     from apps.common.llm_contracts import LLMValidationError
 
+    logged_errors = logged_detail_errors(detail)
+    if logged_errors:
+        return detail, LLMValidationError(message="Invalid logged set actuals.", details=logged_errors)
     errors = _cardio_errors(detail, category)
     cardio_error_count = len(errors)
     allowed_roles = {"primary", "accessory", "warmup", "mobility"}
