@@ -1,7 +1,11 @@
 """Policy, parser, privacy and authenticated endpoint proofs; no model network."""
 
 import json
+import re
+from copy import deepcopy
 from datetime import UTC, date, datetime
+from threading import Event
+from time import monotonic, sleep
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from uuid import uuid4
@@ -13,6 +17,7 @@ from rest_framework.test import APIClient, APIRequestFactory
 
 from apps.common import jev
 from apps.common.test_jev import choice_answer, envelope, score_answer
+from apps.pii.ephemeral import redact_texts_ephemeral_checked
 from apps.pii.redactor import RedactionOutcome
 from apps.router.chat_shape import (
     PANELS,
@@ -117,6 +122,11 @@ class ParserTests(SimpleTestCase):
             ("and friday?", "unspecified", "2026-09-25"),
             ("next friday", "unspecified", "2026-09-25"),
             ("on friday", "unspecified", "2026-09-25"),
+            ("last friday", "unspecified", "2026-09-18"),
+            ("this monday", "unspecified", "2026-09-21"),
+            ("last thursday", "unspecified", "2026-09-17"),
+            ("this thursday", "unspecified", "2026-09-24"),
+            ("this sunday", "unspecified", "2026-09-27"),
             ("thursday", "unspecified", "2026-09-24"),
             ("next thursday", "unspecified", "2026-10-01"),
             ("MONDAY", "unspecified", "2026-09-28"),
@@ -150,6 +160,22 @@ class ParserTests(SimpleTestCase):
             ("an hour", 3600),
             ("90 seconds", 90),
             ("1.5 hours", 5400),
+            ("1 hour 30 minutes", 5400),
+            ("1 hour and 30 minutes", 5400),
+            ("1h30", 5400),
+            ("1h30m", 5400),
+            ("1,500 seconds", 1500),
+            ("90 sec", 90),
+            ("1,50 seconds", None),
+            ("1 500 seconds", None),
+            ("1 hour 1,50 minutes", None),
+            ("1 hour.", 3600),
+            ("1h30.", 5400),
+            ("1h 30", 5400),
+            ("90 sec, please", 90),
+            ("1/2 hour", None),
+            ("1h99", None),
+            ("1 hour 30 minutes 15 seconds", 5415),
             ("2 hrs", 7200),
             ("a minute", 60),
             ("30s", 30),
@@ -194,10 +220,12 @@ class ChatShapeViewTests(TestCase):
         self.gate = override_settings(CHAT_SHAPE_TENANT_IDS=str(self.tenant.id))
         self.gate.enable()
         self.addCleanup(self.gate.disable)
-        self.post = self.enterContext(patch("apps.common.jev.requests.post"))
+        self.post = self.enterContext(patch("apps.common.jev._post"))
         self.post.return_value = Mock(status_code=200, text=json.dumps(response_data()))
-        self.redact = self.enterContext(patch("apps.pii.redactor.redact_user_message_checked"))
-        self.redact.side_effect = lambda text, tenant, **kwargs: RedactionOutcome(text, True, "redacted")
+        self.redact = self.enterContext(patch("apps.pii.ephemeral.redact_texts_ephemeral_checked"))
+        self.redact.side_effect = lambda texts, tenant, **kwargs: [
+            RedactionOutcome(text, True, "redacted") for text in texts
+        ]
 
     def send(self):
         return self.client.post(self.url, self.payload, format="json")
@@ -241,7 +269,8 @@ class ChatShapeViewTests(TestCase):
             recent_turns=[{"role": "user", "text": "x" * 600}, {"role": "assistant", "text": "private reply"}],
             open_panel={"kind": "sleep", "label": "private label"},
         )
-        self.redact.side_effect = [
+        self.redact.side_effect = None
+        self.redact.return_value = [
             RedactionOutcome(text, True, "redacted")
             for text in ("safe newest", "safe user", "safe reply", "safe label")
         ]
@@ -254,9 +283,9 @@ class ChatShapeViewTests(TestCase):
                 "open_panel": "sleep: safe label",
             },
         )
-        self.assertEqual(self.redact.call_args_list[1].args[0], "x" * 500)
+        self.assertEqual(self.redact.call_args.args[0][1], "x" * 300)
         for call in self.redact.call_args_list:
-            self.assertEqual(call.kwargs, {"allow_user_name": False})
+            self.assertIn("deadline", call.kwargs)
             self.assertEqual(call.args[1].id, self.tenant.id)
 
     def test_any_unconfirmed_text_skips_jev(self):
@@ -266,7 +295,8 @@ class ChatShapeViewTests(TestCase):
         )
         for position in range(4):
             with self.subTest(position=position):
-                self.redact.side_effect = [RedactionOutcome("text", i != position, "redacted") for i in range(4)]
+                self.redact.side_effect = None
+                self.redact.return_value = [RedactionOutcome("text", i != position, "redacted") for i in range(4)]
                 response = self.send()
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.data["reason"], "redaction_unconfirmed")
@@ -364,7 +394,9 @@ class ChatShapeViewTests(TestCase):
                 self.redact.side_effect = (
                     RuntimeError(sentinel)
                     if failure == "redaction"
-                    else lambda *args, **kwargs: RedactionOutcome("[PERSON_1]", True, "redacted")
+                    else lambda texts, *args, **kwargs: [
+                        RedactionOutcome("[PERSON_1]", True, "redacted") for _ in texts
+                    ]
                 )
                 self.payload["text"] = sentinel * 100 if failure == "request" else sentinel
                 with self.assertLogs(level="INFO") as captured:
@@ -383,3 +415,158 @@ class ChatShapeViewTests(TestCase):
         parsed = ChatShapeRequest.model_validate(payload)
         self.assertEqual(len(parsed.recent_turns), 4)
         self.assertTrue(all(len(turn.text) == 500 for turn in parsed.recent_turns))
+
+    def test_history_uses_only_last_two_at_300_chars(self):
+        self.payload["recent_turns"] = [
+            {"role": "user", "text": "unused one"},
+            {"role": "assistant", "text": "unused two"},
+            {"role": "user", "text": "a" * 500},
+            {"role": "assistant", "text": "b" * 500},
+        ]
+        self.assertEqual(self.send().status_code, 200)
+        self.redact.assert_called_once()
+        self.assertEqual(self.redact.call_args.args[0], [self.payload["text"], "a" * 300, "b" * 300])
+        state = self.post.call_args.kwargs["json"]["state"]
+        self.assertEqual(state["recent_turns"], ["user: " + "a" * 300, "assistant: " + "b" * 300])
+
+    def test_real_redaction_never_writes_even_if_jev_fails_and_chat_stays_provisional(self):
+        from apps.pii.provisional import PiiIngress
+        from apps.pii.redactor import redact_user_message_checked
+
+        self.tenant.pii_entity_map = {"[PERSON_4]": {"name": "Knownfixture"}}
+        self.tenant.pii_type_counters = {"PERSON": 9}
+        self.tenant.save(update_fields=["pii_entity_map", "pii_type_counters"])
+        self.user.tenant = self.tenant
+        before_map = deepcopy(self.tenant.pii_entity_map)
+        before_counters = deepcopy(self.tenant.pii_type_counters)
+        self.redact.side_effect = redact_texts_ephemeral_checked
+        self.payload.update(
+            text="Knownfixture wants sleep",
+            recent_turns=[{"role": "assistant", "text": "Fakenamealpha suggested it"}],
+            open_panel={"kind": "sleep", "label": "Fakenamebeta sleep"},
+        )
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=fake_name_detector),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+        ):
+            for fails in (False, True):
+                self.tenant.user = self.user
+                with (
+                    self.subTest(jev_fails=fails),
+                    patch.object(Tenant, "save", side_effect=AssertionError("No writes")),
+                    patch.object(Tenant.objects, "select_for_update", side_effect=AssertionError("No registry lock")),
+                    self.assertNumQueries(0),
+                ):
+                    self.post.side_effect = RuntimeError("unavailable") if fails else None
+                    response = self.send()
+                    self.assertEqual(response.data["reason"], "unavailable" if fails else "ok")
+                    state = self.post.call_args.kwargs["json"]["state"]
+                    self.assertNotIn("Fakename", str(state))
+                    self.assertIn("[PERSON_4]", state["latest_message"])
+                    self.assertIn("[PERSON_10]", state["recent_turns"][0])
+                self.tenant.refresh_from_db()
+                self.assertEqual(self.tenant.pii_entity_map, before_map)
+                self.assertEqual(self.tenant.pii_type_counters, before_counters)
+            with override_settings(PII_PROVISIONAL_TENANT_IDS=frozenset({str(self.tenant.pk)})):
+                outcome = redact_user_message_checked(
+                    "Fakenamealpha",
+                    self.tenant,
+                    allow_user_name=False,
+                    ingress=PiiIngress("ios", "shape-following-chat", datetime(2026, 9, 24, tzinfo=UTC)),
+                )
+            self.assertTrue(outcome.confirmed)
+            self.tenant.refresh_from_db()
+            self.assertEqual(outcome.text, "[PERSON_10]")
+            self.assertTrue(self.tenant.pii_entity_map["[PERSON_10]"]["provisional"])
+
+    def test_maximum_history_batches_slow_detector_and_shares_jev_budget(self):
+        from apps.pii.redactor import _detect_pii
+
+        self.redact.side_effect = redact_texts_ephemeral_checked
+        self.payload["recent_turns"] = [{"role": "user", "text": "x" * 500}] * 4
+        self.payload["open_panel"] = {"kind": "sleep", "label": "Sleep"}
+
+        def slow_detector(text):
+            sleep(0.1)
+            return []
+
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=slow_detector),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+            patch(
+                "apps.pii.redactor._detect_pii",
+                wraps=_detect_pii,
+            ) as detect,
+        ):
+            started = monotonic()
+            response = self.send()
+            self.assertLess(monotonic() - started, 2.5)
+            self.assertEqual(response.data["reason"], "ok")
+            self.assertEqual(detect.call_count, 2)
+            self.assertLessEqual(self.post.call_args.kwargs["timeout"].total, 2.3)
+
+    def test_slow_detector_returns_at_deadline_without_late_jev(self):
+
+        entered, release, finished = Event(), Event(), Event()
+
+        def blocked_detector(text):
+            entered.set()
+            release.wait(5)
+            return []
+
+        def redact(*args, **kwargs):
+            try:
+                return redact_texts_ephemeral_checked(*args, **kwargs)
+            finally:
+                finished.set()
+
+        self.redact.side_effect = redact
+        self.payload["recent_turns"] = [{"role": "user", "text": "x" * 500}] * 4
+        self.payload["open_panel"] = {"kind": "sleep", "label": "Sleep"}
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=blocked_detector),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+        ):
+            started = monotonic()
+            try:
+                response = self.send()
+                elapsed = monotonic() - started
+                self.assertTrue(entered.is_set())
+                self.assertEqual(response.data["reason"], "unavailable")
+                self.assertGreaterEqual(elapsed, 2.4)
+                self.assertLess(elapsed, 2.9)
+                self.post.assert_not_called()
+            finally:
+                release.set()
+                self.assertTrue(finished.wait(1))
+            self.post.assert_not_called()
+
+    def test_slow_jev_cannot_extend_endpoint_deadline(self):
+        entered, release, finished = Event(), Event(), Event()
+
+        def blocked_post(*args, **kwargs):
+            entered.set()
+            try:
+                release.wait(2)
+                return Mock(status_code=200, text=json.dumps(response_data()))
+            finally:
+                finished.set()
+
+        self.post.side_effect = blocked_post
+        with patch("apps.router.chat_shape_views.SHAPE_BUDGET_SECONDS", 0.15):
+            started = monotonic()
+            try:
+                response = self.send()
+                self.assertTrue(entered.is_set())
+                self.assertEqual(response.data["reason"], "unavailable")
+                self.assertLess(monotonic() - started, 0.6)
+            finally:
+                release.set()
+                self.assertTrue(finished.wait(1))
+
+
+def fake_name_detector(text):
+    return [
+        {"entity_group": "FIRSTNAME", "start": match.start(), "end": match.end(), "score": 0.99}
+        for match in re.finditer(r"Fakenamealpha|Fakenamebeta", text)
+    ]

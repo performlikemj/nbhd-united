@@ -1,7 +1,7 @@
 """Authenticated, optional chat panel selection; never blocks the chat send."""
 
 import logging
-from time import perf_counter
+from time import monotonic, perf_counter
 
 from pydantic import ValidationError
 from rest_framework.exceptions import ParseError
@@ -10,7 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.router.chat_shape import ChatShapeRequest, ChatShapeResponse, shape_chat
+from apps.router.chat_shape import SHAPE_BUDGET_SECONDS, ChatShapeRequest, ChatShapeResponse, shape_chat
 from apps.tenants.throttling import _UserScopedThrottle
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,7 @@ class ChatShapeView(APIView):
 
     def post(self, request):
         started = perf_counter()
+        deadline = monotonic() + SHAPE_BUDGET_SECONDS
         try:
             payload = ChatShapeRequest.model_validate(request.data)
         except (ValidationError, ParseError):
@@ -36,7 +37,7 @@ class ChatShapeView(APIView):
         tenant = None
         try:
             tenant = getattr(request.user, "tenant", None)
-            result = shape_chat(payload, tenant)
+            result = shape_chat(payload, tenant, deadline=deadline)
         except Exception:
             result = ChatShapeResponse(reason="unavailable")
         result.latency_ms = max(0, round((perf_counter() - started) * 1000))

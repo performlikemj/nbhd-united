@@ -1,8 +1,13 @@
 """Living chat contract, deterministic policy/parsers, and redacted Jev service."""
 
 import re
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from threading import BoundedSemaphore
+from time import monotonic
+from types import SimpleNamespace
 from typing import Literal
 from uuid import UUID
 
@@ -11,7 +16,7 @@ from django.utils import timezone
 from pydantic import Field, field_validator, model_validator
 
 from apps.common import jev
-from apps.common.tenant_tz import tenant_tz
+from apps.common.tenant_tz import tenant_tz, tenant_tz_name
 
 SURFACES = {
     "training_week": "Their workouts or training schedule across days: what sessions they did or have planned this week or month, streaks, missed sessions",
@@ -156,25 +161,31 @@ def chat_shape_panels() -> frozenset[str]:
 def parse_date(text: str, tenant, *, now: datetime | None = None) -> tuple[TimeRange, date | None]:
     """Resolve explicit dates locally; unspecified means Jev may supply a range.
 
+    This weekday is in the current Monday-based week; last is strictly past.
     Bare/on weekdays include today; 'next' is strictly in the future. Past N
     days selects the closest 1/7/30-day supported bucket (ties go shorter).
     The first explicit expression wins when a message names multiple periods.
     """
     today = (now or timezone.now()).astimezone(tenant_tz(tenant)).date()
-    pattern = r"\b(today|yesterday|tomorrow|this\s+week|last\s+week|this\s+month|last\s+month|past\s+\d+\s+days?|(?:(?:next|on)\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b"
+    pattern = r"\b(today|yesterday|tomorrow|this\s+week|last\s+week|this\s+month|last\s+month|past\s+\d+\s+days?|(?:(?:next|on|last|this)\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b"
     match = re.search(pattern, text, re.IGNORECASE)
     if not match:
         return "unspecified", None
     token = " ".join(match[0].lower().split())
     if token in ("today", "yesterday", "tomorrow"):
         return token, today + timedelta(days={"today": 0, "yesterday": -1, "tomorrow": 1}[token])
-    if token.startswith(("this ", "last ")):
+    if token in {"this week", "last week", "this month", "last month"}:
         return token.replace(" ", "_"), None
     if token.startswith("past "):
         days = int(token.split()[1])
         return min(((1, "today"), (7, "this_week"), (30, "this_month")), key=lambda item: abs(item[0] - days))[1], None
     weekdays = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
-    offset = (weekdays.index(token.split()[-1]) - today.weekday()) % 7
+    weekday = weekdays.index(token.split()[-1])
+    offset = (weekday - today.weekday()) % 7
+    if token.startswith("this "):
+        offset = weekday - today.weekday()
+    elif token.startswith("last "):
+        offset = -((today.weekday() - weekday) % 7 or 7)
     if token.startswith("next ") and offset == 0:
         offset = 7
     # Weekday has no range enum; day carries the date. Do not fall back to Jev.
@@ -182,17 +193,38 @@ def parse_date(text: str, tenant, *, now: datetime | None = None) -> tuple[TimeR
 
 
 def parse_duration(text: str) -> int | None:
-    match = re.search(
-        r"(?<![\w.+-])(\d+(?:\.\d+)?|an?|one)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b",
-        text,
+    """Sum adjacent components; never parse the suffix of a malformed number."""
+    number = r"(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?|an?|one"
+    component = re.compile(
+        rf"(?P<amount>{number})\s*(?P<unit>hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)(?![a-z])",
         re.IGNORECASE,
     )
-    if not match:
+    initial = re.search(rf"(?<![\w.,+/-])(?:{component.pattern})", text, re.IGNORECASE)
+    if initial is None or re.search(r"[0-9][\s,._/]*$|[+-]\s*$", text[: initial.start()]):
         return None
-    amount, unit = (part.lower() for part in match.groups())
-    value = Decimal(1) if amount in ("a", "an", "one") else Decimal(amount)
-    multiplier = 3600 if unit.startswith("h") else 60 if unit.startswith("m") else 1
-    seconds = int(value * multiplier)
+    match = initial
+    total = Decimal(0)
+    while match is not None:
+        amount, unit = match["amount"].lower(), match["unit"].lower()
+        value = Decimal(1) if amount in {"a", "an", "one"} else Decimal(amount.replace(",", ""))
+        multiplier = 3600 if unit.startswith("h") else 60 if unit.startswith("m") else 1
+        total += value * multiplier
+        end = match.end()
+        gap = re.match(r"\s*(?:and\s+)?", text[end:], re.IGNORECASE)
+        next_start = end + gap.end()
+        match = component.match(text, next_start)
+        if match is None and unit == "h":
+            # Compact hours/minutes notation: 1h30, optionally followed by 'm'.
+            minutes = re.match(r"\s*([0-5]?[0-9])(?![\w]|[.,][0-9])", text[end:])
+            if minutes:
+                total += Decimal(minutes[1]) * 60
+                end += minutes.end()
+        if match is None:
+            # A numeric continuation we cannot consume must not shorten a timer.
+            if re.match(r"[\w]|[.,][0-9]|\s*(?:and\s+)?[0-9]", text[end:], re.IGNORECASE):
+                return None
+            break
+    seconds = int(total)
     return seconds if seconds > 0 else None
 
 
@@ -226,31 +258,73 @@ def decide_panel(
     return decision, panel, "ok"
 
 
-def shape_chat(payload: ChatShapeRequest, tenant) -> ChatShapeResponse:
+SHAPE_BUDGET_SECONDS = 2.5
+# Bounded admission: timed-out local inference cannot create unlimited workers
+# or a queue of stale requests. A completed detector never starts late Jev work.
+_SHAPE_WORKERS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="chat-shape")
+_SHAPE_SLOTS = BoundedSemaphore(4)
+
+
+def shape_chat(payload: ChatShapeRequest, tenant, *, deadline: float | None = None) -> ChatShapeResponse:
     if not chat_shape_enabled(tenant):
         return ChatShapeResponse(enabled=False, reason="disabled")
-    from apps.pii.redactor import as_confirmed, redact_user_message_checked
-
-    # Labels are client text too: never let an open-panel label bypass redaction.
-    texts = [payload.text, *(turn.text for turn in payload.recent_turns)]
-    if payload.open_panel is not None:
-        texts.append(payload.open_panel.label)
-    redacted = []
+    deadline = deadline if deadline is not None else monotonic() + SHAPE_BUDGET_SECONDS
+    if monotonic() >= deadline or not _SHAPE_SLOTS.acquire(blocking=False):
+        return ChatShapeResponse(reason="unavailable")
+    # Snapshot on the request thread: background work has no ORM-capable tenant,
+    # lazy relations, or mutable references into the caller's PII registry.
     try:
-        for text in texts:
-            confirmed = as_confirmed(redact_user_message_checked(text, tenant, allow_user_name=False))
-            if confirmed is None:
-                return ChatShapeResponse(reason="redaction_unconfirmed")
-            redacted.append(confirmed.text)
+        snapshot = SimpleNamespace(
+            id=tenant.id,
+            model_tier=getattr(tenant, "model_tier", "starter"),
+            pii_entity_map=deepcopy(getattr(tenant, "pii_entity_map", {}) or {}),
+            pii_type_counters=deepcopy(getattr(tenant, "pii_type_counters", {}) or {}),
+            pii_denylist=deepcopy(getattr(tenant, "pii_denylist", {}) or {}),
+            user=SimpleNamespace(timezone=tenant_tz_name(tenant)),
+        )
+        panels = chat_shape_panels()
+        future = _SHAPE_WORKERS.submit(_shape_chat, payload, snapshot, deadline, panels)
+    except Exception:
+        _SHAPE_SLOTS.release()
+        return ChatShapeResponse(reason="unavailable")
+    future.add_done_callback(lambda _: _SHAPE_SLOTS.release())
+    try:
+        result = future.result(timeout=max(0, deadline - monotonic()))
+        return result if monotonic() < deadline else ChatShapeResponse(reason="unavailable")
+    except Exception:
+        future.cancel()
+        return ChatShapeResponse(reason="unavailable")
+
+
+def _shape_chat(payload, tenant, deadline, panels):
+    from apps.pii.ephemeral import redact_texts_ephemeral_checked
+    from apps.pii.redactor import as_confirmed
+
+    turns = payload.recent_turns[-2:]
+    texts = [payload.text, *(turn.text[:300] for turn in turns)]
+    if payload.open_panel is not None:
+        texts.append(payload.open_panel.label[:300])
+    try:
+        if monotonic() >= deadline:
+            return ChatShapeResponse(reason="unavailable")
+        outcomes = redact_texts_ephemeral_checked(texts, tenant, deadline=deadline)
+        if monotonic() >= deadline:
+            return ChatShapeResponse(reason="unavailable")
+        confirmed = [as_confirmed(outcome) for outcome in outcomes]
+        if len(confirmed) != len(texts) or any(item is None for item in confirmed):
+            return ChatShapeResponse(reason="redaction_unconfirmed")
+        redacted = [item.text for item in confirmed]
+    except TimeoutError:
+        return ChatShapeResponse(reason="unavailable")
     except Exception:
         return ChatShapeResponse(reason="redaction_unconfirmed")
     state = {
         "latest_message": redacted[0],
-        "recent_turns": [f"{turn.role}: {text}" for turn, text in zip(payload.recent_turns, redacted[1:])],
+        "recent_turns": [f"{turn.role}: {text}" for turn, text in zip(turns, redacted[1:])],
         "open_panel": f"{payload.open_panel.kind}: {redacted[-1]}" if payload.open_panel else "none",
     }
     try:
-        answers = jev.decide(state, QUESTIONS).answers
+        answers = jev.decide(state, QUESTIONS, deadline=deadline).answers
         resolved_range, day = parse_date(payload.text, tenant)
         if resolved_range == "unspecified" and day is None:
             candidate = answers["time_range"].choice
@@ -263,7 +337,7 @@ def shape_chat(payload: ChatShapeRequest, tenant) -> ChatShapeResponse:
             follow_up,
             resolved_range,
             payload.open_panel,
-            chat_shape_panels(),
+            panels,
         )
         return ChatShapeResponse(
             decision=decision,

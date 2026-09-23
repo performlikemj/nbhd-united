@@ -3,12 +3,13 @@
 import os
 import sys
 from enum import Enum
+from time import monotonic
 from typing import Annotated, Literal, get_args
-from unittest.mock import Mock
 
 import requests
 from django.conf import settings
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from urllib3.util import Timeout
 
 JEV_MODEL = "typesafe/jev-1.13"
 DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
@@ -122,20 +123,38 @@ class JevUnavailable(ValueError):
     """Content-free error: callers must use their previous fallback."""
 
 
-def decide(state, questions) -> DecisionResponse:
-    """One POST, no retries. Tests can enter only through a mocked transport.
+def _running_tests() -> bool:
+    if getattr(settings, "TEST_MODE", False) or "test" in sys.argv or "PYTEST_CURRENT_TEST" in os.environ:
+        return True
+    # Inspect active runners, including the parent of a deadline worker. Merely
+    # importing/installing unittest or pytest in production is not a test run.
+    for frame in sys._current_frames().values():
+        while frame is not None:
+            module = frame.f_globals.get("__name__", "")
+            if module in {"unittest.case", "unittest.suite", "unittest.runner"} or module.startswith("_pytest."):
+                return True
+            frame = frame.f_back
+    return False
+
+
+def _post(*args, **kwargs):
+    """The real transport is always forbidden inside a test runner.
+
+    Tests replace THIS function with an offline fake. Wrapping this function or
+    requests.post with a spy still enters this guard and cannot reach requests.
+    """
+    if _running_tests():
+        raise JevUnavailable("Jev unavailable")
+    return requests.post(*args, **kwargs)
+
+
+def decide(state, questions, *, deadline: float | None = None) -> DecisionResponse:
+    """One POST, no retries; an optional monotonic deadline caps the I/O budget.
 
     Decisions uses typed question primitives as its provider schema, rather
-    than the chat-completions response_format protocol.
+    than the chat-completions response_format protocol. The shape caller also
+    bounds wall time, including DNS and response parsing, outside requests.
     """
-    testing = (
-        getattr(settings, "TEST_MODE", False)
-        or "test" in sys.argv
-        or "pytest" in sys.modules
-        or "PYTEST_CURRENT_TEST" in os.environ
-    )
-    if testing and not isinstance(requests.post, Mock):
-        raise JevUnavailable("Jev unavailable")
     try:
         key = settings.OPENROUTER_API_KEY
         if not key:
@@ -148,13 +167,21 @@ def decide(state, questions) -> DecisionResponse:
             "state": state,
             "questions": {name: question.model_dump(exclude_none=True) for name, question in questions.items()},
         }
-        response = requests.post(
+        timeout = (2, 4)
+        if deadline is not None:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise JevUnavailable("Jev unavailable")
+            timeout = Timeout(total=remaining, connect=min(2, remaining), read=min(4, remaining))
+        response = _post(
             DECISIONS_URL,
             headers={"Authorization": f"Bearer {key}"},
             json=body,
-            timeout=(2, 4),
+            timeout=timeout,
             allow_redirects=False,
         )
+        if deadline is not None and monotonic() >= deadline:
+            raise JevUnavailable("Jev unavailable")
         response.raise_for_status()
         if not 200 <= response.status_code < 300:
             raise ValueError("Unexpected HTTP status")
@@ -173,6 +200,8 @@ def decide(state, questions) -> DecisionResponse:
                 str(i): value for i, value in enumerate(question.criteria)
             }:
                 raise ValueError("Unexpected score legend")
+        if deadline is not None and monotonic() >= deadline:
+            raise JevUnavailable("Jev unavailable")
         return result
     except Exception:
         # Pydantic and HTTP exceptions can contain raw state/provider output.

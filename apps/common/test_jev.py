@@ -57,7 +57,7 @@ class JevTests(SimpleTestCase):
         )
 
     def call(self, data):
-        with patch("apps.common.jev.requests.post", return_value=Mock(status_code=200, text=json.dumps(data))) as post:
+        with patch("apps.common.jev._post", return_value=Mock(status_code=200, text=json.dumps(data))) as post:
             result = jev.decide({"latest_message": "[PERSON_1]"}, self.questions)
         return result, post
 
@@ -109,7 +109,7 @@ class JevTests(SimpleTestCase):
 
     def test_bad_questions_never_reach_transport(self):
         for questions in ({}, {"x": {"type": "choice", "instructions": "x", "criteria": {"x": "x"}}}):
-            with self.subTest(questions=questions), patch("apps.common.jev.requests.post") as post:
+            with self.subTest(questions=questions), patch("apps.common.jev._post") as post:
                 with self.assertRaises(jev.JevUnavailable):
                     jev.decide("state", questions)
                 post.assert_not_called()
@@ -118,7 +118,7 @@ class JevTests(SimpleTestCase):
 
     def test_failures_never_retry_or_expose_content(self):
         for failure in (requests.Timeout("private sentinel"), requests.HTTPError("private sentinel"), None):
-            with self.subTest(failure=type(failure).__name__), patch("apps.common.jev.requests.post") as post:
+            with self.subTest(failure=type(failure).__name__), patch("apps.common.jev._post") as post:
                 post.side_effect = failure
                 post.return_value = Mock(status_code=200, text="private sentinel malformed JSON")
                 with self.assertRaisesMessage(jev.JevUnavailable, "Jev unavailable"):
@@ -126,11 +126,11 @@ class JevTests(SimpleTestCase):
                 post.assert_called_once()
 
     def test_redirect_and_missing_key_fail_closed(self):
-        with patch("apps.common.jev.requests.post", return_value=Mock(status_code=302)) as post:
+        with patch("apps.common.jev._post", return_value=Mock(status_code=302)) as post:
             with self.assertRaises(jev.JevUnavailable):
                 jev.decide("state", self.questions)
             post.assert_called_once()
-        with override_settings(OPENROUTER_API_KEY=""), patch("apps.common.jev.requests.post") as post:
+        with override_settings(OPENROUTER_API_KEY=""), patch("apps.common.jev._post") as post:
             with self.assertRaises(jev.JevUnavailable):
                 jev.decide("state", self.questions)
             post.assert_not_called()
@@ -142,3 +142,45 @@ class JevTests(SimpleTestCase):
                 with self.assertRaises(jev.JevUnavailable):
                     jev.decide("state", self.questions)
                 network.assert_not_called()
+
+    def test_wrapping_spies_cannot_enter_real_transport(self):
+        for boundary in ("requests.post", "apps.common.jev._post"):
+            original = requests.post if boundary == "requests.post" else jev._post
+            with (
+                self.subTest(boundary=boundary),
+                patch(boundary, wraps=original),
+                patch("requests.sessions.Session.request") as network,
+            ):
+                with self.assertRaises(jev.JevUnavailable):
+                    jev.decide("private sentinel", self.questions)
+                network.assert_not_called()
+
+    @override_settings(TEST_MODE=False)
+    def test_plain_unittest_without_django_marker_is_offline(self):
+        with (
+            patch.object(jev.sys, "argv", ["offline-harness.py"]),
+            patch.dict(jev.os.environ, {}, clear=True),
+            patch("requests.sessions.Session.request") as network,
+        ):
+            with self.assertRaises(jev.JevUnavailable):
+                jev.decide("state", self.questions)
+            network.assert_not_called()
+
+    def test_shared_deadline_caps_transport_and_rejects_late_result(self):
+        from time import monotonic
+
+        deadline = monotonic() + 0.5
+        with patch("apps.common.jev._post", return_value=Mock(status_code=200, text=json.dumps(self.data))) as post:
+            jev.decide("state", self.questions, deadline=deadline)
+            timeout = post.call_args.kwargs["timeout"]
+            self.assertGreater(timeout.total, 0)
+            self.assertLessEqual(timeout.total, 0.5)
+            with self.assertRaises(jev.JevUnavailable):
+                jev.decide("state", self.questions, deadline=monotonic() - 1)
+            post.assert_called_once()
+        with (
+            patch("apps.common.jev.monotonic", side_effect=[1.0, 3.0]),
+            patch("apps.common.jev._post", return_value=Mock(status_code=200, text=json.dumps(self.data))),
+            self.assertRaises(jev.JevUnavailable),
+        ):
+            jev.decide("state", self.questions, deadline=2.0)
