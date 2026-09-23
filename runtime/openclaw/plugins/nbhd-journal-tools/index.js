@@ -1,3 +1,4 @@
+import { panelSchema } from "./panel-schema.js";
 import { wrapTool } from "../../tool-logger.js";
 const wrap = (def) => wrapTool(def, { plugin: "nbhd-journal-tools" });
 
@@ -1024,6 +1025,7 @@ export default function register(api) {
   );
 
   // ── Send message to user (for cron jobs / proactive messages) ──────
+  const panelsEnabled = asObject(api.pluginConfig).panelsEnabled === true;
   api.registerTool((toolContext) => wrap({
     name: "nbhd_send_to_user",
     description:
@@ -1033,11 +1035,16 @@ export default function register(api) {
       "during normal conversation — just reply directly instead. When " +
       "running inside a cron job, pass `job_name` (find it in the prompt " +
       "preamble) so the user's next inbound reply correctly threads back " +
-      "to this message.",
+      "to this message." + (panelsEnabled
+        ? " Attach optional panels when live cards help the user act " +
+          "on the report; references only, never data snapshots. Kinds: " +
+          panelSchema.items.properties.kind.enum.join(", ") + "."
+        : ""),
     parameters: {
       type: "object",
       required: ["message"],
       properties: {
+        ...(panelsEnabled ? { panels: panelSchema } : {}),
         message: {
           type: "string",
           description: "The message text to send. Supports Markdown formatting.",
@@ -1062,7 +1069,9 @@ export default function register(api) {
     async execute(_id, params) {
       const input = asObject(params);
       const message = asTrimmedString(input.message);
-      if (!message) throw new Error("message is required");
+      if (!message && !(panelsEnabled && input.panels?.length)) {
+        throw new Error(panelsEnabled ? "message or panels is required" : "message is required");
+      }
       const jobName = asTrimmedString(input.job_name);
       const threadId = asTrimmedString(input.thread_id);
       const occurrenceKey = asTrimmedString(input.occurrence_key);
@@ -1077,7 +1086,11 @@ export default function register(api) {
       const payload = await callRuntime(api, {
         path: tenantPath(api, "/send-to-user/"),
         method: "POST",
-        body: { message, ...(threadId ? { thread_id: threadId } : {}) },
+        body: {
+          message,
+          ...(threadId ? { thread_id: threadId } : {}),
+          ...(panelsEnabled && input.panels !== undefined ? { panels: input.panels } : {}),
+        },
         extraHeaders,
       });
       return renderPayload(payload);

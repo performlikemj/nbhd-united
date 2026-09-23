@@ -388,8 +388,10 @@ class TelegramPoller:
         # now — Telegram has no transport for either here, so just strip the
         # markers (never let them leak as raw text).
         from apps.router.journal_link import extract_journal_link
+        from apps.router.panels import extract_panels
         from apps.router.quick_replies import extract_quick_replies
 
+        text, _panels = extract_panels(text)
         text, _quick_replies = extract_quick_replies(text, tenant_id=tenant.id, channel="telegram_poller")
         text, _journal_link = extract_journal_link(text, tenant_id=tenant.id, channel="telegram_poller")
 

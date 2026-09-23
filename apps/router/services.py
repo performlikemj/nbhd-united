@@ -70,7 +70,15 @@ def _channel_via(channel: str | None) -> str:
     return f" via {label}" if label else ""
 
 
-def build_chat_context_marker(channel: str | None = None) -> str:
+def _panel_chat_context(channel, tenant) -> str:
+    from apps.router.panels import CHAT_PANEL_INSTRUCTION, chat_panels_enabled
+
+    if (channel or "").strip().lower() in {"ios", "app"} and chat_panels_enabled(tenant):
+        return CHAT_PANEL_INSTRUCTION
+    return ""
+
+
+def build_chat_context_marker(channel: str | None = None, *, tenant=None) -> str:
     """Single-line marker injected before ad-hoc user messages.
 
     Tells the agent the turn is a conversational message (NBHD app / Telegram /
@@ -92,10 +100,10 @@ def build_chat_context_marker(channel: str | None = None) -> str:
     return (
         f"[chat{_channel_via(channel)}: user is mid-conversation, reply concisely "
         "without loading workspace docs unless the question explicitly requires it]\n"
-    )
+    ) + _panel_chat_context(channel, tenant)
 
 
-def build_coalesced_chat_marker(channel: str | None = None) -> str:
+def build_coalesced_chat_marker(channel: str | None = None, *, tenant=None) -> str:
     """Marker variant for coalesced multi-message turns.
 
     Replaces the standard ``build_chat_context_marker()`` when N>1 inbound
@@ -111,7 +119,7 @@ def build_coalesced_chat_marker(channel: str | None = None) -> str:
         "while you were waking up — treat as one combined request; if any later "
         "message supersedes an earlier one, follow the later one; do not reply to "
         "each message separately]\n"
-    )
+    ) + _panel_chat_context(channel, tenant)
 
 
 def format_coalesced_user_content(
@@ -121,6 +129,7 @@ def format_coalesced_user_content(
     timestamps: list[datetime] | None = None,
     workspace_prefix: str = "",
     channel: str | None = None,
+    tenant=None,
 ) -> str:
     """Build the user-message content for a coalesced multi-message turn.
 
@@ -137,7 +146,11 @@ def format_coalesced_user_content(
     if len(raw_texts) < 2:
         raise ValueError("format_coalesced_user_content requires >= 2 entries")
 
-    header = build_datetime_context(user_timezone) + build_coalesced_chat_marker(channel) + (workspace_prefix or "")
+    header = (
+        build_datetime_context(user_timezone)
+        + build_coalesced_chat_marker(channel, tenant=tenant)
+        + (workspace_prefix or "")
+    )
 
     lines: list[str] = []
     for idx, raw in enumerate(raw_texts, start=1):

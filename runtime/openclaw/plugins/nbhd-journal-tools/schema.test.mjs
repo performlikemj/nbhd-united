@@ -5,6 +5,7 @@
 // Document.Kind enum (stops the runtime `invalid_kind` 400s) and the
 // omission-prone tools leading with REQUIRED in their description.
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import register from "./index.js";
@@ -16,9 +17,10 @@ const PUT_KINDS = ["daily", "weekly", "monthly", "project", "ideas", "memory"];
 const DOC_KIND_TOOLS = ["nbhd_document_get", "nbhd_document_append", "nbhd_journal_search"];
 const ALL_KIND_TOOLS = [...DOC_KIND_TOOLS, "nbhd_document_put"];
 
-function collectTools(context = {}) {
+function collectTools(context = {}, pluginConfig = {}) {
   const tools = {};
   const api = {
+    pluginConfig,
     registerTool(def) {
       if (typeof def === "function") def = def(context);
       tools[def.name] = def;
@@ -460,4 +462,67 @@ test("send_to_user forwards runtime cron identity even without model job_name", 
     const tools = collectTools({ sessionKey });
     await tools.nbhd_send_to_user.execute("call-1", { message: "Nice work", cron_job_id: "forged" });
   }
+});
+
+test("send_to_user carries the generated panel reference schema and forwards panels", async (t) => {
+  const saved = { ...process.env };
+  t.after(() => { process.env = saved; });
+  process.env.NBHD_API_BASE_URL = "https://nbhd.test";
+  process.env.NBHD_TENANT_ID = "tenant-test";
+  process.env.NBHD_INTERNAL_API_KEY = "test-key";
+  const panels = [{ kind: "sleep", params: { range: "last_night" }, title: "Last night" }];
+  const bodies = [];
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return { ok: true, status: 200, async text() { return "{}"; } };
+  });
+  const tool = collectTools({}, { panelsEnabled: true }).nbhd_send_to_user;
+  const schema = tool.parameters.properties.panels;
+  assert.equal(schema.maxItems, 6);
+  assert.equal(schema.items.additionalProperties, false);
+  assert.equal(schema.items.properties.params.additionalProperties, false);
+  assert.equal(schema.items.properties.title.maxLength, 60);
+  assert.equal(schema.items.properties.params.properties.duration_seconds.maximum, 14400);
+  for (const kind of schema.items.properties.kind.enum) assert.ok(tool.description.includes(kind));
+  for (const message of ["Good morning", ""]) {
+    await tool.execute("call-panels", { message, panels });
+    assert.deepEqual(bodies.at(-1), { message, panels });
+  }
+});
+
+
+test("send_to_user without the strict config gate preserves original tool bytes", () => {
+  // Captured from the original tool before 1ee74fb0, including key order.
+  for (const pluginConfig of [{}, { panelsEnabled: false }, { panelsEnabled: "true" }, { panelsEnabled: 1 }]) {
+    const { description, parameters } = collectTools({}, pluginConfig).nbhd_send_to_user;
+    const digest = createHash("sha256").update(JSON.stringify({ description, parameters })).digest("hex");
+    assert.equal(digest, "ffa04b388f2eacbe08e04b88ced79141c67cf3bd3c0a517105d7107228297ff4");
+    assert.equal(parameters.properties.panels, undefined);
+    assert.doesNotMatch(description, /panels/);
+  }
+});
+
+test("disabled send_to_user never forwards unsolicited panels", async (t) => {
+  const saved = { ...process.env };
+  t.after(() => { process.env = saved; });
+  process.env.NBHD_API_BASE_URL = "https://nbhd.test";
+  process.env.NBHD_TENANT_ID = "tenant-test";
+  process.env.NBHD_INTERNAL_API_KEY = "test-key";
+  const bodies = [];
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return { ok: true, status: 200, async text() { return "{}"; } };
+  });
+  const tool = collectTools().nbhd_send_to_user;
+  await tool.execute("disabled", { message: "Hello", panels: [{ kind: "sleep" }] });
+  assert.deepEqual(bodies, [{ message: "Hello" }]);
+  await assert.rejects(tool.execute("empty", { message: "", panels: [{ kind: "sleep" }] }), /message is required/);
+  assert.equal(bodies.length, 1);
+});
+
+test("journal manifest declares panelsEnabled as a default-off boolean", () => {
+  const manifest = JSON.parse(readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"));
+  assert.equal(manifest.configSchema.additionalProperties, false);
+  assert.equal(manifest.configSchema.properties.panelsEnabled.type, "boolean");
+  assert.equal(manifest.configSchema.properties.panelsEnabled.default, false);
 });
