@@ -5,6 +5,7 @@ Mounted at ``/api/v1/chat/`` (see ``config/urls.py``).
 
 from django.urls import path
 
+from apps.router.chat_shape_views import ChatShapeView
 from apps.router.chat_views import (
     ChatContextView,
     ChatLocalTurnView,
@@ -19,6 +20,7 @@ from apps.router.chat_views import (
 )
 
 urlpatterns = [
+    path("shape/", ChatShapeView.as_view(), name="chat-shape"),
     path("messages/", ChatMessageView.as_view(), name="chat-message-create"),
     path("read/", ChatReadView.as_view(), name="chat-read"),
     path("context/", ChatContextView.as_view(), name="chat-context"),
