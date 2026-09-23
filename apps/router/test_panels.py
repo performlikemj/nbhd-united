@@ -114,15 +114,55 @@ class PanelSchemaTests(SimpleTestCase):
     def test_streaming_partial_and_complete_blocks_are_hidden(self):
         from apps.router.chat_views import _parse_partial
 
-        for fragment in ("```nbhd-", "```nbhd-panels\n[{", block()):
+        for fragment in (*("```nbhd-panels"[:n] for n in range(1, 15)), "```nbhd-panels\n[{", block()):
             with self.subTest(fragment=fragment), self.assertNoLogs("apps.router.panels", level="WARNING"):
                 self.assertEqual(_parse_partial({"text": "Hello\n" + fragment, "seq": 1}), ("Hello", 1))
+
+    def test_streaming_prefixes_release_ordinary_content_and_hide_cap_boundaries(self):
+        from apps.router.chat_views import _MAX_PARTIAL_TEXT_CHARS, _parse_partial
+
+        for content in ("```notebook\nhello\n```", "```nbhd-custom\nhello", "```nbhd\nhello"):
+            self.assertEqual(_parse_partial({"text": content, "seq": 2}), (content, 2))
+        for prefix in ("```n", "```nbhd"):
+            lead = "x" * (_MAX_PARTIAL_TEXT_CHARS - len(prefix) - 1)
+            raw = lead + "\n" + "```nbhd-panels\n" + json.dumps(PANELS)
+            self.assertEqual(_parse_partial({"text": raw, "seq": 1}), (lead, 1))
+
+    def test_serializer_off_gate_drops_explicit_and_fallback_without_content_logs(self):
+        from apps.router.cron_delivery import SendToUserSerializer
+
+        tenant = SimpleNamespace(id=uuid4())
+        private = [{"kind": "tasks", "title": "private-sentinel"}]
+        for gate in ("", str(uuid4())):
+            for data in ({"message": "Hello", "panels": private}, {"message": "Hello\n" + block(private)}):
+                with override_settings(CHAT_SHAPE_TENANT_IDS=gate), self.assertLogs(level="WARNING") as logs:
+                    serializer = SendToUserSerializer(data=data, context={"tenant": tenant})
+                    self.assertTrue(serializer.is_valid(), serializer.errors)
+                self.assertEqual(serializer.validated_data["message"], "Hello")
+                self.assertEqual(serializer.validated_data["panels"], [])
+                self.assertNotIn("private-sentinel", str([vars(r) for r in logs.records]))
+                self.assertIn("tenant_disabled", str(logs.output))
+
+    def test_serializer_explicit_panels_win_even_when_empty_null_or_invalid(self):
+        from apps.router.cron_delivery import SendToUserSerializer
+
+        tenant = SimpleNamespace(id=uuid4())
+        for value, expected in (([], []), (None, []), ([{}], []), (PANELS[1:], PANELS[1:])):
+            with override_settings(CHAT_SHAPE_TENANT_IDS=str(tenant.id)):
+                serializer = SendToUserSerializer(
+                    data={"message": "Hello\n" + block(PANELS[:1]), "panels": value}, context={"tenant": tenant}
+                )
+                self.assertTrue(serializer.is_valid(), serializer.errors)
+            self.assertEqual(serializer.validated_data["message"], "Hello")
+            self.assertEqual(serializer.validated_data["panels"], expected)
 
     def test_serializer_drops_bad_panels_but_preserves_message(self):
         from apps.router.cron_delivery import SendToUserSerializer
 
+        tenant = SimpleNamespace(id=uuid4())
+        self.enterContext(override_settings(CHAT_SHAPE_TENANT_IDS=str(tenant.id)))
         for value in ([{"kind": "unknown"}, PANELS[0]], "wrong envelope"):
-            serializer = SendToUserSerializer(data={"message": "Hello", "panels": value})
+            serializer = SendToUserSerializer(data={"message": "Hello", "panels": value}, context={"tenant": tenant})
             with self.assertLogs("apps.router.panels", level="WARNING"):
                 self.assertTrue(serializer.is_valid(), serializer.errors)
             self.assertEqual(serializer.validated_data["message"], "Hello")
@@ -163,6 +203,7 @@ class PanelPersistenceTests(TestCase):
 
         self.user = User.objects.create_user(username="panels", telegram_chat_id=12345)
         self.tenant = Tenant.objects.create(user=self.user, status="active")
+        self.enterContext(override_settings(CHAT_SHAPE_TENANT_IDS=str(self.tenant.id)))
         self.thread = ChatThread.objects.create(tenant=self.tenant, user=self.user)
         self.client = APIClient()
         self.client.force_authenticate(self.user)
@@ -338,3 +379,154 @@ class PanelPersistenceTests(TestCase):
         self.assertEqual(
             _proactive_rows(proactive, self.thread.id, self.tenant.pii_entity_map)[0]["msg"]["panels"], titled
         )
+
+    def _post_proactive(self, body):
+        return self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/",
+            body,
+            format="json",
+            HTTP_X_NBHD_INTERNAL_KEY="test-key",
+            HTTP_X_NBHD_TENANT_ID=str(self.tenant.id),
+        )
+
+    def test_cron_fences_strip_before_markers_and_transport_on_every_channel(self):
+        from rest_framework.response import Response
+
+        from apps.router.cron_delivery import CronDeliveryView, _rate_counts
+        from apps.router.models import ProactiveOutbound
+
+        for channel in ("app", "telegram", "line"):
+            for enabled in (False, True):
+                for fence, expected_panels in ((block(), PANELS), ("```nbhd-panels\nprivate-sentinel\n```", [])):
+                    with (
+                        self.subTest(channel=channel, enabled=enabled, malformed=not expected_panels),
+                        override_settings(CHAT_SHAPE_TENANT_IDS=str(self.tenant.id) if enabled else ""),
+                        patch.object(CronDeliveryView, "_resolve_channel", return_value=channel),
+                        patch.object(
+                            CronDeliveryView, "_send_via_telegram", return_value=Response({"status": "sent"})
+                        ) as telegram,
+                        patch.object(
+                            CronDeliveryView, "_send_via_line", return_value=Response({"status": "sent"})
+                        ) as line,
+                        patch("apps.router.proactive_context._dispatch_ios_push"),
+                    ):
+                        _rate_counts.clear()
+                        self.user.line_user_id = "U-panels"
+                        self.user.save(update_fields=["line_user_id"])
+                        response = self._post_proactive(
+                            {"message": "Before\n" + fence + "\nAfter\n[[quick-replies: Thanks]]"}
+                        )
+                        self.assertEqual(response.status_code, 200, response.data)
+                        stored = ProactiveOutbound.objects.filter(tenant=self.tenant).latest("created_at")
+                        self.assertEqual(stored.message_text, "Before\nAfter")
+                        self.assertEqual(stored.quick_replies, ["Thanks"])
+                        self.assertEqual(stored.panels or [], expected_panels if enabled else [])
+                        if channel != "app":
+                            call = (telegram if channel == "telegram" else line).call_args
+                            self.assertEqual(call.kwargs["message_text"], "Before\nAfter")
+                        else:
+                            telegram.assert_not_called()
+                            line.assert_not_called()
+
+    def test_panel_only_linked_tenants_persist_app_feed_without_text_transport_or_devices(self):
+        from apps.router.chat_history import _proactive_rows
+        from apps.router.cron_delivery import CronDeliveryView, _rate_counts
+        from apps.router.models import DeviceToken, ProactiveOutbound
+
+        self.assertFalse(DeviceToken.objects.filter(tenant=self.tenant).exists())
+        for linked_channel in ("telegram", "line"):
+            self.user.telegram_chat_id = 12345 if linked_channel == "telegram" else None
+            self.user.line_user_id = "U-panels" if linked_channel == "line" else ""
+            self.user.save(update_fields=["telegram_chat_id", "line_user_id"])
+            for body in ({"message": "", "panels": PANELS}, {"message": block()}):
+                with (
+                    self.subTest(channel=linked_channel, body=body),
+                    patch.object(CronDeliveryView, "_send_via_telegram") as telegram,
+                    patch.object(CronDeliveryView, "_send_via_line") as line,
+                    patch("apps.router.proactive_context._dispatch_ios_push"),
+                ):
+                    _rate_counts.clear()
+                    response = self._post_proactive(body)
+                    self.assertEqual(response.status_code, 200, response.data)
+                    self.assertEqual(response.data["channel"], "app")
+                    telegram.assert_not_called()
+                    line.assert_not_called()
+                    stored = ProactiveOutbound.objects.filter(tenant=self.tenant).latest("created_at")
+                    self.assertEqual(stored.channel, "app")
+                    self.assertEqual(stored.message_text, "")
+                    self.assertEqual(_proactive_rows(stored, self.thread.id)[0]["msg"]["panels"], PANELS)
+
+    def test_non_gated_direct_writers_cannot_store_panels(self):
+        from apps.router.models import AppChatMessage
+        from apps.router.pending_queue import _store_ios_turn_reply
+        from apps.router.proactive_context import record_proactive_outbound
+
+        row = AppChatMessage.objects.create(
+            tenant=self.tenant, user=self.user, thread=self.thread, client_msg_id="off", user_text="Hi"
+        )
+        with (
+            override_settings(CHAT_SHAPE_TENANT_IDS=""),
+            patch("apps.router.pending_queue._dispatch_push"),
+            patch("apps.router.proactive_context._dispatch_ios_push"),
+        ):
+            _store_ios_turn_reply(self.tenant, [SimpleNamespace(payload={"client_msg_id": "off"})], "Hello\n" + block())
+            proactive = record_proactive_outbound(
+                tenant=self.tenant,
+                channel="app",
+                channel_user_id=str(self.user.id),
+                message_text="Hello",
+                panels=PANELS,
+            )
+        row.refresh_from_db()
+        self.assertIsNone(row.panels)
+        self.assertEqual(row.reply_text, "Hello")
+        self.assertIsNone(proactive.panels)
+
+    def test_title_expansion_never_persists_partial_placeholders(self):
+        from apps.router.chat_history import _app_rows, _proactive_rows
+        from apps.router.chat_views import _serialize_message
+        from apps.router.models import AppChatMessage
+        from apps.router.pending_queue import _store_ios_turn_reply
+        from apps.router.proactive_context import record_proactive_outbound
+
+        self.tenant.pii_entity_map = {"[PERSON_12345]": "Alice"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        title = "x" * 54 + " Alice"
+        panels = [{"kind": "tasks", "params": {}, "title": title}]
+        row = AppChatMessage.objects.create(
+            tenant=self.tenant, user=self.user, thread=self.thread, client_msg_id="expanded", user_text="Hi"
+        )
+        with (
+            patch("apps.router.pending_queue._dispatch_push"),
+            patch("apps.router.proactive_context._dispatch_ios_push"),
+        ):
+            _store_ios_turn_reply(
+                self.tenant, [SimpleNamespace(payload={"client_msg_id": "expanded"})], "Hello\n" + block(panels)
+            )
+            proactive = record_proactive_outbound(
+                tenant=self.tenant,
+                channel="app",
+                channel_user_id=str(self.user.id),
+                message_text="Hello",
+                panels=panels,
+            )
+        row.refresh_from_db()
+        expected = "x" * 54 + " "
+        for stored in (row, proactive):
+            self.assertEqual(stored.panels[0]["title"], expected)
+        for response in (
+            _serialize_message(row),
+            _app_rows(row, self.thread.id, self.tenant.pii_entity_map)[-1]["msg"],
+            _proactive_rows(proactive, self.thread.id, self.tenant.pii_entity_map)[0]["msg"],
+        ):
+            self.assertEqual(response["panels"][0]["title"], expected)
+            self.assertNotIn("[PERS", str(response["panels"]))
+
+    def test_titles_rehydrate_then_apply_render_bound(self):
+        from apps.router.panels import prepare_panels, rehydrate_panels
+
+        self.tenant.pii_entity_map = {"[PERSON_12345]": "A" * 100}
+        stored = prepare_panels(self.tenant, [{"kind": "tasks", "title": "Ask [PERSON_12345]"}])
+        self.assertEqual(stored[0]["title"], "Ask [PERSON_12345]")
+        rendered = rehydrate_panels(stored, self.tenant.pii_entity_map, tenant_id=self.tenant.id)
+        self.assertEqual(rendered[0]["title"], "Ask " + "A" * 56)

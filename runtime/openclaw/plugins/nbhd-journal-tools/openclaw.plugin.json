@@ -63,6 +63,11 @@
         "type": "string",
         "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
       },
+      "panelsEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Expose assistant-attached panels only for tenants enabled by the control plane."
+      },
       "requestTimeoutMs": {
         "type": "number",
         "minimum": 1000,

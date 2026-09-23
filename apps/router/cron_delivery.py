@@ -385,12 +385,27 @@ class SendToUserSerializer(serializers.Serializer):
     panels = serializers.JSONField(required=False, allow_null=True)
 
     def validate_panels(self, value):
-        from apps.router.panels import validate_panels
+        from apps.router.panels import chat_panels_enabled, validate_panels
 
+        if not chat_panels_enabled(self.context.get("tenant")):
+            logger.warning("panels_dropped reason=tenant_disabled")
+            return []
         return validate_panels(value)
 
     def validate(self, data):
-        if not data.get("message") and not data.get("panels"):
+        from apps.router.panels import chat_panels_enabled, extract_panels
+
+        # Strip on every channel and outside the rollout gate. Explicit panels
+        # (even empty/null/invalid) take precedence over the fallback block.
+        data["message"], fallback = extract_panels(data["message"])
+        if "panels" not in data:
+            if chat_panels_enabled(self.context.get("tenant")):
+                data["panels"] = fallback
+            else:
+                if fallback:
+                    logger.warning("panels_dropped reason=tenant_disabled")
+                data["panels"] = []
+        if not data["message"] and not data["panels"]:
             raise serializers.ValidationError("message or valid panels required")
         return data
 
@@ -499,7 +514,7 @@ class CronDeliveryView(APIView):
             )
 
         # Validate payload
-        serializer = SendToUserSerializer(data=request.data)
+        serializer = SendToUserSerializer(data=request.data, context={"tenant": tenant})
         if not serializer.is_valid():
             return Response(serializer.errors, status=http_status.HTTP_400_BAD_REQUEST)
 
@@ -534,7 +549,8 @@ class CronDeliveryView(APIView):
         # Strip the generic marker before every transport, but retain its labels
         # in placeholder space on ProactiveOutbound. The row is cross-channel:
         # even a Telegram/LINE delivery can later render pills in the iOS feed.
-        # Quick-replies parsing stays first to preserve its final-line contract;
+        # The serializer already stripped panel fences; quick-replies now runs
+        # first among the remaining markers to preserve its final-line contract;
         # journal-link extraction below is placement-tolerant on the remainder.
         from apps.router.journal_link import extract_journal_link
         from apps.router.quick_replies import extract_quick_replies
@@ -579,6 +595,12 @@ class CronDeliveryView(APIView):
                 # Job identification and fallback lookup are best-effort. A
                 # missing chip must never block the underlying delivery.
                 pass
+
+        # Panels have no external-channel representation. Persist through the
+        # app-feed branch even without devices; never send an empty text chunk.
+        # Keep eval evidence isolated from the owner feed and APNs.
+        if panels and not placeholder_message_text.strip() and channel != "eval":
+            channel = "app"
 
         # Final owner-facing integrity guard.
         entity_map = tenant.pii_entity_map

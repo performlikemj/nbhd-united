@@ -3085,6 +3085,14 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                     editor_config[key] = value
             plugin_config["entries"][site_editor_id]["config"] = editor_config
 
+        # This allowlist is enabled only after the tenant image carries the new
+        # journal-tools manifest. Off-gate configs retain their original bytes.
+        from apps.router.panels import chat_panels_enabled
+
+        journal_tools_id = str(getattr(settings, "OPENCLAW_JOURNAL_PLUGIN_ID", "") or "").strip()
+        if journal_tools_id in plugin_config["entries"] and chat_panels_enabled(tenant):
+            plugin_config["entries"][journal_tools_id]["config"] = {"panelsEnabled": True}
+
         # Older settings-tools manifests hard-reject unknown plugin config at
         # LOAD (additionalProperties:false), so this block stays absent until
         # that tenant's image manifest has been verified. personas.py uses this

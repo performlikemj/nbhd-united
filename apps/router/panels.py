@@ -122,28 +122,45 @@ def extract_panels(text: str) -> tuple[str, list[dict]]:
 
 
 def strip_streaming_panels(text: str) -> str:
-    """Hide partial/complete fences without treating expected partial JSON as an error."""
+    """Hide fences and trailing opener prefixes until cumulative text disambiguates."""
     kept = []
     inside = found = False
-    for line in text.splitlines(keepends=True):
+    ordinary_fence = False
+    lines = text.splitlines(keepends=True)
+    opener = "```nbhd-panels"
+    for index, line in enumerate(lines):
         marker = line.strip()
-        if not inside and marker.startswith("```nbhd-") and "```nbhd-panels".startswith(marker):
+        trailing_prefix = (
+            index == len(lines) - 1 and not line.endswith(("\n", "\r")) and bool(marker) and opener.startswith(marker)
+        )
+        if not inside and not ordinary_fence and (marker == opener or trailing_prefix):
             inside = found = True
         elif inside and marker == "```":
             inside = False
         elif not inside:
             kept.append(line)
+            if marker == "```":
+                ordinary_fence = not ordinary_fence
+            elif marker.startswith("```") and not ordinary_fence:
+                ordinary_fence = True
     return "".join(kept).rstrip() if found else text
 
 
 def prepare_panels(tenant, value) -> list[dict]:
     """Keep optional display titles in placeholder space at rest."""
+    from apps.pii.authoring import truncate_placeholder_safe
     from apps.pii.egress import redact_known_values
 
+    if not chat_panels_enabled(tenant):
+        if value:
+            logger.warning("panels_dropped reason=tenant_disabled")
+        return []
     panels = validate_panels(value)
     for panel in panels:
         if "title" in panel:
-            panel["title"] = redact_known_values(tenant, panel["title"], seam="panel_storage")[:60]
+            panel["title"] = truncate_placeholder_safe(
+                redact_known_values(tenant, panel["title"], seam="panel_storage"), 60
+            )
     return panels
 
 
