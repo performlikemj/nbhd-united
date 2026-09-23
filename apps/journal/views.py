@@ -9,6 +9,7 @@ from uuid import UUID
 from django.http import Http404
 from django.utils import timezone
 from rest_framework import status
+from rest_framework.authentication import SessionAuthentication
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -27,6 +28,7 @@ from .serializers import (
     DailyNoteTemplateSerializer,
     JournalEntrySerializer,
     MemoryPatchSerializer,
+    MoodCheckInSerializer,
     NoteTemplateSerializer,
     WeeklyReviewSerializer,
 )
@@ -146,6 +148,32 @@ class JournalEntryListCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class MoodCheckInView(APIView):
+    """Upsert the owner's daily energy and optional feeling."""
+
+    authentication_classes = [*APIView.authentication_classes, SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from .mood import upsert_mood
+
+        tenant = _get_tenant_for_user(request.user)
+        serializer = MoodCheckInSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        entry, created = upsert_mood(
+            tenant=tenant,
+            check_in_date=data.get("date", timezone.localdate()),
+            score=data["energy_score"],
+            feeling=data.get("feeling"),
+        )
+        return Response(
+            JournalEntrySerializer(entry, context={"tenant": tenant}).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 class JournalEntryDetailView(APIView):

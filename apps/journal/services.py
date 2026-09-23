@@ -446,6 +446,10 @@ def set_daily_note_section(
         writer=writer,
         seam=seam,
     )
+    if section_slug == "energy-mood":
+        from .mood import bridge_daily_note_mood
+
+        bridge_daily_note_mood(tenant=note.tenant, note_date=note.date, content=content, writer=writer)
     return note, sections
 
 

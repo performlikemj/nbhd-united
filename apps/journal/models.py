@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from pgvector.django import VectorField
 
@@ -61,6 +62,9 @@ class JournalEntry(models.Model):
     date = models.DateField()
     mood = models.CharField(max_length=255)
     energy = models.CharField(max_length=16, choices=Energy.choices)
+    energy_score = models.PositiveSmallIntegerField(
+        null=True, blank=True, validators=[MinValueValidator(1), MaxValueValidator(10)]
+    )
     wins = models.JSONField(default=list, blank=True)
     challenges = models.JSONField(default=list, blank=True)
     reflection = models.TextField(blank=True, default="")
@@ -77,6 +81,18 @@ class JournalEntry(models.Model):
 
     def __str__(self) -> str:
         return f"{self.tenant_id}:{self.date}"
+
+    def save(self, *args, **kwargs):
+        if self.energy_score is not None:
+            if self.energy_score <= 3:
+                self.energy = self.Energy.LOW
+            elif self.energy_score <= 7:
+                self.energy = self.Energy.MEDIUM
+            else:
+                self.energy = self.Energy.HIGH
+            if kwargs.get("update_fields"):
+                kwargs["update_fields"] = set(kwargs["update_fields"]) | {"energy"}
+        super().save(*args, **kwargs)
 
 
 class WeeklyReview(models.Model):

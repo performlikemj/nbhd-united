@@ -2091,6 +2091,11 @@ class RuntimeDailyNoteAppendView(APIView):
             )
             doc.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
+        if section_slug_str == "energy-mood":
+            from apps.journal.mood import bridge_daily_note_mood
+
+            bridge_daily_note_mood(tenant=tenant, note_date=d, content=content, writer="runtime")
+
         response_payload = {
             "tenant_id": str(tenant.id),
             "date": str(d),
