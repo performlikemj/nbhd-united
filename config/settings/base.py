@@ -300,6 +300,9 @@ SUBAGENT_TENANT_IDS = env("SUBAGENT_TENANT_IDS", default="")
 CHAT_SHAPE_TENANT_IDS = env("CHAT_SHAPE_TENANT_IDS", default="")
 CHAT_SHAPE_PANELS = env("CHAT_SHAPE_PANELS", default="sleep,schedule,training_week,workout,timer")
 
+# Talk routing: explicit tenant UUID allowlist, no wildcard; dark by default.
+TALK_ROUTE_TENANT_IDS = env("TALK_ROUTE_TENANT_IDS", default="")
+
 # Human-review gate for agent-authored scheduled tasks. Comma-separated tenant
 # UUIDs open individual tenants; the literal "*" opens the gate fleet-wide.
 # Empty/unset means nobody so every non-explicit configuration fails closed.
