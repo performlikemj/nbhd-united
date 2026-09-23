@@ -93,17 +93,14 @@ SURFACE_PANELS = {
 
 class OpenPanel(jev.StrictModel):
     kind: Panel
-    label: str
+    label: str = Field(max_length=4000)
 
 
 class RecentTurn(jev.StrictModel):
     role: Literal["user", "assistant"]
-    text: str
-
-    @field_validator("text")
-    @classmethod
-    def truncate_text(cls, value: str) -> str:
-        return value[:500]
+    # Reject oversized raw fields; cutting here can turn a known PII value
+    # into an unfamiliar fragment before the checked redactor sees it.
+    text: str = Field(max_length=4000)
 
 
 class ChatShapeRequest(jev.StrictModel):
@@ -261,6 +258,10 @@ def decide_panel(
 SHAPE_BUDGET_SECONDS = 2.5
 # Bounded admission: timed-out local inference cannot create unlimited workers
 # or a queue of stale requests. A completed detector never starts late Jev work.
+# Shared-socket operations have per-job timeouts, but Python cannot safely kill
+# a thread stuck in native inference or HTTP/DNS. Such a job retains its slot;
+# four permanent hangs disable shape until the application worker is restarted.
+# Releasing/replacing occupied slots would allow unbounded abandoned work.
 _SHAPE_WORKERS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="chat-shape")
 _SHAPE_SLOTS = BoundedSemaphore(4)
 
@@ -296,14 +297,32 @@ def shape_chat(payload: ChatShapeRequest, tenant, *, deadline: float | None = No
         return ChatShapeResponse(reason="unavailable")
 
 
+def truncate_redacted(text: str, limit: int = 300) -> str:
+    """Shorten confirmed text, extending a cut to retain a whole placeholder.
+
+    The limit is soft only for a placeholder intersecting it. This helper must
+    never receive raw input; full-field checked redaction owns PII boundaries.
+    """
+    from apps.pii.redactor import _PLACEHOLDER_RE
+
+    for match in _PLACEHOLDER_RE.finditer(text):
+        if match.start() < limit < match.end():
+            return text[: match.end()]
+        if match.start() >= limit:
+            break
+    return text[:limit]
+
+
 def _shape_chat(payload, tenant, deadline, panels):
     from apps.pii.ephemeral import redact_texts_ephemeral_checked
     from apps.pii.redactor import as_confirmed
 
-    turns = payload.recent_turns[-2:]
-    texts = [payload.text, *(turn.text[:300] for turn in turns)]
+    # Confirm every complete supplied field before selecting/shortening model
+    # context. Even history omitted from Jev must not bypass this privacy gate.
+    turns = payload.recent_turns
+    texts = [payload.text, *(turn.text for turn in turns)]
     if payload.open_panel is not None:
-        texts.append(payload.open_panel.label[:300])
+        texts.append(payload.open_panel.label)
     try:
         if monotonic() >= deadline:
             return ChatShapeResponse(reason="unavailable")
@@ -320,8 +339,12 @@ def _shape_chat(payload, tenant, deadline, panels):
         return ChatShapeResponse(reason="redaction_unconfirmed")
     state = {
         "latest_message": redacted[0],
-        "recent_turns": [f"{turn.role}: {text}" for turn, text in zip(turns, redacted[1:])],
-        "open_panel": f"{payload.open_panel.kind}: {redacted[-1]}" if payload.open_panel else "none",
+        "recent_turns": [
+            f"{turn.role}: {truncate_redacted(text)}" for turn, text in list(zip(turns, redacted[1:]))[-2:]
+        ],
+        "open_panel": (
+            f"{payload.open_panel.kind}: {truncate_redacted(redacted[-1])}" if payload.open_panel else "none"
+        ),
     }
     try:
         answers = jev.decide(state, QUESTIONS, deadline=deadline).answers

@@ -30,6 +30,7 @@ from apps.router.chat_shape import (
     decide_panel,
     parse_date,
     parse_duration,
+    truncate_redacted,
 )
 from apps.router.chat_shape_views import ChatShapeHourThrottle
 from apps.tenants.models import Tenant, User
@@ -283,20 +284,25 @@ class ChatShapeViewTests(TestCase):
                 "open_panel": "sleep: safe label",
             },
         )
-        self.assertEqual(self.redact.call_args.args[0][1], "x" * 300)
+        self.assertEqual(self.redact.call_args.args[0][1], "x" * 600)
         for call in self.redact.call_args_list:
             self.assertIn("deadline", call.kwargs)
             self.assertEqual(call.args[1].id, self.tenant.id)
 
     def test_any_unconfirmed_text_skips_jev(self):
         self.payload.update(
-            recent_turns=[{"role": "user", "text": "first"}, {"role": "assistant", "text": "second"}],
+            recent_turns=[
+                {"role": "user", "text": "first"},
+                {"role": "assistant", "text": "second"},
+                {"role": "user", "text": "third"},
+                {"role": "assistant", "text": "fourth"},
+            ],
             open_panel={"kind": "sleep", "label": "label"},
         )
-        for position in range(4):
+        for position in range(6):
             with self.subTest(position=position):
                 self.redact.side_effect = None
-                self.redact.return_value = [RedactionOutcome("text", i != position, "redacted") for i in range(4)]
+                self.redact.return_value = [RedactionOutcome("text", i != position, "redacted") for i in range(6)]
                 response = self.send()
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.data["reason"], "redaction_unconfirmed")
@@ -353,6 +359,8 @@ class ChatShapeViewTests(TestCase):
             {"open_panel": {"kind": "checklist", "label": "x"}},
             {"extra": "private sentinel"},
             {"recent_turns": [{"role": "user", "text": 5}]},
+            {"recent_turns": [{"role": "user", "text": "x" * 4001}]},
+            {"open_panel": {"kind": "sleep", "label": "x" * 4001}},
         ]
         original = self.payload.copy()
         for changes in cases:
@@ -411,10 +419,15 @@ class ChatShapeViewTests(TestCase):
                         self.assertTrue(any(record.levelname == "WARNING" for record in captured.records))
 
     def test_request_boundary_accepts_2000_and_four_turns(self):
-        payload = self.payload | {"text": "x" * 2000, "recent_turns": [{"role": "user", "text": "x" * 501}] * 4}
+        payload = self.payload | {
+            "text": "x" * 2000,
+            "recent_turns": [{"role": "user", "text": "x" * 4000}] * 4,
+            "open_panel": {"kind": "sleep", "label": "x" * 4000},
+        }
         parsed = ChatShapeRequest.model_validate(payload)
         self.assertEqual(len(parsed.recent_turns), 4)
-        self.assertTrue(all(len(turn.text) == 500 for turn in parsed.recent_turns))
+        self.assertTrue(all(len(turn.text) == 4000 for turn in parsed.recent_turns))
+        self.assertEqual(len(parsed.open_panel.label), 4000)
 
     def test_history_uses_only_last_two_at_300_chars(self):
         self.payload["recent_turns"] = [
@@ -425,7 +438,9 @@ class ChatShapeViewTests(TestCase):
         ]
         self.assertEqual(self.send().status_code, 200)
         self.redact.assert_called_once()
-        self.assertEqual(self.redact.call_args.args[0], [self.payload["text"], "a" * 300, "b" * 300])
+        self.assertEqual(
+            self.redact.call_args.args[0], [self.payload["text"], "unused one", "unused two", "a" * 500, "b" * 500]
+        )
         state = self.post.call_args.kwargs["json"]["state"]
         self.assertEqual(state["recent_turns"], ["user: " + "a" * 300, "assistant: " + "b" * 300])
 
@@ -483,7 +498,7 @@ class ChatShapeViewTests(TestCase):
         from apps.pii.redactor import _detect_pii
 
         self.redact.side_effect = redact_texts_ephemeral_checked
-        self.payload["recent_turns"] = [{"role": "user", "text": "x" * 500}] * 4
+        self.payload["recent_turns"] = [{"role": "user", "text": "word " * 100}] * 4
         self.payload["open_panel"] = {"kind": "sleep", "label": "Sleep"}
 
         def slow_detector(text):
@@ -502,8 +517,10 @@ class ChatShapeViewTests(TestCase):
             response = self.send()
             self.assertLess(monotonic() - started, 2.5)
             self.assertEqual(response.data["reason"], "ok")
-            self.assertEqual(detect.call_count, 2)
+            self.assertGreater(detect.call_count, 1)
             self.assertLessEqual(self.post.call_args.kwargs["timeout"].total, 2.3)
+            # The detector covers complete history, not its eventual snippets.
+            self.assertTrue(all(len(call.args[0].encode("utf-8")) <= 384 for call in detect.call_args_list))
 
     def test_slow_detector_returns_at_deadline_without_late_jev(self):
 
@@ -521,7 +538,7 @@ class ChatShapeViewTests(TestCase):
                 finished.set()
 
         self.redact.side_effect = redact
-        self.payload["recent_turns"] = [{"role": "user", "text": "x" * 500}] * 4
+        self.payload["recent_turns"] = [{"role": "user", "text": "word " * 100}] * 4
         self.payload["open_panel"] = {"kind": "sleep", "label": "Sleep"}
         with (
             patch("apps.pii.engine.get_pii_pipeline", return_value=blocked_detector),
@@ -563,6 +580,64 @@ class ChatShapeViewTests(TestCase):
             finally:
                 release.set()
                 self.assertTrue(finished.wait(1))
+
+    def test_registered_email_crossing_old_cuts_reaches_jev_as_whole_placeholder(self):
+        email = "alice.private@example.com"
+        placeholder = "[EMAIL_ADDRESS_1]"
+        long_name = "Verylongfirstname Verylongmiddlename Verylongfamilyname"
+        self.tenant.pii_entity_map = {placeholder: email, "[PERSON_1]": long_name}
+        self.user.tenant = self.tenant
+        self.redact.side_effect = redact_texts_ephemeral_checked
+        # Deliberately miss every neural/pattern span. Only the registered
+        # complete value can protect the email fragment from the review probe.
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=lambda text: []),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+        ):
+            for boundary in (300, 500):
+                prefix = (long_name + " ") * 5 if boundary == 500 else ""
+                padding = boundary - 11 - len(prefix)
+                prefix += "safe " * (padding // 5) + " " * (padding % 5)
+                complete = prefix + email + " trailing context"
+                self.assertTrue(complete[:boundary].endswith("alice.priva"))
+                for field in ("user", "assistant", "label", "latest"):
+                    with self.subTest(boundary=boundary, field=field):
+                        self.payload.update(text="sleep", recent_turns=[], open_panel=None)
+                        if field in {"user", "assistant"}:
+                            self.payload["recent_turns"] = [{"role": field, "text": complete}]
+                        elif field == "label":
+                            self.payload["open_panel"] = {"kind": "sleep", "label": complete}
+                        else:
+                            self.payload["text"] = complete
+                        response = self.send()
+                        self.assertEqual(response.data["reason"], "ok")
+                        state = self.post.call_args.kwargs["json"]["state"]
+                        value = (
+                            state["recent_turns"][0]
+                            if field in {"user", "assistant"}
+                            else state["open_panel"]
+                            if field == "label"
+                            else state["latest_message"]
+                        )
+                        self.assertIn(placeholder, value)
+                        self.assertNotIn("alice", json.dumps(state))
+                        self.assertNotIn(email, json.dumps(state))
+
+
+class RedactedTruncationTests(SimpleTestCase):
+    def test_boundary_keeps_complete_placeholders(self):
+        cases = [
+            ("plain text", 5, "plain"),
+            ("before [EMAIL_ADDRESS_1] after", 12, "before [EMAIL_ADDRESS_1]"),
+            ("before [PERSON_123|friend] after", 19, "before [PERSON_123|friend]"),
+            ("before [PERSON_1]", 7, "before "),
+            ("[PERSON_1] after", 10, "[PERSON_1]"),
+            ("before [PERSON_1] then [LOCATION_2] after", 29, "before [PERSON_1] then [LOCATION_2]"),
+            ("日本語 [PERSON_1] 次", 8, "日本語 [PERSON_1]"),
+        ]
+        for text, limit, expected in cases:
+            with self.subTest(text=text, limit=limit):
+                self.assertEqual(truncate_redacted(text, limit), expected)
 
 
 def fake_name_detector(text):
