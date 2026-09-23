@@ -64,8 +64,9 @@ An unrelated PATCH omitting detail leaves it intact.
 Runtime workout PATCH and plan reconciliation recover omitted actuals from the
 stored workout when an exercise name matches uniquely (case-insensitive, trimmed)
 and the same set ordinal has unchanged metric/reps/weight/hold_s. Exercise list
-reordering is supported. A swapped exercise or changed prescription does not
-inherit another set's actuals; duplicate exercise names are deliberately not
+reordering is supported. Runtime PATCH normalizes registry types before matching
+stored actuals, then validates the merged detail. A swapped exercise or changed
+prescription does not inherit another set's actuals; duplicate exercise names are deliberately not
 matched. Explicit incoming `logged` wins and is validated by runtime PATCH.
 
 When both exercise containers are omitted, containers containing logs survive.
@@ -77,7 +78,10 @@ adoption.
 
 Fuel workout/plan authoring and runtime response guards restore validated actuals
 after PII text substitution so a known-value match cannot rewrite an ISO timestamp.
-Freeform strings and invalid logged objects receive no exemption.
+PII repair uses those same validated snapshots to shield the whole logged object
+(timestamps and numbers) from registry traversal. Protected actuals do not consume
+the repair text budget; old traversal cursors restart safely. Freeform strings and
+invalid logged objects receive no exemption.
 
 The existing runtime workout detail/summary card includes `logged_sets_summary`
 when there are valid actuals, for example:

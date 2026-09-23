@@ -21,7 +21,9 @@ def logged_actuals_paths(value, path=()):
                             continue
                         try:
                             _validate_logged(s, str(ex.get("name") or ""))
-                        except ValidationError:
+                        except (ValidationError, TypeError):
+                            # Malformed legacy set discriminators are not a
+                            # reason to bypass prose repair or abort the row.
                             continue
                         found.append(((*path, key, i, "sets", j, "logged"), deepcopy(s["logged"])))
             else:

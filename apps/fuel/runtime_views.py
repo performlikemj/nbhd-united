@@ -833,13 +833,16 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             from .set_contract import normalize_detail, preserve_logged_sets, validate_detail, validate_flat_detail
 
             nd, ncat = normalize_detail(
-                preserve_logged_sets(data["detail_json"], stored_detail),
+                data["detail_json"],
                 workout.category,
                 activity=workout.activity,
                 explicit_duration_minutes=workout.duration_minutes
                 if "duration_minutes" in data and workout.status == WorkoutStatus.PLANNED
                 else None,
             )[:2]
+            # Match the prescription we will actually persist: registry fixes
+            # (e.g. Bench press -> weighted_reps) must not discard actuals.
+            nd = preserve_logged_sets(nd, stored_detail)
             nd, verr = validate_detail(nd, ncat)
             if verr is not None:
                 return Response(verr.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)

@@ -271,6 +271,18 @@ class LoggedSetWriteTests(TestCase):
         workout.refresh_from_db()
         self.assertEqual(workout.detail_json["exercises"][0]["sets"][0]["logged"], logged)
 
+    def test_runtime_normalizes_type_before_preserving_logged_actuals(self):
+        name, prescription, logged = CASES[0]
+        self.workout.detail_json = detail_for(name, prescription, logged)
+        self.workout.save(update_fields=["detail_json"])
+        incoming = {"exercises": [{"name": name, "sets": [{**prescription, "type": "bodyweight_reps"}]}]}
+        response = self.runtime.patch(
+            f"{self.base}/workouts/{self.workout.id}/", {"detail_json": incoming}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.workout.refresh_from_db()
+        self.assertEqual(self.workout.detail_json["exercises"][0]["sets"][0], {**prescription, "logged": logged})
+
     def test_other_tenant_cannot_patch_or_read(self):
         other = create_tenant(display_name="Other lifter", telegram_chat_id=819824)
         foreign = Workout.objects.create(tenant=other, date=date.today(), activity="Private", status="planned")
