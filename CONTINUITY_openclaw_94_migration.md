@@ -14,8 +14,8 @@ Owner: Codex
 - Fail closed on ambiguous cron provenance and failed verification.
 ## State
 - Done: Implementation, runbook, 213 focused tests, static/migration checks; final Docker gate green (9292 tests, 43 skipped; frontend lint/build PASS).
-- Now: Fix round 1 complete and validated; committing/pushing scoped changes on the same branch.
-- Next: Commit/push fix round 1, then release orchestrator review and canaries. No production execution by this task.
+- Now: Fix round 1 complete: fab6c447 pushed to feat/openclaw-94-tenant-migration; draft PR #1650 remains unmerged.
+- Next: Release orchestrator review and approved canaries. No production execution by this task.
 ## Links
 - Upstream: CONTINUITY.md
 - Related: docs/runbooks/openclaw-94-migration.md
@@ -61,7 +61,7 @@ Owner: Codex
 
 ## Fix round 1
 - Goal: R1–R8 regression-first fixes and read-only verify-only; no production access.
-- Now: reproducing review findings; next focused checks, Docker gate, scoped commit and push.
+- Now: complete; fix commit fab6c447 pushed with the required co-author trailer; all gates PASS.
 
 ### Fix round 1 regression evidence
 - Initial regression-first run: 20 tests, 7 failures / 3 errors. Reproduced R1 real-redactor response loss; R2 absent resume and poisoned snapshot; R3 recovery cleared with missing jobs; R4 false PASS after expiration; R5 stale export reused; R6 destination mismatch accepted; R7 CLI-dependent registry failure; R8 no warning; verify-only unknown option. Added imminent/unsupported preflight tests also failed before fixes.
@@ -95,3 +95,5 @@ Owner: Codex
 - Complete-code `make docker-gate`: PASS, exit 0. Backend: 9324 tests in 681.094s, 52 skipped; config validator/security audit PASS; frontend lint and static build PASS. Log: /private/tmp/oc94-r1-docker-gate-complete.log.
 - Removed only own recorded anonymous volumes and own nbhd-oc94-r1-tests container; no broad Docker pruning. No production calls, deployment or merge.
 - Release risks: build a fresh runtime image with the updated signed adapter; real managed-identity/ACR and console behavior still require approved canaries. Unsupported declarations and unresolved expired one-shots intentionally stop migration. Existing ID-only lifecycle recovery records cannot prove missing payload restoration and remain blocked for manual recovery.
+
+- Completion: fab6c447 pushed to origin/feat/openclaw-94-tenant-migration. Required trailer present. Only the user-provided directive/recon/review files remain untracked. Draft PR #1650 is unmerged; production untouched.
