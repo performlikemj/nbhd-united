@@ -21,6 +21,7 @@ from apps.common.test_jev import choice_answer, envelope
 from apps.pii.redactor import RedactionOutcome
 from apps.router.talk_route import (
     ACK_KINDS,
+    TALK_ROUTE_BUDGET_SECONDS,
     ACK_MIN,
     QUESTIONS,
     QUICK_READ_MIN,
@@ -166,7 +167,7 @@ class TalkRouteViewTests(TestCase):
         self.assertEqual(
             body["questions"], {key: value.model_dump(exclude_none=True) for key, value in QUESTIONS.items()}
         )
-        self.assertLessEqual(self.post.call_args.kwargs["timeout"].total, 0.8)
+        self.assertLessEqual(self.post.call_args.kwargs["timeout"].total, TALK_ROUTE_BUDGET_SECONDS)
         self.assertEqual(self.redact.call_args.args[0], [self.payload["text"]])
         self.assertIn("deadline", self.redact.call_args.kwargs)
 
