@@ -17,7 +17,7 @@ from rest_framework.test import APIClient, APIRequestFactory
 
 from apps.common import jev
 from apps.common.test_jev import choice_answer, envelope, score_answer
-from apps.pii.ephemeral import redact_texts_ephemeral_checked
+from apps.pii.ephemeral import redact_texts_ephemeral_checked, warm_ephemeral_path
 from apps.pii.redactor import RedactionOutcome
 from apps.router.chat_shape import (
     PANELS,
@@ -223,6 +223,7 @@ class ChatShapeViewTests(TestCase):
         self.addCleanup(self.gate.disable)
         self.post = self.enterContext(patch("apps.common.jev._post"))
         self.post.return_value = Mock(status_code=200, text=json.dumps(response_data()))
+        self.warm = self.enterContext(patch("apps.pii.ephemeral.warm_ephemeral_path", return_value=True))
         self.redact = self.enterContext(patch("apps.pii.ephemeral.redact_texts_ephemeral_checked"))
         self.redact.side_effect = lambda texts, tenant, **kwargs: [
             RedactionOutcome(text, True, "redacted") for text in texts
@@ -263,6 +264,7 @@ class ChatShapeViewTests(TestCase):
         self.assertFalse(response.data["enabled"])
         self.post.assert_not_called()
         self.redact.assert_not_called()
+        self.warm.assert_not_called()
 
     def test_all_text_redacted_and_history_truncated(self):
         self.payload.update(
@@ -493,6 +495,131 @@ class ChatShapeViewTests(TestCase):
             self.tenant.refresh_from_db()
             self.assertEqual(outcome.text, "[PERSON_10]")
             self.assertTrue(self.tenant.pii_entity_map["[PERSON_10]"]["provisional"])
+
+    def test_cold_shared_client_is_reused_after_deadline(self):
+        from apps.pii.shared_client import SharedPiiPipeline
+
+        class ColdClient(SharedPiiPipeline):
+            def _call(self, text, *, deadline=None):
+                cold = not getattr(self, "warmed", False)
+                self.warmed = True
+                sleep(0.2 if cold else 0.01)
+                return []
+
+        pipeline = ColdClient()
+        self.redact.side_effect = redact_texts_ephemeral_checked
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=pipeline),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+            # Capture fresh clients too: recreating one means every call is cold.
+            patch.object(SharedPiiPipeline, "_call", ColdClient._call),
+            patch("apps.router.chat_shape_views.SHAPE_BUDGET_SECONDS", 0.1),
+        ):
+            self.assertEqual(self.send().data["reason"], "unavailable")
+            self.post.assert_not_called()
+            for _ in range(3):
+                started = monotonic()
+                self.assertEqual(self.send().data["reason"], "ok")
+                self.assertLess(monotonic() - started, 0.1)
+            # Let the abandoned first invocation exit before removing patches.
+            sleep(0.15)
+        self.assertEqual(self.post.call_count, 3)
+
+    def test_background_warmup_outlives_deadlines_without_occupying_shape_slots(self):
+        from apps.pii import ephemeral
+        from apps.pii.shared_client import SharedPiiPipeline
+
+        entered, release = Event(), Event()
+        clients = []
+
+        class ColdClient(SharedPiiPipeline):
+            def _call(self, text, *, deadline=None):
+                clients.append(self)
+                if text == "Warmup.":
+                    entered.set()
+                    release.wait(5)
+                return fake_name_detector(text)
+
+        pipeline = ColdClient()
+        warmup = ephemeral._EphemeralWarmup()
+        self.warm.side_effect = warm_ephemeral_path
+        self.redact.side_effect = redact_texts_ephemeral_checked
+        self.payload["text"] = "Fakenamealpha asks how did i sleep this week"
+        with (
+            patch.object(ephemeral, "_ephemeral_warmup", warmup),
+            patch("apps.pii.engine.get_pii_pipeline", return_value=pipeline),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+            patch("apps.router.chat_shape_views.SHAPE_BUDGET_SECONDS", 0.05),
+        ):
+            try:
+                with patch("apps.router.chat_shape._SHAPE_WORKERS.submit") as submit:
+                    # More expired calls than pool slots still schedule one warmup.
+                    for _ in range(6):
+                        self.assertEqual(self.send().data["reason"], "unavailable")
+                    self.assertTrue(entered.is_set())
+                    submit.assert_not_called()
+                    self.post.assert_not_called()
+                    self.assertEqual(clients, [pipeline])
+            finally:
+                release.set()
+                self.assertTrue(warmup._done.wait(1))
+            for _ in range(3):
+                started = monotonic()
+                self.assertEqual(self.send().data["reason"], "ok")
+                self.assertLess(monotonic() - started, 0.05)
+            self.assertEqual(clients, [pipeline] * 4)
+            self.assertEqual(self.post.call_count, 3)
+            self.assertNotIn("Fakenamealpha", str(self.post.call_args))
+
+    def test_failed_warmup_never_confirms_request_or_prevents_recovery(self):
+        from apps.pii import ephemeral
+        from apps.pii.shared_client import SharedPiiPipeline
+
+        warmup = ephemeral._EphemeralWarmup()
+        self.warm.side_effect = warm_ephemeral_path
+        self.redact.side_effect = redact_texts_ephemeral_checked
+        pipeline = SharedPiiPipeline()
+        with (
+            patch.object(ephemeral, "_ephemeral_warmup", warmup),
+            patch("apps.pii.engine.get_pii_pipeline", return_value=pipeline),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+            patch.object(pipeline, "_call", side_effect=RuntimeError("PRIVATE_SENTINEL")) as call,
+        ):
+            self.assertEqual(self.send().data["reason"], "redaction_unconfirmed")
+            self.post.assert_not_called()
+            call.side_effect = None
+            call.return_value = []
+            self.assertEqual(self.send().data["reason"], "ok")
+            self.post.assert_called_once()
+
+    def test_timing_log_once_per_call_including_early_returns(self):
+        from apps.router.chat_shape import shape_chat
+
+        parsed = ChatShapeRequest.model_validate(self.payload)
+        cases = ["ok", "redaction_unconfirmed", "unavailable", "disabled"]
+        for reason in cases:
+            with self.subTest(reason=reason):
+                self.redact.side_effect = (
+                    RuntimeError("PRIVATE_SENTINEL")
+                    if reason == "redaction_unconfirmed"
+                    else lambda texts, *args, **kwargs: [RedactionOutcome("safe", True, "redacted") for _ in texts]
+                )
+                with (
+                    override_settings(CHAT_SHAPE_TENANT_IDS="" if reason == "disabled" else str(self.tenant.id)),
+                    self.assertLogs("apps.router.chat_shape", level="INFO") as captured,
+                ):
+                    result = shape_chat(parsed, self.tenant, deadline=0 if reason == "unavailable" else None)
+                self.assertEqual(result.reason, reason)
+                self.assertEqual(len(captured.records), 1)
+                record = captured.records[0]
+                self.assertEqual(record.reason, reason)
+                self.assertGreaterEqual(record.redact_ms, 0)
+                self.assertGreaterEqual(record.jev_ms, 0)
+                if reason != "ok":
+                    self.assertEqual(record.jev_ms, 0)
+                self.assertNotIn("PRIVATE_SENTINEL", captured.output[0])
+                self.assertIn("redact_ms=", captured.output[0])
+                self.assertIn("jev_ms=", captured.output[0])
 
     def test_maximum_history_batches_slow_detector_and_shares_jev_budget(self):
         from apps.pii.redactor import _detect_pii

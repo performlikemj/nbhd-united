@@ -3,6 +3,7 @@
 import copy
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from time import monotonic
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -100,6 +101,41 @@ class EphemeralRedactionTests(SimpleTestCase):
             with self.assertRaises(SharedPiiError):
                 pipeline("text")
             self.assertEqual(pipeline._consecutive_failures, 1)
+
+    def test_all_worker_threads_use_the_process_client(self):
+        from apps.pii.shared_client import get_shared_pii_pipeline
+
+        with (
+            patch.dict("os.environ", {"PII_DETECTOR_TRANSPORT": "shared"}),
+            patch("apps.pii.shared_client._shared_pipeline", None),
+            patch("apps.pii.shared_client._shared_pipeline_key", None),
+            patch.object(SharedPiiPipeline, "_call", autospec=True, return_value=[]) as call,
+            ThreadPoolExecutor(max_workers=4) as workers,
+        ):
+            pipeline = get_shared_pii_pipeline()
+            outcomes = list(workers.map(lambda _: self.redact(["ordinary text"]), range(12)))
+            self.assertTrue(all(batch[0].confirmed for batch in outcomes))
+            self.assertEqual(call.call_count, 12)
+            self.assertTrue(all(item.args[0] is pipeline for item in call.call_args_list))
+
+    def test_ephemeral_success_does_not_reset_normal_chat_breaker(self):
+        from apps.pii.shared_client import SharedPiiError
+
+        pipeline = SharedPiiPipeline()
+        with patch.object(pipeline, "_call", side_effect=SharedPiiError("timeout", outcome="timeout")):
+            for _ in range(3):
+                with self.assertRaises(SharedPiiError):
+                    pipeline("text")
+        before = (pipeline._consecutive_failures, pipeline._open_until, pipeline._generation)
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=pipeline),
+            patch.object(pipeline, "_call", return_value=[]),
+        ):
+            self.assertTrue(self.redact(["text"])[0].confirmed)
+            self.assertEqual((pipeline._consecutive_failures, pipeline._open_until, pipeline._generation), before)
+            with self.assertRaises(SharedPiiError) as raised:
+                pipeline("text")
+            self.assertEqual(raised.exception.outcome, "circuit_open")
 
     def test_long_batch_masks_tail_without_detector_window_truncation(self):
         calls = []

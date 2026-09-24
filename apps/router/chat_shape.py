@@ -1,11 +1,13 @@
 """Living chat contract, deterministic policy/parsers, and redacted Jev service."""
 
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Lock
 from time import monotonic
 from types import SimpleNamespace
 from typing import Literal
@@ -248,6 +250,8 @@ def decide_panel(
     return decision, panel, "ok"
 
 
+logger = logging.getLogger(__name__)
+
 SHAPE_BUDGET_SECONDS = 2.5
 # Bounded admission: timed-out local inference cannot create unlimited workers
 # or a queue of stale requests. A completed detector never starts late Jev work.
@@ -259,10 +263,69 @@ _SHAPE_WORKERS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="chat-shap
 _SHAPE_SLOTS = BoundedSemaphore(4)
 
 
+class _ShapeTimings:
+    """Snapshot elapsed stages even when a worker outlives the response."""
+
+    def __init__(self):
+        self._lock = Lock()
+        self._elapsed = {"redact": 0.0, "jev": 0.0}
+        self._active = None
+
+    @contextmanager
+    def measure(self, stage):
+        started = monotonic()
+        with self._lock:
+            self._active = (stage, started)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._elapsed[stage] += monotonic() - started
+                self._active = None
+
+    def milliseconds(self):
+        with self._lock:
+            elapsed = self._elapsed.copy()
+            if self._active is not None:
+                stage, started = self._active
+                elapsed[stage] += monotonic() - started
+        return {stage: round(seconds * 1000, 3) for stage, seconds in elapsed.items()}
+
+
 def shape_chat(payload: ChatShapeRequest, tenant, *, deadline: float | None = None) -> ChatShapeResponse:
+    timings = _ShapeTimings()
+    result = ChatShapeResponse(reason="unavailable")
+    try:
+        result = _run_shape_chat(payload, tenant, deadline=deadline, timings=timings)
+    except Exception:
+        # Never include payload, tenant data or exception details in telemetry.
+        pass
+    finally:
+        elapsed = timings.milliseconds()
+        logger.info(
+            "chat_shape_timing redact_ms=%.3f jev_ms=%.3f reason=%s",
+            elapsed["redact"],
+            elapsed["jev"],
+            result.reason,
+            extra={"redact_ms": elapsed["redact"], "jev_ms": elapsed["jev"], "reason": result.reason},
+        )
+    return result
+
+
+def _run_shape_chat(payload, tenant, *, deadline, timings):
+    from apps.pii.ephemeral import warm_ephemeral_path
+
     if not chat_shape_enabled(tenant):
         return ChatShapeResponse(enabled=False, reason="disabled")
     deadline = deadline if deadline is not None else monotonic() + SHAPE_BUDGET_SECONDS
+    if monotonic() >= deadline:
+        return ChatShapeResponse(reason="unavailable")
+    # Cold initialization may outlive several requests. It runs exactly once
+    # outside the bounded pool, so expired callers cannot occupy all four slots
+    # waiting for the same imports/model or enqueue more initialization jobs.
+    with timings.measure("redact"):
+        if not warm_ephemeral_path(deadline=deadline):
+            return ChatShapeResponse(reason="unavailable")
     if monotonic() >= deadline or not _SHAPE_SLOTS.acquire(blocking=False):
         return ChatShapeResponse(reason="unavailable")
     # Snapshot on the request thread: background work has no ORM-capable tenant,
@@ -277,7 +340,7 @@ def shape_chat(payload: ChatShapeRequest, tenant, *, deadline: float | None = No
             user=SimpleNamespace(timezone=tenant_tz_name(tenant)),
         )
         panels = chat_shape_panels()
-        future = _SHAPE_WORKERS.submit(_shape_chat, payload, snapshot, deadline, panels)
+        future = _SHAPE_WORKERS.submit(_shape_chat, payload, snapshot, deadline, panels, timings)
     except Exception:
         _SHAPE_SLOTS.release()
         return ChatShapeResponse(reason="unavailable")
@@ -306,7 +369,7 @@ def truncate_redacted(text: str, limit: int = 300) -> str:
     return text[:limit]
 
 
-def _shape_chat(payload, tenant, deadline, panels):
+def _shape_chat(payload, tenant, deadline, panels, timings):
     from apps.pii.ephemeral import redact_texts_ephemeral_checked
     from apps.pii.redactor import as_confirmed
 
@@ -319,7 +382,8 @@ def _shape_chat(payload, tenant, deadline, panels):
     try:
         if monotonic() >= deadline:
             return ChatShapeResponse(reason="unavailable")
-        outcomes = redact_texts_ephemeral_checked(texts, tenant, deadline=deadline)
+        with timings.measure("redact"):
+            outcomes = redact_texts_ephemeral_checked(texts, tenant, deadline=deadline)
         if monotonic() >= deadline:
             return ChatShapeResponse(reason="unavailable")
         confirmed = [as_confirmed(outcome) for outcome in outcomes]
@@ -340,7 +404,8 @@ def _shape_chat(payload, tenant, deadline, panels):
         ),
     }
     try:
-        answers = jev.decide(state, QUESTIONS, deadline=deadline).answers
+        with timings.measure("jev"):
+            answers = jev.decide(state, QUESTIONS, deadline=deadline).answers
         resolved_range, day = parse_date(payload.text, tenant)
         if resolved_range == "unspecified" and day is None:
             candidate = answers["time_range"].choice

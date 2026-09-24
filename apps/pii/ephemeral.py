@@ -6,9 +6,54 @@ live only in this batch; normal chat still owns permanent/provisional minting.
 
 import re
 from dataclasses import replace
+from threading import Event, Lock, Thread
 from time import monotonic
 
 from apps.pii import redactor
+
+
+class _EphemeralWarmup:
+    """One synthetic warmup per process, independent of request worker slots.
+
+    Started lazily after fork on the first enabled shape request. Never retain
+    tenant data here. Completion is initialization only, not a privacy receipt:
+    every request still needs its own checked redaction even if warmup failed.
+    """
+
+    def __init__(self):
+        self._lock = Lock()
+        self._started = False
+        self._done = Event()
+
+    def wait(self, deadline: float) -> bool:
+        with self._lock:
+            if not self._started:
+                worker = Thread(target=self._run, name="pii-ephemeral-warmup", daemon=True)
+                worker.start()
+                self._started = True
+        return self._done.wait(max(0, deadline - monotonic()))
+
+    def _run(self):
+        try:
+            # Include Python imports, pattern recognizers and neural inference.
+            # This budget belongs to warmup, never to the initiating request.
+            from apps.pii.engine import get_pattern_recognizers
+
+            # Initialize these even if the shared service is not ready yet.
+            get_pattern_recognizers()
+            redact_texts_ephemeral_checked(["Warmup."], None, deadline=monotonic() + 30)
+        except Exception:
+            pass
+        finally:
+            self._done.set()
+
+
+_ephemeral_warmup = _EphemeralWarmup()
+
+
+def warm_ephemeral_path(*, deadline: float) -> bool:
+    """Start background warmup once; wait only within this caller's budget."""
+    return _ephemeral_warmup.wait(deadline)
 
 
 def _detect_batch(text, session, deadline):
