@@ -76,3 +76,77 @@ manifest-ready gate pattern; never populate it based solely on a version or
 DB image tag. Older manifests reject unknown config keys at load and can take
 the assistant down. No deployment or tenant config refresh is part of this
 change.
+
+
+## Speculative iOS chat shape
+
+`POST /api/v1/chat/shape/` is authenticated and gated by
+`CHAT_SHAPE_TENANT_IDS`. It chooses a live panel independently of chat delivery.
+Send `client_msg_id` (UUID string), `text` (up to 2,000 characters), optional
+`open_panel: {kind, label}` (label up to 4,000 characters), and optional
+`recent_turns: [{role: "user" | "assistant", text}]` (up to four turns, each
+up to 4,000 characters). Raw fields are validated, never truncated before
+redaction. `open_panel.kind` uses the same supported values as `panel` below.
+
+Response example (illustrative timing and probabilities):
+
+```json
+{
+  "enabled": true,
+  "decision": "open",
+  "panel": "log_table",
+  "metric": "body_weight",
+  "range": "this_month",
+  "day": null,
+  "duration_seconds": null,
+  "wants_change": 0.06,
+  "follow_up": 0.03,
+  "confidence": 0.72,
+  "reason": "ok",
+  "latency_ms": 420
+}
+```
+
+- `decision`: `open`, `update`, or `none`. `panel` is null for `none`.
+- `panel`: `sleep`, `schedule`, `training_week`, `workout`, `timer`,
+  `log_table`, or `journal_table`. `CHAT_SHAPE_PANELS` defaults to all seven;
+  its comma-separated override can disable individual kinds. `tasks` remains
+  a message-panel kind only.
+- `metric`: optional/nullable `body_weight` or `sleep`, valid only for
+  `log_table`; otherwise null. Jev `body_weight` selects
+  `log_table` + `metric: "body_weight"`; Jev `journal` selects `journal_table`.
+  Jev `sleep` still selects the `sleep` panel. These values reuse `panels.py`.
+- `range`: `today`, `yesterday`, `tomorrow`, `this_week`, `last_week`,
+  `this_month`, `last_month`, or `unspecified`; `day` is an optional ISO date.
+  Explicit message dates take precedence over Jev's range.
+- `duration_seconds`: positive integer for timers only, otherwise null.
+- `wants_change`, `follow_up`, `confidence`: probabilities from Jev. Family
+  confidence can authorize a panel while `confidence` remains below 0.5.
+- `reason`: `ok`, `disabled`, `no_panel`, `low_confidence`,
+  `redaction_unconfirmed`, `unavailable`, or `panel_disabled`.
+
+The fitness family is `{training_week, workout_detail, body_weight}`. When
+confidence is below 0.5, a top surface in that family with summed family
+probability at least 0.6 selects `training_week`, except a body-weight
+probability of at least 0.6 selects `log_table/body_weight`. The existing
+workout tie rule wins: the top two surfaces must be training/workout, within
+0.15 probability, with range `today`; then select `workout`. Confident
+individual surfaces retain their existing mapping. A different top surface
+cannot borrow family confidence. Visual usefulness (at least 0.75) or
+follow-up (at least 0.5) is still required; panel rollout gates still apply.
+Follow-ups update the same kind or switch within training/workout; weight
+and journal tables update their own kind.
+
+Without `open_panel`, history is omitted from both redaction and Jev state.
+With `open_panel`, the latest text, every supplied history field, and label
+are passed to one checked ephemeral redaction call. Only after confirmation
+are the latest two history turns and label shortened to 300 characters,
+extending cuts to preserve whole placeholders. Short batches fit one detector
+round trip; longer batches retain overlapping bounded detector windows to
+avoid silent model truncation. No PII-map writes or receipts are created.
+Any unconfirmed field prevents Jev egress.
+
+Warmup, redaction, and Jev share one 4.0-second deadline. Timeout returns
+`decision: "none", reason: "unavailable"`; chat delivery remains independent.
+`chat_shape_timing` logs `redact_ms`, `jev_ms`, `reason`, and `texts` (number
+of fields submitted for redaction; zero if skipped), without field contents.

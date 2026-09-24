@@ -43,6 +43,23 @@ class EphemeralRedactionTests(SimpleTestCase):
         self.assertEqual([o.text for o in outcomes], ["[PERSON_2] and [PERSON_8]", "[PERSON_8] again"])
         self.assertEqual(vars(self.tenant), before)
 
+    def test_all_short_fields_share_one_detector_round_trip(self):
+        pipeline = SharedPiiPipeline()
+        texts = ["Knownfixture asks", "Fakenamealpha replied", "Fakenamealpha again", "Sleep panel"]
+        before = copy.deepcopy(vars(self.tenant))
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=pipeline),
+            patch.object(pipeline, "_call", side_effect=lambda text, **kwargs: detector(text)) as call,
+        ):
+            outcomes = self.redact(texts)
+        call.assert_called_once()
+        self.assertIn("deadline", call.call_args.kwargs)
+        self.assertTrue(all(outcome.confirmed for outcome in outcomes))
+        self.assertEqual(
+            [o.text for o in outcomes], ["[PERSON_2] asks", "[PERSON_8] replied", "[PERSON_8] again", "Sleep panel"]
+        )
+        self.assertEqual(vars(self.tenant), before)
+
     def test_new_name_reused_even_when_detector_misses_other_mention(self):
         with patch("apps.pii.engine.get_pii_pipeline", return_value=lambda text: detector(text)[:1]):
             outcomes = self.redact(["Fakenamealpha", "Fakenamealpha"])
