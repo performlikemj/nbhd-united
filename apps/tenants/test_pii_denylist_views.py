@@ -103,7 +103,7 @@ class PIIDenylistListViewTests(TestCase):
         self.client.force_authenticate(user=user)
         resp = self.client.post(
             "/api/v1/tenants/settings/pii-denylist/",
-            {"name": "x" * 201},
+            {"name": "x" * 257},
             format="json",
         )
         self.assertEqual(resp.status_code, 400)
@@ -191,7 +191,7 @@ class PIIDenylistBulkViewTests(TestCase):
         self.client.force_authenticate(user=user)
         resp = self.client.post(
             "/api/v1/tenants/settings/pii-denylist/bulk/",
-            {"names": ["goal", "", "   ", "x" * 201, "calendar", 42]},
+            {"names": ["goal", "", "   ", "x" * 257, "calendar", 42]},
             format="json",
         )
         self.assertEqual(resp.status_code, 200)

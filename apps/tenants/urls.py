@@ -1,6 +1,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from .entity_registry_views import EntityRegistryBulkStopView, EntityRegistryRestoreView
 from .line_views import line_generate_link, line_set_preferred_channel, line_status, line_unlink
 from .promo_views import redeem_promo
 from .runtime_views import (
@@ -59,6 +60,16 @@ urlpatterns = [
         "settings/entity-registry/bulk/",
         EntityRegistryBulkDeleteView.as_view(),
         name="entity-registry-bulk-delete",
+    ),
+    path(
+        "settings/entity-registry/bulk-stop/",
+        EntityRegistryBulkStopView.as_view(),
+        name="entity-registry-bulk-stop",
+    ),
+    path(
+        "settings/entity-registry/restore/",
+        EntityRegistryRestoreView.as_view(),
+        name="entity-registry-restore",
     ),
     path(
         "settings/entity-registry/<str:placeholder>/",
