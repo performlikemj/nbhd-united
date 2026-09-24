@@ -2094,14 +2094,9 @@ def _detect_pii(
             if monotonic() >= deadline:
                 raise TimeoutError("Redaction deadline exceeded")
             if isinstance(pii_pipeline, SharedPiiPipeline):
-                # Ephemeral requests have a shorter caller budget. Their
-                # timeouts must not open the normal chat client's breaker.
-                ephemeral_pipeline = SharedPiiPipeline(
-                    socket_path=pii_pipeline.socket_path,
-                    engine=pii_pipeline.engine,
-                    deadline_s=pii_pipeline.deadline_s,
-                )
-                model_results = ephemeral_pipeline(detect_text, deadline=deadline)
+                # Keep the process-wide client warm without charging short
+                # speculative deadlines to the normal chat circuit breaker.
+                model_results = pii_pipeline.detect_ephemeral(detect_text, deadline=deadline)
             else:
                 model_results = pii_pipeline(detect_text)
             if monotonic() >= deadline:
