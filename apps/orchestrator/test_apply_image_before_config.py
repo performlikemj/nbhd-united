@@ -34,6 +34,7 @@ class ApplyImageBeforeConfigTests(TestCase):
         self.tenant.container_id = "oc-ibc-test"
         self.tenant.container_fqdn = "oc-ibc-test.internal"
         self.tenant.container_image_tag = "oldtag"
+        self.tenant.openclaw_version = "2026.5.28"
         self.tenant.config_version = 1
         self.tenant.pending_config_version = 2
         self.tenant.save()

@@ -23,6 +23,11 @@ def suspend_tenant_crons(tenant: Tenant) -> dict[str, Any]:
     Returns a summary dict with counts of disabled/skipped/errors.
     Jobs that are already disabled are left untouched.
     """
+    from .share_cron_sync import tenant_uses_file_cron_sync
+
+    if tenant_uses_file_cron_sync(tenant):
+        return _file_lifecycle(tenant, suspend=True)
+
     result = {"disabled": 0, "already_disabled": 0, "errors": 0, "job_names": []}
 
     if not tenant.container_fqdn:
@@ -86,6 +91,11 @@ def resume_tenant_crons(tenant: Tenant) -> dict[str, Any]:
     Called when a suspended tenant reactivates (subscribes).
     Re-enables all disabled jobs — both system and user-created.
     """
+    from .share_cron_sync import tenant_uses_file_cron_sync
+
+    if tenant_uses_file_cron_sync(tenant):
+        return _file_lifecycle(tenant, suspend=False)
+
     result = {"enabled": 0, "already_enabled": 0, "errors": 0, "job_names": []}
 
     if not tenant.container_fqdn:
@@ -140,4 +150,70 @@ def resume_tenant_crons(tenant: Tenant) -> dict[str, Any]:
         result["already_enabled"],
         result["errors"],
     )
+    return result
+
+
+def _file_lifecycle(tenant, *, suspend):
+    """Pause the signed writer first, then disable operator-owned jobs.
+
+    The saved enabled-ID set makes retries safe and leaves pre-existing disabled
+    jobs disabled on resume. Managed declarations are rebuilt from Postgres.
+    """
+    import time
+
+    from apps.orchestrator.runtime_operator import list_crons, set_cron_enabled
+
+    from .share_cron_sync import write_tenant_crons_file
+
+    tenant.refresh_from_db(fields=["cron_suspend_state"])
+    state = tenant.cron_suspend_state or {}
+    action = "disabled" if suspend else "enabled"
+    result = {action: 0, "errors": 0, "job_names": []}
+    if suspend:
+        if not state.get("active"):
+            jobs = list_crons(tenant)
+            state = {"active": True, "enabled_ids": [j["id"] for j in jobs if j["enabled"]]}
+            Tenant.objects.filter(pk=tenant.pk).update(cron_suspend_state=state)
+            tenant.cron_suspend_state = state
+        write_tenant_crons_file(tenant)
+        # Let any prior file reconcile finish before checking for enabled jobs.
+        # An empty signed file removes managed declarations; disabling the rest
+        # prevents boot catch-up. Never deactivate while any enabled job remains.
+        previous_quiet = False
+        for attempt in range(8):
+            jobs = list_crons(tenant)
+            enabled = [j for j in jobs if j["enabled"]]
+            for job in enabled:
+                if job.get("declarationKey", "").startswith("nbhd:"):
+                    # Let the empty signed declaration REMOVE managed jobs. The
+                    # image helper's default list hides disabled jobs; disabling
+                    # them here could strand them across wake/resume.
+                    continue
+                set_cron_enabled(tenant, job["id"], False)
+                result[action] += 1
+            if not enabled:
+                # Require a second observation after a full sync interval so an
+                # already-running reconcile cannot re-enable a stale declaration.
+                if attempt and previous_quiet:
+                    return result
+                previous_quiet = True
+                time.sleep(25)
+                continue
+            previous_quiet = False
+            time.sleep(5)
+        raise RuntimeError("Signed cron suspension did not converge")
+    if not state:
+        return result
+    # Retain the resume IDs until both the file write and operator edits succeed.
+    state["active"] = False
+    Tenant.objects.filter(pk=tenant.pk).update(cron_suspend_state=state)
+    tenant.cron_suspend_state = state
+    write_tenant_crons_file(tenant)
+    enabled_ids = set(state.get("enabled_ids", []))
+    for job in list_crons(tenant):
+        if job["id"] in enabled_ids and not job["enabled"] and not job["declarationKey"].startswith("nbhd:"):
+            set_cron_enabled(tenant, job["id"], True)
+            result[action] += 1
+    Tenant.objects.filter(pk=tenant.pk).update(cron_suspend_state={})
+    tenant.cron_suspend_state = {}
     return result

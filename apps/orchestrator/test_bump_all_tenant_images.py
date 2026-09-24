@@ -30,7 +30,7 @@ from django.utils import timezone
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
-_TARGET_TAG = "abc1234"
+_TARGET_TAG = "2026.9.4-abc1234"
 _OLDER_TAG = "old-sha"
 _REGISTRY = "nbhdunited.azurecr.io"
 
@@ -211,7 +211,7 @@ class BumpAllTenantImagesTest(TestCase):
 
     @patch("apps.orchestrator.management.commands.bump_all_tenant_images.update_container_image")
     def test_explicit_tag_overrides_settings(self, mock_update):
-        explicit_tag = "explicit-tag-9999"
+        explicit_tag = "2026.9.4-explicit-tag-9999"
         _make_tenant(suffix=19)
 
         call_command("bump_all_tenant_images", "--tag", explicit_tag)

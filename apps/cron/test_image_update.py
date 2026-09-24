@@ -60,28 +60,26 @@ def _batch_return_len(tasks, **kwargs):
 # gate's own default-off behavior is covered in test_image_rollout.py and
 # test_image_bump_skipped_when_not_allowlisted below.
 @override_settings(
-    OPENCLAW_IMAGE_TAG="abc123",
+    OPENCLAW_IMAGE_TAG="2026.9.4-abc1234",
     AZURE_ACR_SERVER="nbhdunited.azurecr.io",
     OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS="*",
 )
 class ApplyPendingConfigsImageTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.gateway = self.enterContext(
-            patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": []})
-        )
+        self.operator = self.enterContext(patch("apps.orchestrator.runtime_operator.list_crons", return_value=[]))
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
     @patch("apps.cron.publish.publish_batch", side_effect=_batch_return_len)
     def test_image_bump_deferred_when_cron_state_read_fails(self, mock_batch, _mock_verify):
-        from apps.cron.gateway_client import GatewayError
+        from apps.orchestrator.runtime_operator import OperatorError
 
         tenant = _create_tenant_with_state(
             user_suffix=1,
             last_message_at=timezone.now() - timedelta(minutes=20),
             container_image_tag="oldtag",
         )
-        self.gateway.side_effect = GatewayError("bad_gateway", status_code=502)
+        self.operator.side_effect = OperatorError("operator unavailable")
         with self.assertLogs("apps.orchestrator.hibernation", level="WARNING") as logs:
             response = self.client.post("/api/v1/cron/apply-pending-configs/")
         self.assertEqual(response.status_code, 200)
@@ -191,7 +189,7 @@ class ApplyPendingConfigsImageTests(TestCase):
             pending_config_version=0,
             config_version=0,
             last_message_at=now - timedelta(minutes=20),
-            container_image_tag="abc123",
+            container_image_tag="2026.9.4-abc1234",
         )
 
         response = self.client.post("/api/v1/cron/apply-pending-configs/")
@@ -218,14 +216,14 @@ class ApplyPendingConfigsImageTests(TestCase):
             pending_config_version=1,
             config_version=0,
             last_message_at=now - timedelta(minutes=20),
-            container_image_tag="abc123",
+            container_image_tag="2026.9.4-abc1234",
         )
         _create_tenant_with_state(
             user_suffix=2,
             pending_config_version=1,
             config_version=0,
             last_message_at=now - timedelta(minutes=20),
-            container_image_tag="abc123",
+            container_image_tag="2026.9.4-abc1234",
         )
 
         response = self.client.post("/api/v1/cron/apply-pending-configs/")
@@ -251,7 +249,7 @@ class ApplyPendingConfigsImageTests(TestCase):
             pending_config_version=1,
             config_version=0,
             last_message_at=now - timedelta(minutes=20),
-            container_image_tag="abc123",
+            container_image_tag="2026.9.4-abc1234",
         )
         _create_tenant_with_state(
             user_suffix=2,
@@ -397,7 +395,7 @@ class ApplyPendingConfigsImageTests(TestCase):
             pending_config_version=2,
             config_version=1,
             last_message_at=now - timedelta(minutes=20),
-            container_image_tag="abc123",
+            container_image_tag="2026.9.4-abc1234",
         )
 
         response = self.client.post("/api/v1/cron/apply-pending-configs/")

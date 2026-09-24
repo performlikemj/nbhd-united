@@ -472,6 +472,11 @@ def regenerate_tenant_crons(tenant: Tenant, *, recovery: bool = False) -> dict:
         )
         return summary
 
+    migration = getattr(tenant, "openclaw_migration", {}) or {}
+    if migration.get("status") in {"RUNNING", "FAILED"}:
+        # The migration writes its signed file explicitly after config pickup.
+        return summary
+
     # OpenClaw 2026.9.4 gates the agent-tool gateway cron.* RPC path, so Django
     # can no longer push crons over HTTP /tools/invoke. Deliver the desired set
     # via a signed share file that the in-container helper applies with the

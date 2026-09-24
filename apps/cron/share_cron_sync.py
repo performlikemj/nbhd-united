@@ -50,6 +50,15 @@ def _desired_jobs(tenant) -> list[dict]:
     from apps.cron.pending_at_views import _at_fires_at_ms
     from apps.orchestrator.cron_reconcile import _is_unmanaged_cron, _row_to_cron_dict
 
+    # Refresh pause state so queued reconciles cannot re-enable sleeping jobs.
+    from apps.tenants.models import Tenant
+
+    lifecycle = getattr(tenant, "cron_suspend_state", {}) or {}
+    if not tenant._state.adding:
+        lifecycle = Tenant.objects.filter(pk=tenant.pk).values_list("cron_suspend_state", flat=True).first() or {}
+    if lifecycle.get("active"):
+        return []
+    preserved = set((getattr(tenant, "openclaw_migration", {}) or {}).get("preserved_unmanaged_ids", []))
     now_ms = int(time.time() * 1000)
     jobs: list[dict] = []
     for row in CronJob.objects.filter(tenant=tenant, enabled=True).order_by("id"):
@@ -60,7 +69,7 @@ def _desired_jobs(tenant) -> list[dict]:
             if fire_ms is None or fire_ms <= now_ms:
                 continue  # fired / stale / unparseable one-shot — do not (re)add
         else:
-            if not getattr(row, "managed", False) or _is_unmanaged_cron(row.name):
+            if str(row.id) not in preserved and (not getattr(row, "managed", False) or _is_unmanaged_cron(row.name)):
                 continue  # leave agent-owned and system self-cleaning crons alone
         job["declarationKey"] = f"nbhd:{row.id}"
         jobs.append(job)

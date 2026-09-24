@@ -46,7 +46,7 @@ class WakeHibernatedTenantImageRefreshTest(TestCase):
         self.tenant.save()
 
     @override_settings(
-        OPENCLAW_IMAGE_TAG="newsha123",
+        OPENCLAW_IMAGE_TAG="2026.9.4-newsha123",
         AZURE_ACR_SERVER="test.azurecr.io",
     )
     @patch("apps.cron.publish.publish_task")
@@ -70,16 +70,16 @@ class WakeHibernatedTenantImageRefreshTest(TestCase):
         self.assertTrue(result)
         mock_update_image.assert_called_once_with(
             "oc-wake-test",
-            "test.azurecr.io/nbhd-openclaw:newsha123",
+            "test.azurecr.io/nbhd-openclaw:2026.9.4-newsha123",
         )
         mock_wake.assert_not_called()
 
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.container_image_tag, "newsha123")
+        self.assertEqual(self.tenant.container_image_tag, "2026.9.4-newsha123")
         self.assertIsNone(self.tenant.hibernated_at)
 
     @override_settings(
-        OPENCLAW_IMAGE_TAG="newsha123",
+        OPENCLAW_IMAGE_TAG="2026.9.4-newsha123",
         AZURE_ACR_SERVER="test.azurecr.io",
         OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS="",
     )
@@ -201,7 +201,7 @@ class WakeHibernatedTenantImageRefreshTest(TestCase):
         self.assertEqual(self.tenant.cron_wake_at, existing_stamp)
 
     @override_settings(
-        OPENCLAW_IMAGE_TAG="newsha123",
+        OPENCLAW_IMAGE_TAG="2026.9.4-newsha123",
         AZURE_ACR_SERVER="test.azurecr.io",
     )
     @patch("apps.tenants.middleware.set_rls_context")
@@ -222,7 +222,7 @@ class WakeHibernatedTenantImageRefreshTest(TestCase):
 
         def stale_once(queryset, **updates):
             nonlocal image_write_attempts
-            if updates.get("container_image_tag") == "newsha123":
+            if updates.get("container_image_tag") == "2026.9.4-newsha123":
                 image_write_attempts += 1
                 if image_write_attempts == 1:
                     raise OperationalError("simulated idle connection")
@@ -237,7 +237,7 @@ class WakeHibernatedTenantImageRefreshTest(TestCase):
         self.assertEqual(mock_set_rls.call_args_list, [call(service_role=True)])
 
         self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.container_image_tag, "newsha123")
+        self.assertEqual(self.tenant.container_image_tag, "2026.9.4-newsha123")
 
     @override_settings(
         OPENCLAW_IMAGE_TAG="samesha",
@@ -367,8 +367,8 @@ class WakeConfigSchemaSyncTest(TestCase):
         """Image refresh onto a newer tag must move openclaw_version with it
         and queue a config regen even when pending==config."""
         Tenant.objects.filter(id=self.tenant.id).update(
-            openclaw_version="2026.4.25",
-            container_image_tag="2026.4.25-oldsha",
+            openclaw_version="2026.5.27",
+            container_image_tag="2026.5.27-oldsha",
             config_version=3,
             pending_config_version=3,
         )
@@ -451,6 +451,7 @@ class CaptureTenantCronSchedulesFallbackTest(TestCase):
             display_name="Fallback Test",
             telegram_chat_id=123456789,
         )
+        self.tenant.openclaw_version = "2026.5.28"
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-fallback-test"
         self.tenant.container_fqdn = "oc-fallback-test.internal"

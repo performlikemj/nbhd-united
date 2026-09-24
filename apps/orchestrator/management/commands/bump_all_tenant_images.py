@@ -123,6 +123,13 @@ class Command(BaseCommand):
         if not include_hibernated:
             eligible = eligible.filter(hibernated_at__isnull=True)
 
+        from apps.orchestrator.runtime_guard import MIGRATION_REQUIRED, image_only_update_allowed
+
+        # Validate the entire scope BEFORE launching any worker, including same-tag
+        # partial upgrades. No tenant is mutated if one needs a migration.
+        if any(not image_only_update_allowed(t, target_tag) for t in eligible):
+            raise CommandError(MIGRATION_REQUIRED)
+
         # Idempotence: skip tenants already on the target tag.
         to_bump = [t for t in eligible if (t.container_image_tag or "") != target_tag]
         skipped_idempotent = eligible.count() - len(to_bump)

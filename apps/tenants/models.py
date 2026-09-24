@@ -690,6 +690,17 @@ class Tenant(models.Model):
         help_text='Last-known cron job list from gateway. Format: {"jobs": [...], "snapshot_at": "ISO8601"}',
     )
 
+    openclaw_migration = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Private OpenClaw migration checkpoints, source snapshot and verification evidence.",
+    )
+    cron_suspend_state = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Signed cron lifecycle pause and operator job IDs to resume.",
+    )
+
     # Per-tenant flag for the Postgres-canonical cron rollout. The dashboard,
     # runtime endpoints, and provisioning paths read/write the apps.cron.CronJob
     # table directly; the gateway's SQLite is a derived view rebuilt by

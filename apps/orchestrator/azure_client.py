@@ -2173,7 +2173,9 @@ def _new_image_revision_suffix(image: str) -> str:
     return f"{_image_revision_tag_part(image)}-{nonce}"
 
 
-def update_container_image(container_name: str, image: str) -> None:
+def update_container_image(
+    container_name: str, image: str, *, revision_suffix: str | None = None, operation_timeout: int | None = None
+) -> None:
     """Update the container image of an existing Container App.
 
     This triggers a new revision, effectively restarting the container.
@@ -2198,19 +2200,29 @@ def update_container_image(container_name: str, image: str) -> None:
     _ensure_plugin_runtime_deps_in_template(app)
     _ensure_index_cache_in_template(app)
     _ensure_gateway_readiness_probe_in_template(app)
+    # Legacy runtimes retain their storage; 9.4 images need the complete retrofit.
+    import re
+
+    match = re.search(r":(\d{4})\.(\d+)\.(\d+)", image)
+    if match and tuple(map(int, match.groups())) >= (2026, 9, 4):
+        _ensure_oc_state_dir_in_template(app)
 
     # Keep the stable tag-derived part for image comparisons, but mint a
     # per-attempt nonce so applying the same tag still creates a new revision.
     # The 12-character result stays well below Azure's 64-character limit and
     # contains only lowercase alphanumerics and a hyphen.
-    suffix = _new_image_revision_suffix(image)
+    suffix = revision_suffix or _new_image_revision_suffix(image)
     app.template.revision_suffix = suffix
 
-    client.container_apps.begin_create_or_update(
+    poller = client.container_apps.begin_create_or_update(
         settings.AZURE_RESOURCE_GROUP,
         container_name,
         app,
-    ).result()
+    )
+    if operation_timeout is None:
+        poller.result()
+    else:
+        poller.result(timeout=operation_timeout)
     logger.info("Updated image to %s on %s (revision suffix: %s)", image, container_name, suffix)
 
 

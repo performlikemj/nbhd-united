@@ -48,6 +48,7 @@ class HibernateIdleCronWakeRaceTests(TestCase):
             display_name=f"Idle Cron Race {suffix}",
             telegram_chat_id=900_000_000 + suffix,
         )
+        tenant.openclaw_version = "2026.5.28"
         tenant.status = Tenant.Status.ACTIVE
         tenant.container_id = f"oc-race-{suffix}"
         tenant.container_fqdn = f"oc-race-{suffix}.internal"
@@ -200,6 +201,7 @@ class HibernateIdleImminentCronTests(TestCase):
             display_name=f"Imminent Cron {suffix}",
             telegram_chat_id=920_000_000 + suffix,
         )
+        tenant.openclaw_version = "2026.5.28"
         tenant.status = Tenant.Status.ACTIVE
         tenant.container_id = f"oc-imm-{suffix}"
         tenant.container_fqdn = f"oc-imm-{suffix}.internal"
@@ -307,6 +309,7 @@ class CronActiveOrImminentTests(TestCase):
 
     def _make_tenant(self) -> Tenant:
         tenant = create_tenant(display_name="Cron Defer", telegram_chat_id=930_000_001)
+        tenant.openclaw_version = "2026.5.28"
         tenant.status = Tenant.Status.ACTIVE
         tenant.container_id = "oc-cron-defer"
         tenant.container_fqdn = "oc-cron-defer.internal"

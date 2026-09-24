@@ -81,9 +81,15 @@ def hibernate_idle_tenant(tenant: Tenant) -> bool:
     Returns True on success.
     """
     tid = str(tenant.id)[:8]
+    if (tenant.openclaw_migration or {}).get("status") in {"RUNNING", "FAILED"}:
+        return False  # An explicit migration/recovery owns the runtime.
 
     # 1. Capture cron schedules before suspending (for cron-aware wake)
-    cron_jobs = _capture_tenant_cron_schedules(tenant)
+    try:
+        cron_jobs = _capture_tenant_cron_schedules(tenant)
+    except Exception:
+        logger.warning("idle_hibernate: schedule capture failed for %s", tid)
+        return False
 
     # 2. Suspend crons while container is still up
     if tenant.container_fqdn:
@@ -91,12 +97,20 @@ def hibernate_idle_tenant(tenant: Tenant) -> bool:
             from apps.cron.suspension import suspend_tenant_crons
 
             result = suspend_tenant_crons(tenant)
+            from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
+
+            if tenant_uses_file_cron_sync(tenant) and result.get("errors"):
+                return False
             logger.info(
                 "idle_hibernate: suspended %d crons for tenant %s",
                 result.get("disabled", 0),
                 tid,
             )
         except Exception:
+            from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
+
+            if tenant_uses_file_cron_sync(tenant):
+                return False
             logger.exception(
                 "idle_hibernate: failed to suspend crons for %s — proceeding anyway",
                 tid,
@@ -124,6 +138,25 @@ def hibernate_idle_tenant(tenant: Tenant) -> bool:
     return True
 
 
+def _live_enabled_cron_jobs(tenant):
+    """One version-aware live observation for capture, idle and imminent guards."""
+    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+    from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
+    from apps.orchestrator.services import _extract_cron_jobs
+
+    if tenant_uses_file_cron_sync(tenant):
+        from apps.orchestrator.runtime_operator import list_crons
+
+        try:
+            return [job for job in list_crons(tenant) if job.get("enabled", True)]
+        except Exception:
+            raise GatewayError("Operator cron observation unavailable") from None
+    jobs = _extract_cron_jobs(invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": False}))
+    if jobs is None:
+        raise GatewayError("Incomplete cron observation")
+    return jobs
+
+
 def _capture_tenant_cron_schedules(tenant: Tenant) -> list[dict]:
     """Query tenant's enabled cron jobs and save a snapshot.
 
@@ -142,11 +175,7 @@ def _capture_tenant_cron_schedules(tenant: Tenant) -> list[dict]:
         return []
 
     try:
-        from apps.cron.gateway_client import invoke_gateway_tool
-
-        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": False})
-        data = result.get("details", result) if isinstance(result, dict) else result
-        jobs = data.get("jobs", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+        jobs = _live_enabled_cron_jobs(tenant)
 
         # Persist snapshot for debugging / restore purposes
         Tenant.objects.filter(id=tenant.id).update(
@@ -154,6 +183,10 @@ def _capture_tenant_cron_schedules(tenant: Tenant) -> list[dict]:
         )
         return jobs
     except Exception:
+        from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
+
+        if tenant_uses_file_cron_sync(tenant):
+            raise  # Never hibernate against stale 9.4 scheduler truth.
         logger.warning(
             "idle_hibernate: live cron.list failed for tenant %s — falling back to snapshot/seed",
             str(tenant.id)[:8],
@@ -332,14 +365,10 @@ def _next_cron_within_window(
     to fire from our perspective", which is the right conservative
     answer here.
     """
-    from apps.cron.gateway_client import invoke_gateway_tool
-    from apps.orchestrator.services import _extract_cron_jobs
-
     if window_seconds is None:
         window_seconds = _cron_hold_seconds()
 
-    result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": False})
-    jobs = _extract_cron_jobs(result)
+    jobs = _live_enabled_cron_jobs(tenant)
 
     if not jobs:
         return None
@@ -390,12 +419,10 @@ def _cron_active_or_imminent(
     Both hibernation and image replacement must defer for this cycle;
     unknown cron state is not permission to stop the container.
     """
-    from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
-    from apps.orchestrator.services import _extract_cron_jobs
+    from apps.cron.gateway_client import GatewayError
 
     try:
-        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": False})
-        jobs = _extract_cron_jobs(result)
+        jobs = _live_enabled_cron_jobs(tenant)
     except GatewayError:
         logger.warning(
             "defer-for-cron: live cron.list failed for tenant %s — deferring hibernation/image replacement "
@@ -508,6 +535,7 @@ def wake_hibernated_tenant(tenant: Tenant, *, cron_wake: bool = False) -> bool:
                 wake_container_app,
             )
             from apps.orchestrator.image_rollout import image_rollout_allowed
+            from apps.orchestrator.runtime_guard import image_only_update_allowed
             from apps.orchestrator.tool_policy import openclaw_version_for_image_tag
 
             desired_tag = getattr(django_settings, "OPENCLAW_IMAGE_TAG", "latest") or "latest"
@@ -518,7 +546,10 @@ def wake_hibernated_tenant(tenant: Tenant, *, cron_wake: bool = False) -> bool:
             # verified image (e.g. 2026.9.4, which bricks without the mount/oc-state
             # retrofit) unless it's explicitly opted in. Default allows nobody.
             needs_image_refresh = (
-                desired_tag != "latest" and current_tag != desired_tag and image_rollout_allowed(tenant.id)
+                desired_tag != "latest"
+                and current_tag != desired_tag
+                and image_rollout_allowed(tenant.id)
+                and image_only_update_allowed(tenant, desired_tag)
             )
 
             if needs_image_refresh:
