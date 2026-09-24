@@ -266,7 +266,7 @@ def _recent_user_words(tenant: Tenant, *, days: int = 3, limit: int = 8, cap: in
     from apps.journal.md_utils import format_author_suffix
     from apps.journal.models import Document
     from apps.pii.authoring import truncate_placeholder_safe
-    from apps.pii.redactor import _PLACEHOLDER_RE
+    from apps.pii.redactor import _PLACEHOLDER_RE, MINT_REDACT_ONLY, redact_user_message_checked
     from apps.router import enc_columns, enc_read
     from apps.router.models import AppChatMessage, ConversationTurn
 
@@ -321,6 +321,9 @@ def _recent_user_words(tenant: Tenant, *, days: int = 3, limit: int = 8, cap: in
             .values_list("slug", "markdown")[:days]
         )
         for slug, markdown in docs:
+            # Do not slice raw text across a possible PII span before detection.
+            if len(markdown or "") > 32000:
+                continue
             try:
                 day = datetime.strptime(slug, "%Y-%m-%d").date()
             except ValueError:
@@ -349,10 +352,25 @@ def _recent_user_words(tenant: Tenant, *, days: int = 3, limit: int = 8, cap: in
             or text in seen
         ):
             continue
-        seen.add(text)
-        out.append(f"{stamp.astimezone(tz).date()}: {truncate_placeholder_safe(text, cap)}")
-        if len(out) == limit:
+        if len(seen) == limit:
             break
+        seen.add(text)
+        # Stored app chat is verbatim, and quick-log writes can fail open.
+        # Detect on the full selected text BEFORE capping so partial names or
+        # email addresses cannot leak at the excerpt boundary. Never mint here.
+        try:
+            outcome = redact_user_message_checked(
+                text,
+                tenant,
+                allow_user_name=False,
+                mint=MINT_REDACT_ONLY,
+            )
+        except Exception:
+            logger.warning("meditation user-words redaction failed; excerpt omitted")
+            continue
+        if not outcome.confirmed:
+            continue
+        out.append(f"{stamp.astimezone(tz).date()}: {truncate_placeholder_safe(outcome.text, cap)}")
     return out
 
 

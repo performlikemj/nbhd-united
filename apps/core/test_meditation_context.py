@@ -16,6 +16,7 @@ from apps.crypto.nolog import RedactedStr
 from apps.journal.models import Document
 from apps.lessons.agent_context import recent_active_stars
 from apps.lessons.models import Lesson
+from apps.pii.redactor import DetectedEntity
 from apps.pii.testsupport import neural_ran
 from apps.router import enc_columns
 from apps.router.models import AppChatMessage, ChatThread, ConversationTurn
@@ -31,6 +32,7 @@ class UserWordsTests(TestCase):
         self.tenant.recall_capture_enabled = True
         self.tenant.recall_capture_birthday = self.now - timedelta(days=10)
         self.thread = ChatThread.objects.create(tenant=self.tenant, user=self.tenant.user, is_main=True)
+        self.detector = self.enterContext(patch("apps.pii.redactor._detect_pii", side_effect=neural_ran([])))
 
     def app(self, text, *, at=None, **kwargs):
         row = AppChatMessage.objects.create(
@@ -144,6 +146,98 @@ class UserWordsTests(TestCase):
         self.assertEqual(len(words), 3)
         self.assertTrue(all(len(word.split(": ", 1)[1]) <= 40 for word in words))
         self.assertIn("Message 0", words[0])
+
+    @override_settings(OPENROUTER_API_KEY="test-key")
+    @patch("apps.core.compose.chat_completion")
+    def test_unknown_pii_is_masked_without_minting_before_llm_egress(self, completion):
+        name, email, phone = "Sarah Chen", "sarah.chen@example.com", "+1 415-555-0198"
+        raw = f"I met {name} at the garden. Email {email} or call {phone}."
+
+        def detections(text, *_args):
+            return [
+                DetectedEntity(kind, text.index(value), text.index(value) + len(value), 0.99)
+                for kind, value in (("PERSON", name), ("EMAIL_ADDRESS", email), ("PHONE_NUMBER", phone))
+                if value in text
+            ]
+
+        self.detector.side_effect = neural_ran(detections)
+        before_map = dict(self.tenant.pii_entity_map or {})
+        before_counters = dict(self.tenant.pii_type_counters or {})
+        for source in ("app", "quick_log"):
+            with self.subTest(source=source):
+                AppChatMessage.objects.filter(tenant=self.tenant).delete()
+                Document.objects.filter(tenant=self.tenant, kind="daily").delete()
+                if source == "app":
+                    self.app(raw)
+                    self.tenant.recall_capture_enabled = True
+                else:
+                    self.tenant.recall_capture_enabled = False
+                    Document.objects.create(
+                        tenant=self.tenant,
+                        kind="daily",
+                        slug="2026-09-24",
+                        markdown=f"### 09:00 — Owner\n{raw}",
+                    )
+                with patch.object(services.timezone, "now", return_value=self.now):
+                    signals = services.gather_meditation_signals(self.tenant)
+                self.assertIn("[REDACTED]", signals["recent_user_words"][0])
+                completion.return_value = (
+                    {"choices": [{"message": {"content": json.dumps(_valid_manifest())}}]},
+                    "test/model",
+                )
+                compose.author_manifest(signals, tenant=self.tenant, model="test/model")
+                payload = json.dumps(completion.call_args.args[1])
+                for private in (name, email, phone):
+                    self.assertNotIn(private, payload)
+                stored_tenant = type(self.tenant).objects.get(pk=self.tenant.pk)
+                self.assertEqual(stored_tenant.pii_entity_map, before_map)
+                self.assertEqual(stored_tenant.pii_type_counters, before_counters)
+                self.assertEqual(self.tenant.pii_entity_map, before_map)
+                self.assertEqual(self.tenant.pii_type_counters, before_counters)
+
+    def test_redaction_failure_or_unavailable_detector_drops_excerpts(self):
+        self.app("I met Sarah Chen at the garden today.")
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-09-24",
+            markdown="### 09:00 — Owner\nEmail sarah.chen@example.com about the garden.",
+        )
+        for effect in (RuntimeError("detector failed"), lambda *args: []):
+            with self.subTest(effect=type(effect).__name__):
+                self.detector.side_effect = effect
+                self.assertEqual(self.words(), [])
+        with patch("apps.pii.redactor.redact_user_message_checked", side_effect=RuntimeError("unexpected")):
+            self.assertEqual(self.words(), [])
+
+    def test_masks_before_truncation_and_bounds_detection_attempts(self):
+        private = "sarah.chen@example.com"
+        raw = "A note about " + private + " from the garden."
+        self.app(raw)
+        self.detector.side_effect = neural_ran(
+            lambda text, *_: [
+                DetectedEntity("EMAIL_ADDRESS", text.index(private), text.index(private) + len(private), 0.99)
+            ]
+        )
+        words = self.words(cap=22)
+        self.assertNotIn("sarah", str(words))
+        self.assertEqual(self.detector.call_args.args[0], raw)
+        self.detector.reset_mock()
+        self.detector.side_effect = RuntimeError("detector failed")
+        for i in range(10):
+            self.app(f"A distinct garden observation number {i}.")
+        self.assertEqual(self.words(limit=2), [])
+        self.assertEqual(self.detector.call_count, 2)
+
+    def test_recall_off_without_quick_logs_omits_words_section(self):
+        self.tenant.recall_capture_enabled = False
+        self.app("This chat must not enter the meditation context.")
+        with patch.object(services.timezone, "now", return_value=self.now):
+            signals = services.gather_meditation_signals(self.tenant)
+        self.assertNotIn("recent_user_words", signals)
+        self.assertNotIn("In their own words recently", compose._format_signals(signals))
+        self.assertNotIn("recall", compose._format_signals(signals).lower())
+        self.detector.assert_not_called()
 
 
 class StarCooldownTests(TestCase):
