@@ -103,11 +103,15 @@ class PolicyTests(SimpleTestCase):
         result = decide_route(answer(ACK_KINDS, "add_or_change"), answer(QUICK_READS, "none"), 0.0)
         self.assertEqual((result.quick_read, result.reason), ("none", "ok"))
 
-    def test_explicit_uuid_gate(self):
+    def test_explicit_uuid_gate_and_exact_wildcard(self):
         tenant = SimpleNamespace(id=uuid4())
         for raw, expected in [
             ("", False),
-            ("*", False),
+            ("*", True),
+            (" * ", True),
+            ("**", False),
+            ("*x", False),
+            ("x*", False),
             ("invalid", False),
             (str(uuid4()), False),
             (f" {str(tenant.id).upper()},invalid,*", True),
