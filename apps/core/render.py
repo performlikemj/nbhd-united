@@ -15,7 +15,7 @@ Invariants baked in (verified Gemini TTS constraints — see CONTINUITY_core.md)
 
 * Silence is produced by ffmpeg (``anullsrc``), NEVER requested from the model
   (Gemini has no reliable long-pause control / no SSML ``<break>``).
-* One pinned voice + model + style prefix on every segment (cross-segment
+* One pinned voice + model + delivery style on every segment (cross-segment
   consistency).
 * No custom temperature (a known trigger for the late-generation silence bug).
 * Per-call timeout + retry — a stalled TTS call raises and retries, never hangs
@@ -34,6 +34,7 @@ has no key) never touch it.
 from __future__ import annotations
 
 import concurrent.futures
+import io
 import logging
 import re
 import subprocess
@@ -46,7 +47,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# ---- audio constants (Gemini TTS emits PCM 24kHz / 16-bit / mono) ----------
+# ---- normalized audio constants (WAV or raw PCM from Gemini TTS) ----------
 SAMPLE_RATE = 24_000
 CHANNELS = 1
 SAMPLE_FMT = "s16"
@@ -73,8 +74,8 @@ TTS_RATE_LIMIT_BACKOFF_CAP_S = 40.0
 # within TTS_TIMEOUT_MS; concat/transcode adds ~10-20s — 240s keeps the worst
 # case (~240 + 45 + ~20) under the ~300s gunicorn budget.
 DEFAULT_RENDER_DEADLINE_S = 240.0
-DEFAULT_MODEL = "gemini-2.5-flash-preview-tts"  # cheapest + accessible on low tiers (~$0.19/render)
-DEFAULT_VOICE = "Achernar"  # calm; Aoede ("breezy") is the other candidate
+DEFAULT_MODEL = "gemini-3.8-flash-lite-tts"
+DEFAULT_VOICE = "Achernar"  # Supported by 3.8 and legacy models; Google's "Soft" prebuilt voice.
 
 # ---- manifest schema bounds ------------------------------------------------
 # The phase ARC grammar. Until 2026-08-20 this was a single hard-coded list and
@@ -539,8 +540,48 @@ def make_gemini_client(api_key: str, *, timeout_ms: int = TTS_TIMEOUT_MS):
     return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=timeout_ms))
 
 
-def _extract_audio(resp) -> bytes | None:
-    """Pull PCM bytes from a TTS response; None if empty / blocked / malformed.
+def gemini_tts_request(text: str, voice: str, model: str, style: str) -> dict:
+    """Shared GenerateContent request for rendering and the deployment smoke."""
+    from google.genai import types
+
+    if model.removeprefix("models/").startswith("gemini-3.8-"):
+        # 3.8 speaks text verbatim. Single-speaker voice selection stays in
+        # speech_config; speech_metadata.speaker is only needed for multi-speaker.
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(
+                        text=text,
+                        speech_metadata=types.SpeechMetadata(
+                            style=f"Speak in a soft, calm, slow, soothing meditation-guide voice. {style}."
+                        ),
+                    )
+                ],
+            )
+        ]
+    else:
+        # Preserve the legacy 2.5/3.1 prompt exactly for config rollbacks.
+        contents = (
+            "Read the following aloud in a soft, calm, slow, soothing "
+            f"meditation-guide voice. {style}. Do not read these instructions aloud.\n\n"
+            f"{text}"
+        )
+    return {
+        "model": model,
+        "contents": contents,
+        "config": types.GenerateContentConfig(
+            # NOTE: no temperature set on purpose (silence-bug trigger).
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice))
+            ),
+        ),
+    }
+
+
+def _extract_audio(resp) -> tuple[bytes, str] | None:
+    """Pull audio bytes and MIME type; None if empty / blocked / malformed.
 
     Gemini occasionally returns a candidate with no content/parts (or a text token
     instead of audio); indexing it blindly raises ``NoneType has no attribute
@@ -551,9 +592,62 @@ def _extract_audio(resp) -> bytes | None:
         return None
     content = getattr(candidates[0], "content", None)
     parts = getattr(content, "parts", None) or []
-    if not parts:
-        return None
-    return getattr(getattr(parts[0], "inline_data", None), "data", None)
+    for part in parts:
+        blob = getattr(part, "inline_data", None)
+        data = getattr(blob, "data", None)
+        if data:
+            return data, getattr(blob, "mime_type", None) or ""
+    return None
+
+
+def _write_audio_wav(data: bytes, mime_type: str, dst: Path) -> None:
+    """Normalize Gemini WAV/PCM to 24 kHz, mono, 16-bit WAV before stitching."""
+    mime = mime_type.partition(";")[0].strip().lower()
+    is_wav = data.startswith(b"RIFF") or mime in {"audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"}
+    if is_wav:
+        try:
+            with wave.open(io.BytesIO(data), "rb") as source:
+                canonical = (
+                    source.getframerate() == SAMPLE_RATE
+                    and source.getnchannels() == CHANNELS
+                    and source.getsampwidth() == 2
+                    and source.getcomptype() == "NONE"
+                )
+                pcm = source.readframes(source.getnframes()) if canonical else None
+        except (wave.Error, EOFError):
+            # ffmpeg also handles WAV encodings unsupported by Python's wave.
+            pcm = None
+        if pcm is None:
+            source_path = dst.with_suffix(".source.wav")
+            try:
+                source_path.write_bytes(data)
+                _run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-i",
+                        str(source_path),
+                        "-ar",
+                        str(SAMPLE_RATE),
+                        "-ac",
+                        str(CHANNELS),
+                        "-c:a",
+                        "pcm_s16le",
+                        str(dst),
+                    ]
+                )
+            finally:
+                source_path.unlink(missing_ok=True)
+            return
+    else:
+        if mime not in {"", "audio/l16", "audio/pcm"}:
+            raise ValueError(f"unsupported TTS audio MIME type: {mime}")
+        pcm = data
+    with wave.open(str(dst), "wb") as output:
+        output.setnchannels(CHANNELS)
+        output.setsampwidth(2)
+        output.setframerate(SAMPLE_RATE)
+        output.writeframes(pcm)
 
 
 _RETRY_DELAY_RE = re.compile(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
@@ -596,44 +690,22 @@ def render_gemini_segment(
     PER-SEGMENT signal the caller turns into a non-fatal placeholder (the whole
     render is failed only if most segments were throttled).
     """
-    from google.genai import types
-
     from apps.pii.egress import redact_known_values
 
     text = redact_known_values(tenant, text, seam="meditation_gemini_tts")
-    prompt = (
-        "Read the following aloud in a soft, calm, slow, soothing "
-        f"meditation-guide voice. {style}. Do not read these instructions aloud.\n\n"
-        f"{text}"
-    )
+    request = gemini_tts_request(text, voice, model, style)
     expected = estimate_speech_seconds(text)
     last_err = "unknown"
     transient_left = attempts
     rate_limit_left = TTS_RATE_LIMIT_RETRIES
     while transient_left > 0:
         try:
-            resp = client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    # NOTE: no temperature set on purpose (silence-bug trigger).
-                    response_modalities=["AUDIO"],
-                    speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice)
-                        )
-                    ),
-                ),
-            )
-            pcm = _extract_audio(resp)
-            if not pcm:
+            resp = client.models.generate_content(**request)
+            audio = _extract_audio(resp)
+            if not audio:
                 raise RuntimeError("empty/blocked response (no audio)")
             raw = dst.with_suffix(".raw.wav")
-            with wave.open(str(raw), "wb") as wav_out:
-                wav_out.setnchannels(CHANNELS)
-                wav_out.setsampwidth(2)  # 16-bit
-                wav_out.setframerate(SAMPLE_RATE)
-                wav_out.writeframes(pcm)
+            _write_audio_wav(*audio, raw)
             got = _ffprobe_seconds(raw)
             if got < max(0.8, 0.5 * expected):
                 raw.unlink(missing_ok=True)

@@ -94,3 +94,14 @@ alignment with lesson metadata remains a prompt requirement.
 Legacy sits need lesson backfilling to close the cold start: empty lessons cannot enforce tradition/teaching variety.
 Run `python manage.py backfill_meditation_lessons --tenant <uuid> --limit 40 --dry-run`, then repeat without `--dry-run`; dry-run makes no LLM calls or writes.
 Run per tenant, owner first; `--all` processes Core-enabled tenants with the limit applied per tenant.
+
+## Meditation TTS
+
+The default is `gemini-3.8-flash-lite-tts` with the Achernar (Soft) prebuilt voice.
+3.8 requests contain only the transcript in each text part; the calm-guide
+instruction and global/segment tones go in `speech_metadata.style`. The renderer
+and external-dependency smoke share the same request builder and normalize WAV
+or raw PCM responses to 24 kHz mono 16-bit WAV before processing.
+Set `GEMINI_TTS_MODEL=gemini-2.5-flash-preview-tts` (or a 3.1 TTS model) to roll
+back; those models retain the legacy inline instruction prefix. `google-genai`
+2.25.0 is required for the structured speech metadata fields.

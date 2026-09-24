@@ -13,6 +13,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import Client, SimpleTestCase, override_settings
 
+from apps.core.test_render_tts import wav_bytes
 from apps.orchestrator.smoke_external_deps import (
     SmokeCheck,
     SmokeCheckResult,
@@ -62,6 +63,26 @@ class _FakeGeminiClient:
 
 @override_settings(GEMINI_API_KEY="test-gemini-key", GEMINI_TTS_MODEL="test-gemini-model")
 class GeminiTtsSmokeTests(SimpleTestCase):
+    @override_settings(GEMINI_TTS_MODEL="gemini-3.8-flash-lite-tts")
+    def test_38_smoke_uses_verbatim_transcript_metadata_and_wav_decoder(self):
+        audio = wav_bytes(b"\0\0" * 24000)
+        client = _FakeGeminiClient([_gemini_response(audio)])
+        mock_is_mock, mock_make_client, mock_sleep = self._patch_dependencies(client)
+        from apps.core import render
+
+        with (
+            mock_is_mock,
+            mock_make_client,
+            mock_sleep,
+            patch.object(render, "_write_audio_wav", wraps=render._write_audio_wav) as decode,
+        ):
+            _check_gemini_tts()
+        part = client.models.calls[0]["contents"][0].parts[0]
+        self.assertEqual(part.text, "Take a slow breath in, and let it go gently.")
+        self.assertIn("meditation-guide voice", part.speech_metadata.style)
+        self.assertIn("Be concise", part.speech_metadata.style)
+        self.assertEqual(decode.call_args.args[0], audio)
+
     def _patch_dependencies(self, client):
         return (
             patch("apps.orchestrator.azure_client._is_mock", return_value=False),

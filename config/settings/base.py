@@ -466,7 +466,7 @@ BRAVE_API_KEY = env("BRAVE_API_KEY", default="")
 # Gemini TTS — Core pillar meditation render (server-side, key stays here).
 # Secret lives in Key Vault; set GEMINI_API_KEY on the Container App. Never echo it.
 GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
-GEMINI_TTS_MODEL = env("GEMINI_TTS_MODEL", default="gemini-2.5-flash-preview-tts")
+GEMINI_TTS_MODEL = env("GEMINI_TTS_MODEL", default="gemini-3.8-flash-lite-tts")
 # PRIMARY model that AUTHORS the meditation manifest (OpenRouter, JSON mode) — the
 # web orb's compose path. compose.py fronts a low-cost fallback chain with this id
 # (then DeepSeek V4 Flash, then Pro). Default is Gemma 4 31B: it's the cheap roster
