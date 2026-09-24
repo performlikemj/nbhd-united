@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import date
 from typing import Annotated, Any, Literal
 
-from django.conf import settings
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, RootModel, ValidationError, model_validator
+
+from apps.router.chat_gates import chat_panels_tool_enabled, chat_shape_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -146,12 +146,16 @@ def strip_streaming_panels(text: str) -> str:
     return "".join(kept).rstrip() if found else text
 
 
-def prepare_panels(tenant, value) -> list[dict]:
-    """Keep optional display titles in placeholder space at rest."""
+def prepare_panels(tenant, value, *, tool: bool = False) -> list[dict]:
+    """Gate the originating surface and keep titles in placeholder space at rest.
+
+    Proactive/tool writers must pass tool=True; ordinary chat uses the shape gate.
+    """
     from apps.pii.authoring import truncate_placeholder_safe
     from apps.pii.egress import redact_known_values
 
-    if not chat_panels_enabled(tenant):
+    enabled = chat_panels_tool_enabled(tenant) if tool else chat_shape_enabled(tenant)
+    if not enabled:
         if value:
             logger.warning("panels_dropped reason=tenant_disabled")
         return []
@@ -174,17 +178,6 @@ def rehydrate_panels(value, entity_map, *, tenant_id) -> list[dict]:
                 panel["title"], entity_map, tenant_id=tenant_id, channel="panel_title"
             )[:60]
     return panels
-
-
-def chat_panels_enabled(tenant) -> bool:
-    """Temporary shared gate: dedupe with chat_shape's helper after lane B1 merges.
-
-    Settings takes precedence for tests; env fallback is needed on this base,
-    which does not yet declare CHAT_SHAPE_TENANT_IDS in Django settings.
-    """
-    raw = str(getattr(settings, "CHAT_SHAPE_TENANT_IDS", os.environ.get("CHAT_SHAPE_TENANT_IDS", "")) or "")
-    allowed = {part.strip().lower() for part in raw.split(",") if part.strip()}
-    return tenant is not None and str(tenant.id).lower() in allowed
 
 
 PANEL_VOCABULARY = (

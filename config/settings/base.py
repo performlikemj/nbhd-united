@@ -296,8 +296,11 @@ OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS = env("OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS", def
 # and subagents denied unless a tenant is explicitly listed here.
 SUBAGENT_TENANT_IDS = env("SUBAGENT_TENANT_IDS", default="")
 
-# Living chat panels: explicit tenant UUID allowlist, no wildcard; dark by default.
+# Image-independent Living Chat: explicit tenant UUID allowlist, no wildcard; dark by default.
 CHAT_SHAPE_TENANT_IDS = env("CHAT_SHAPE_TENANT_IDS", default="")
+# Tool/plugin panels: set ONLY after verifying the running image has the #1638
+# journal-tools manifest (panelsEnabled). Separate from Django-only shape panels.
+CHAT_PANELS_TOOL_TENANT_IDS = env("CHAT_PANELS_TOOL_TENANT_IDS", default="")
 CHAT_SHAPE_PANELS = env("CHAT_SHAPE_PANELS", default="sleep,schedule,training_week,workout,timer")
 
 # Human-review gate for agent-authored scheduled tasks. Comma-separated tenant

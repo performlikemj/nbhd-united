@@ -702,9 +702,10 @@ def _build_morning_briefing_prompt(tenant) -> str:
 
     prompt = _MORNING_BRIEFING_PROMPT_TEMPLATE.format(weather_step=weather_step)
     prompt = _with_morning_briefing_away_tour_pill(prompt, tenant)
-    from apps.router.panels import MORNING_PANEL_INSTRUCTION, chat_panels_enabled
+    from apps.router.chat_gates import chat_panels_tool_enabled
+    from apps.router.panels import MORNING_PANEL_INSTRUCTION
 
-    if chat_panels_enabled(tenant):
+    if chat_panels_tool_enabled(tenant):
         prompt += "\n\n" + MORNING_PANEL_INSTRUCTION
     return _with_proactive_suggestions(prompt, tenant, monday_defer=True)
 
@@ -3085,12 +3086,14 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                     editor_config[key] = value
             plugin_config["entries"][site_editor_id]["config"] = editor_config
 
-        # This allowlist is enabled only after the tenant image carries the new
-        # journal-tools manifest. Off-gate configs retain their original bytes.
-        from apps.router.panels import chat_panels_enabled
+        # CHAT_PANELS_TOOL_TENANT_IDS attests that the running image carries
+        # the panelsEnabled manifest key. Binary versions cannot prove this;
+        # canary images can also diverge from container_image_tag. Never use
+        # the image-independent shape gate here. See apps/router/PANELS.md.
+        from apps.router.chat_gates import chat_panels_tool_enabled
 
         journal_tools_id = str(getattr(settings, "OPENCLAW_JOURNAL_PLUGIN_ID", "") or "").strip()
-        if journal_tools_id in plugin_config["entries"] and chat_panels_enabled(tenant):
+        if journal_tools_id in plugin_config["entries"] and chat_panels_tool_enabled(tenant):
             plugin_config["entries"][journal_tools_id]["config"] = {"panelsEnabled": True}
 
         # Older settings-tools manifests hard-reject unknown plugin config at

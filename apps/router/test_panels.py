@@ -11,10 +11,10 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.router.chat_gates import chat_panels_tool_enabled, chat_shape_enabled
 from apps.router.panels import (
     PANEL_KINDS,
     PanelKind,
-    chat_panels_enabled,
     extract_panels,
     tool_schema_module,
     validate_panels,
@@ -33,6 +33,7 @@ def block(panels=PANELS):
     return "```nbhd-panels\n" + json.dumps(panels) + "\n```"
 
 
+@override_settings(CHAT_SHAPE_TENANT_IDS="", CHAT_PANELS_TOOL_TENANT_IDS="")
 class PanelSchemaTests(SimpleTestCase):
     def test_vocabulary_and_generated_tool_schema(self):
         self.assertEqual(get_args(PanelKind), PANEL_KINDS)
@@ -133,9 +134,12 @@ class PanelSchemaTests(SimpleTestCase):
 
         tenant = SimpleNamespace(id=uuid4())
         private = [{"kind": "tasks", "title": "private-sentinel"}]
-        for gate in ("", str(uuid4())):
+        for gate in ("", str(uuid4()), "*"):
             for data in ({"message": "Hello", "panels": private}, {"message": "Hello\n" + block(private)}):
-                with override_settings(CHAT_SHAPE_TENANT_IDS=gate), self.assertLogs(level="WARNING") as logs:
+                with (
+                    override_settings(CHAT_SHAPE_TENANT_IDS=str(tenant.id), CHAT_PANELS_TOOL_TENANT_IDS=gate),
+                    self.assertLogs(level="WARNING") as logs,
+                ):
                     serializer = SendToUserSerializer(data=data, context={"tenant": tenant})
                     self.assertTrue(serializer.is_valid(), serializer.errors)
                 self.assertEqual(serializer.validated_data["message"], "Hello")
@@ -148,7 +152,7 @@ class PanelSchemaTests(SimpleTestCase):
 
         tenant = SimpleNamespace(id=uuid4())
         for value, expected in (([], []), (None, []), ([{}], []), (PANELS[1:], PANELS[1:])):
-            with override_settings(CHAT_SHAPE_TENANT_IDS=str(tenant.id)):
+            with override_settings(CHAT_PANELS_TOOL_TENANT_IDS=str(tenant.id)):
                 serializer = SendToUserSerializer(
                     data={"message": "Hello\n" + block(PANELS[:1]), "panels": value}, context={"tenant": tenant}
                 )
@@ -160,19 +164,30 @@ class PanelSchemaTests(SimpleTestCase):
         from apps.router.cron_delivery import SendToUserSerializer
 
         tenant = SimpleNamespace(id=uuid4())
-        self.enterContext(override_settings(CHAT_SHAPE_TENANT_IDS=str(tenant.id)))
+        self.enterContext(override_settings(CHAT_PANELS_TOOL_TENANT_IDS=str(tenant.id)))
         for value in ([{"kind": "unknown"}, PANELS[0]], "wrong envelope"):
             serializer = SendToUserSerializer(data={"message": "Hello", "panels": value}, context={"tenant": tenant})
             with self.assertLogs("apps.router.panels", level="WARNING"):
                 self.assertTrue(serializer.is_valid(), serializer.errors)
             self.assertEqual(serializer.validated_data["message"], "Hello")
 
-    def test_gate_is_exact_case_insensitive_and_has_no_wildcard(self):
+    def test_gates_are_independent_exact_case_insensitive_and_have_no_wildcard(self):
         tenant = SimpleNamespace(id=uuid4())
-        for gate, expected in (("", False), ("*", False), (str(uuid4()), False), (f" {str(tenant.id).upper()} ", True)):
-            with self.subTest(gate=gate), override_settings(CHAT_SHAPE_TENANT_IDS=gate):
-                self.assertEqual(chat_panels_enabled(tenant), expected)
-                self.assertFalse(chat_panels_enabled(None))
+        for helper, setting, other in (
+            (chat_shape_enabled, "CHAT_SHAPE_TENANT_IDS", chat_panels_tool_enabled),
+            (chat_panels_tool_enabled, "CHAT_PANELS_TOOL_TENANT_IDS", chat_shape_enabled),
+        ):
+            for gate, expected in (
+                (None, False),
+                ("", False),
+                ("*", False),
+                (str(uuid4()), False),
+                (f" {uuid4()}, {str(tenant.id).upper()} , ", True),
+            ):
+                with self.subTest(setting=setting, gate=gate), override_settings(**{setting: gate}):
+                    self.assertEqual(helper(tenant), expected)
+                    self.assertFalse(helper(None))
+                    self.assertFalse(other(tenant))
 
     def test_chat_preamble_is_byte_identical_off_gate_and_single_line_on_gate(self):
         from apps.router.panels import CHAT_PANEL_INSTRUCTION
@@ -180,7 +195,7 @@ class PanelSchemaTests(SimpleTestCase):
 
         tenant = SimpleNamespace(id=uuid4())
         expected = "[chat via NBHD app: user is mid-conversation, reply concisely without loading workspace docs unless the question explicitly requires it]\n"
-        with override_settings(CHAT_SHAPE_TENANT_IDS=""):
+        with override_settings(CHAT_SHAPE_TENANT_IDS="", CHAT_PANELS_TOOL_TENANT_IDS=str(tenant.id)):
             self.assertEqual(build_chat_context_marker("ios", tenant=tenant), expected)
             coalesced = build_coalesced_chat_marker("ios", tenant=tenant)
         with override_settings(CHAT_SHAPE_TENANT_IDS=str(tenant.id)):
@@ -203,7 +218,11 @@ class PanelPersistenceTests(TestCase):
 
         self.user = User.objects.create_user(username="panels", telegram_chat_id=12345)
         self.tenant = Tenant.objects.create(user=self.user, status="active")
-        self.enterContext(override_settings(CHAT_SHAPE_TENANT_IDS=str(self.tenant.id)))
+        self.enterContext(
+            override_settings(
+                CHAT_SHAPE_TENANT_IDS=str(self.tenant.id), CHAT_PANELS_TOOL_TENANT_IDS=str(self.tenant.id)
+            )
+        )
         self.thread = ChatThread.objects.create(tenant=self.tenant, user=self.user)
         self.client = APIClient()
         self.client.force_authenticate(self.user)
@@ -400,7 +419,7 @@ class PanelPersistenceTests(TestCase):
                 for fence, expected_panels in ((block(), PANELS), ("```nbhd-panels\nprivate-sentinel\n```", [])):
                     with (
                         self.subTest(channel=channel, enabled=enabled, malformed=not expected_panels),
-                        override_settings(CHAT_SHAPE_TENANT_IDS=str(self.tenant.id) if enabled else ""),
+                        override_settings(CHAT_PANELS_TOOL_TENANT_IDS=str(self.tenant.id) if enabled else ""),
                         patch.object(CronDeliveryView, "_resolve_channel", return_value=channel),
                         patch.object(
                             CronDeliveryView, "_send_via_telegram", return_value=Response({"status": "sent"})
@@ -465,7 +484,7 @@ class PanelPersistenceTests(TestCase):
             tenant=self.tenant, user=self.user, thread=self.thread, client_msg_id="off", user_text="Hi"
         )
         with (
-            override_settings(CHAT_SHAPE_TENANT_IDS=""),
+            override_settings(CHAT_SHAPE_TENANT_IDS="", CHAT_PANELS_TOOL_TENANT_IDS=""),
             patch("apps.router.pending_queue._dispatch_push"),
             patch("apps.router.proactive_context._dispatch_ios_push"),
         ):
@@ -481,6 +500,40 @@ class PanelPersistenceTests(TestCase):
         self.assertIsNone(row.panels)
         self.assertEqual(row.reply_text, "Hello")
         self.assertIsNone(proactive.panels)
+
+    def test_direct_writers_use_their_own_gate(self):
+        from apps.router.models import AppChatMessage
+        from apps.router.pending_queue import _store_ios_turn_reply
+        from apps.router.proactive_context import record_proactive_outbound
+
+        for shape_enabled, tool_enabled in ((True, False), (False, True)):
+            client_id = f"gates-{shape_enabled}-{tool_enabled}"
+            row = AppChatMessage.objects.create(
+                tenant=self.tenant, user=self.user, thread=self.thread, client_msg_id=client_id, user_text="Hi"
+            )
+            with (
+                self.subTest(shape=shape_enabled, tool=tool_enabled),
+                override_settings(
+                    CHAT_SHAPE_TENANT_IDS=str(self.tenant.id) if shape_enabled else "",
+                    CHAT_PANELS_TOOL_TENANT_IDS=str(self.tenant.id) if tool_enabled else "",
+                ),
+                patch("apps.router.pending_queue._dispatch_push"),
+                patch("apps.router.proactive_context._dispatch_ios_push"),
+            ):
+                _store_ios_turn_reply(
+                    self.tenant, [SimpleNamespace(payload={"client_msg_id": client_id})], "Hello\n" + block()
+                )
+                proactive = record_proactive_outbound(
+                    tenant=self.tenant,
+                    channel="app",
+                    channel_user_id=str(self.user.id),
+                    message_text="Hello",
+                    panels=PANELS,
+                )
+            row.refresh_from_db()
+            self.assertEqual(row.panels or [], PANELS if shape_enabled else [])
+            self.assertEqual(row.reply_text, "Hello")
+            self.assertEqual(proactive.panels or [], PANELS if tool_enabled else [])
 
     def test_title_expansion_never_persists_partial_placeholders(self):
         from apps.router.chat_history import _app_rows, _proactive_rows
