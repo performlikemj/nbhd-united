@@ -43,6 +43,42 @@ Read before writing Django code. `docs/agents/invariants.md` holds the platform-
 - Dependabot major bumps for contracted SDKs stay ignored until a coordinated review updates contracts.
 - Reason: `azure-mgmt-storage` 25.x changed `.keys` into a method on 2026-08-24, breaking ~15 live paths while mocked CI stayed green.
 
+## Hidden-name management
+
+Under `/api/v1/tenants/settings/`, `entity-registry/` retains its legacy active
+`{"entries": [...]}` response unless any of `q`, `type`, `state`, `everyday`,
+`page_size`, `cursor`, or `select_all` is present. Extended reads filter by
+case-insensitive substring across name/relationship/notes/placeholder, placeholder
+type prefix, active/stopped state, and advisory everyday-word evidence. They sort
+by casefolded name then placeholder, return `total`, `next_cursor`, and unfiltered
+active/stopped `counts`, and default to 100 entries (maximum 200). Cursors belong
+to the tenant and filters; restart paging after changing filters. They track a
+sort position, not a frozen snapshot of concurrent edits.
+
+The advisory everyday-word flag also recognizes single alphabetic tokens in the
+lowercase entries (3–20 characters) of `/usr/share/dict/words`, installed by
+`wamerican` in the Django image. The immutable word set loads lazily once per
+process; a missing file silently leaves the existing predicates in effect.
+Unfiltered paging computes flags only for returned entries; unfiltered
+select-all computes none. This dictionary is never used by redaction.
+
+`select_all=true` returns all matching placeholders in that order (ignoring page
+size); more than 2000 matches returns 422 `{"detail":"too_many","total":N}`.
+`POST entity-registry/bulk-stop/` accepts 1..2000 placeholder strings, adds their
+canonical names to the denylist, and retires every active same-name binding in a
+single map pass under a tenant row lock. It preserves existing deny timestamps
+and returns each input's status plus the list of newly retired placeholders.
+`POST entity-registry/restore/` accepts that list for Undo: it clears retirement
+fields on those exact bindings and removes their canonical deny keys. Neither
+operation changes placeholder keys or type counters; historical rehydration
+continues throughout. Lifecycle and unknown fields survive both operations.
+Restoring an already-active binding preserves its exact stored value and skips
+the database update unless a corresponding deny key needs removal.
+
+PATCH and denylist POST/bulk names allow up to 256 characters. Existing bulk and
+denylist DELETE endpoints retain their semantics; deleting a deny key alone does
+not restore a retired binding. Use the restore endpoint for that action.
+
 ## LLM-adjacent judgment calls
 
 Backend computes evidence; the LLM judges. Don't encode fuzzy human judgments as arithmetic formulas in Python — pass structured evidence to the model and let it decide (established pattern across insights/fuel).

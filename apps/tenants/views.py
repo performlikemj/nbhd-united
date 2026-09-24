@@ -1149,6 +1149,11 @@ class EntityRegistryListView(APIView):
         except Tenant.DoesNotExist:
             return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
 
+        from .entity_registry_views import REGISTRY_QUERY_PARAMS, paged_registry_response
+
+        if REGISTRY_QUERY_PARAMS.intersection(request.query_params):
+            return paged_registry_response(tenant, request.query_params)
+
         entries = []
         for placeholder, raw_entry in (tenant.pii_entity_map or {}).items():
             if isinstance(raw_entry, dict) and raw_entry.get("retired"):
@@ -1371,7 +1376,7 @@ class EntityRegistryItemView(APIView):
     permission_classes = [IsAuthenticated]
 
     # Cap field lengths so a malicious payload can't bloat the JSONField.
-    _MAX_NAME = 200
+    _MAX_NAME = 256
     _MAX_RELATIONSHIP = 80
     _MAX_NOTES = 500
 
@@ -1791,7 +1796,7 @@ class PIIDenylistListView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
-    _MAX_NAME = 200
+    _MAX_NAME = 256
 
     def get(self, request):
         try:
@@ -1879,9 +1884,8 @@ class PIIDenylistListView(APIView):
 class PIIDenylistItemView(APIView):
     """Remove a single denylist entry by canonical key.
 
-    Removal re-enables redaction for the canonical key on future
-    messages; existing entity_map entries with the same key resume
-    driving the Step 1 regex pass.
+    Removal permits future detection for the canonical key. Retired bindings
+    remain retired; entity-registry/restore/ explicitly reactivates them.
     """
 
     permission_classes = [IsAuthenticated]
@@ -1903,7 +1907,7 @@ class PIIDenylistItemView(APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            # Un-ignore never restores retired bindings; restoration is a separate future action.
+            # Un-ignore never restores retired bindings; restoration uses entity-registry/restore/.
             del denylist[key]
             Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
         tenant.pii_denylist = denylist
@@ -1924,7 +1928,7 @@ class PIIDenylistBulkView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
-    _MAX_NAME = 200
+    _MAX_NAME = 256
     _MAX_BATCH = 1000
 
     def post(self, request):
