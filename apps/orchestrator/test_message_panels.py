@@ -74,6 +74,7 @@ class MorningPanelPromptTests(SimpleTestCase):
                     "this_month",
                     "Keep prose short",
                     "Omit cards without evidence",
+                    "Put panels ONLY in the panels argument, never in message text",
                 ):
                     self.assertIn(phrase, message)
             self.assertIn("nbhd_fuel_summary", typed["toolsAllow"])
