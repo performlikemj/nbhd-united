@@ -13,6 +13,7 @@ from uuid import uuid4
 from django.core.cache import cache
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
+from pydantic import ValidationError
 from rest_framework.test import APIClient, APIRequestFactory
 
 from apps.common import jev
@@ -22,17 +23,20 @@ from apps.pii.redactor import RedactionOutcome
 from apps.router.chat_shape import (
     PANELS,
     QUESTIONS,
+    SHAPE_BUDGET_SECONDS,
     SURFACES,
     ChatShapeRequest,
     ChatShapeResponse,
     OpenPanel,
     chat_shape_enabled,
+    chat_shape_panels,
     decide_panel,
     parse_date,
     parse_duration,
     truncate_redacted,
 )
 from apps.router.chat_shape_views import ChatShapeHourThrottle
+from apps.router.panels import LOG_METRICS, PANEL_KINDS
 from apps.tenants.models import Tenant, User
 
 
@@ -56,6 +60,8 @@ class PolicyTests(SimpleTestCase):
             ("calendar", "schedule", 2, 0, 1, "tomorrow", None, False, ("open", "schedule", "ok")),
             ("training", "training_week", 2, 0, 1, "this_week", None, False, ("open", "training_week", "ok")),
             ("workout", "workout_detail", 2, 0, 1, "today", None, False, ("open", "workout", "ok")),
+            ("weight", "body_weight", 2, 0, 1, "this_month", None, False, ("open", "log_table", "ok")),
+            ("journal", "journal", 2, 0, 1, "this_week", None, False, ("open", "journal_table", "ok")),
             ("focus", "timer", 2, 0, 1, "today", None, False, ("open", "timer", "ok")),
             ("i feel kind of down", "none", 0, 0, 1, "today", None, False, ("none", None, "no_panel")),
             ("packing list", "checklist", 2, 0, 1, "today", None, False, ("none", None, "no_panel")),
@@ -82,7 +88,15 @@ class PolicyTests(SimpleTestCase):
                     frozenset() if disabled else frozenset(PANELS),
                 )
                 self.assertEqual(result, expected)
-        for surface in set(SURFACES) - {"sleep", "schedule", "training_week", "workout_detail", "timer"}:
+        for surface in set(SURFACES) - {
+            "sleep",
+            "schedule",
+            "training_week",
+            "workout_detail",
+            "timer",
+            "body_weight",
+            "journal",
+        }:
             with self.subTest(unsupported=surface):
                 answer = jev.ChoiceAnswer.model_validate(choice_answer(SURFACES, surface))
                 self.assertEqual(decide_panel(answer, 2, 1, "today"), ("none", None, "no_panel"))
@@ -94,7 +108,7 @@ class PolicyTests(SimpleTestCase):
             (0.575, 0.425, 0.575, "today", ("open", "workout", "ok")),
             (0.58, 0.42, 0.58, "today", ("open", "training_week", "ok")),
             (0.53, 0.44, 0.53, "this_week", ("open", "training_week", "ok")),
-            (0.48, 0.44, 0.48, "this_week", ("none", None, "low_confidence")),
+            (0.48, 0.44, 0.48, "this_week", ("open", "training_week", "ok")),
         ]:
             with self.subTest(message="what's today's workout", top=top, period=period):
                 probs = {key: 0.0 for key in SURFACES}
@@ -105,6 +119,59 @@ class PolicyTests(SimpleTestCase):
         probs.update(sleep=0.4, training_week=0.31, workout_detail=0.29)
         answer = jev.ChoiceAnswer.model_validate(choice_answer(SURFACES, "sleep", 0.4, probs))
         self.assertEqual(decide_panel(answer, 2, 0, "today"), ("none", None, "low_confidence"))
+
+    def test_fitness_family_table(self):
+        # Unspecified residual mass is outside the family. No live Jev calls.
+        cases = [
+            ("how's my fitness", "training_week", 0.33, 0.39, 0.0, 0.37, "this_week", "training_week"),
+            ("am i getting fitter", "body_weight", 0.72, 0.1, 0.0, 0.72, "unspecified", "log_table"),
+            ("how are my workouts going", "training_week", 0.99, 0.99, 0.0, 0.0, "this_week", "training_week"),
+            ("family boundary", "training_week", 0.3, 0.3, 0.1, 0.2, "this_week", "training_week"),
+            ("below family boundary", "training_week", 0.3, 0.3, 0.1, 0.199, "this_week", None),
+            ("weak weight winner", "body_weight", 0.3, 0.3, 0.0, 0.4, "unspecified", "training_week"),
+            ("weight alone boundary", "body_weight", 0.3, 0.0, 0.0, 0.6, "today", "log_table"),
+            ("below weight boundary", "body_weight", 0.3, 0.001, 0.0, 0.599, "today", "training_week"),
+            ("workout tie today", "workout_detail", 0.3, 0.35, 0.4, 0.1, "today", "workout"),
+            ("workout tie week", "workout_detail", 0.3, 0.35, 0.4, 0.1, "this_week", "training_week"),
+            ("confident workout", "workout_detail", 0.99, 0.0, 0.99, 0.0, "today", "workout"),
+            ("unhelpful family", "training_week", 0.33, 0.39, 0.0, 0.37, "this_week", None),
+        ]
+        for label, top, confidence, training, workout, weight, period, panel in cases:
+            with self.subTest(label=label):
+                probs = dict.fromkeys(SURFACES, 0.0)
+                probs.update(training_week=training, workout_detail=workout, body_weight=weight)
+                residual = max(0, 1 - sum(probs.values()))
+                for key in ("none", "sleep", "nutrition"):
+                    probs[key] = residual / 3
+                answer = jev.ChoiceAnswer.model_validate(choice_answer(SURFACES, top, confidence, probs))
+                helps = 0 if label == "unhelpful family" else 2
+                expected = (
+                    ("open", panel, "ok") if panel else ("none", None, "no_panel" if helps == 0 else "low_confidence")
+                )
+                self.assertEqual(decide_panel(answer, helps, 0, period), expected)
+                if panel:
+                    self.assertEqual(
+                        decide_panel(answer, helps, 0, period, enabled_panels=frozenset()),
+                        ("none", None, "panel_disabled"),
+                    )
+
+    def test_shared_vocabulary_metric_scope_and_default_panels(self):
+        self.assertEqual(set(PANELS), set(PANEL_KINDS) - {"tasks"})
+        self.assertEqual(chat_shape_panels(), frozenset(PANELS))
+        for metric in LOG_METRICS:
+            self.assertEqual(
+                ChatShapeResponse(decision="open", panel="log_table", metric=metric, reason="ok").metric, metric
+            )
+            for panel in set(PANELS) - {"log_table"}:
+                with self.subTest(metric=metric, panel=panel), self.assertRaises(ValidationError):
+                    ChatShapeResponse(decision="open", panel=panel, metric=metric, reason="ok")
+        for data in (
+            {"metric": "body_weight"},
+            {"decision": "open", "panel": "log_table", "metric": "other", "reason": "ok"},
+        ):
+            with self.assertRaises(ValidationError):
+                ChatShapeResponse(**data)
+        self.assertEqual(SHAPE_BUDGET_SECONDS, 4.0)
 
 
 class ParserTests(SimpleTestCase):
@@ -243,6 +310,7 @@ class ChatShapeViewTests(TestCase):
                 "enabled": True,
                 "decision": "open",
                 "panel": "sleep",
+                "metric": None,
                 "range": "this_week",
                 "day": None,
                 "duration_seconds": None,
@@ -286,10 +354,36 @@ class ChatShapeViewTests(TestCase):
                 "open_panel": "sleep: safe label",
             },
         )
-        self.assertEqual(self.redact.call_args.args[0][1], "x" * 600)
+        self.redact.assert_called_once()
+        self.assertEqual(self.redact.call_args.args[0], ["private newest", "x" * 600, "private reply", "private label"])
         for call in self.redact.call_args_list:
             self.assertIn("deadline", call.kwargs)
             self.assertEqual(call.args[1].id, self.tenant.id)
+
+    def test_fresh_topic_omits_history_from_redaction_and_jev(self):
+        self.payload["recent_turns"] = [{"role": "user", "text": "PRIVATE_HISTORY_SENTINEL"}]
+        self.assertEqual(self.send().data["reason"], "ok")
+        self.redact.assert_called_once()
+        self.assertEqual(self.redact.call_args.args[0], [self.payload["text"]])
+        state = self.post.call_args.kwargs["json"]["state"]
+        self.assertNotIn("recent_turns", state)
+        self.assertNotIn("PRIVATE_HISTORY_SENTINEL", str(state))
+
+    def test_table_panels_metric_and_followups(self):
+        for surface, panel, metric in (("body_weight", "log_table", "body_weight"), ("journal", "journal_table", None)):
+            for opened, follow, decision in ((None, 0, "open"), (panel, 1, "update"), ("training_week", 1, "open")):
+                with self.subTest(surface=surface, opened=opened):
+                    self.payload.update(
+                        text="show this month", open_panel={"kind": opened, "label": "Table"} if opened else None
+                    )
+                    self.post.return_value.text = json.dumps(response_data(surface, "this_month", follow))
+                    result = self.send().data
+                    self.assertEqual((result["decision"], result["panel"], result["metric"]), (decision, panel, metric))
+                    with override_settings(CHAT_SHAPE_PANELS="sleep"):
+                        result = self.send().data
+                    self.assertEqual(
+                        (result["reason"], result["panel"], result["metric"]), ("panel_disabled", None, None)
+                    )
 
     def test_any_unconfirmed_text_skips_jev(self):
         self.payload.update(
@@ -432,6 +526,7 @@ class ChatShapeViewTests(TestCase):
         self.assertEqual(len(parsed.open_panel.label), 4000)
 
     def test_history_uses_only_last_two_at_300_chars(self):
+        self.payload["open_panel"] = {"kind": "sleep", "label": "Sleep"}
         self.payload["recent_turns"] = [
             {"role": "user", "text": "unused one"},
             {"role": "assistant", "text": "unused two"},
@@ -441,7 +536,8 @@ class ChatShapeViewTests(TestCase):
         self.assertEqual(self.send().status_code, 200)
         self.redact.assert_called_once()
         self.assertEqual(
-            self.redact.call_args.args[0], [self.payload["text"], "unused one", "unused two", "a" * 500, "b" * 500]
+            self.redact.call_args.args[0],
+            [self.payload["text"], "unused one", "unused two", "a" * 500, "b" * 500, "Sleep"],
         )
         state = self.post.call_args.kwargs["json"]["state"]
         self.assertEqual(state["recent_turns"], ["user: " + "a" * 300, "assistant: " + "b" * 300])
@@ -620,6 +716,9 @@ class ChatShapeViewTests(TestCase):
                 self.assertNotIn("PRIVATE_SENTINEL", captured.output[0])
                 self.assertIn("redact_ms=", captured.output[0])
                 self.assertIn("jev_ms=", captured.output[0])
+                expected_texts = 0 if reason in {"disabled", "unavailable"} else 1
+                self.assertEqual(record.texts, expected_texts)
+                self.assertIn(f"texts={expected_texts}", captured.output[0])
 
     def test_maximum_history_batches_slow_detector_and_shares_jev_budget(self):
         from apps.pii.redactor import _detect_pii
@@ -642,10 +741,10 @@ class ChatShapeViewTests(TestCase):
         ):
             started = monotonic()
             response = self.send()
-            self.assertLess(monotonic() - started, 2.5)
+            self.assertLess(monotonic() - started, SHAPE_BUDGET_SECONDS)
             self.assertEqual(response.data["reason"], "ok")
             self.assertGreater(detect.call_count, 1)
-            self.assertLessEqual(self.post.call_args.kwargs["timeout"].total, 2.3)
+            self.assertLessEqual(self.post.call_args.kwargs["timeout"].total, SHAPE_BUDGET_SECONDS - 0.2)
             # The detector covers complete history, not its eventual snippets.
             self.assertTrue(all(len(call.args[0].encode("utf-8")) <= 384 for call in detect.call_args_list))
 
@@ -677,8 +776,8 @@ class ChatShapeViewTests(TestCase):
                 elapsed = monotonic() - started
                 self.assertTrue(entered.is_set())
                 self.assertEqual(response.data["reason"], "unavailable")
-                self.assertGreaterEqual(elapsed, 2.4)
-                self.assertLess(elapsed, 2.9)
+                self.assertGreaterEqual(elapsed, SHAPE_BUDGET_SECONDS - 0.1)
+                self.assertLess(elapsed, SHAPE_BUDGET_SECONDS + 0.4)
                 self.post.assert_not_called()
             finally:
                 release.set()
@@ -732,6 +831,7 @@ class ChatShapeViewTests(TestCase):
                         self.payload.update(text="sleep", recent_turns=[], open_panel=None)
                         if field in {"user", "assistant"}:
                             self.payload["recent_turns"] = [{"role": field, "text": complete}]
+                            self.payload["open_panel"] = {"kind": "sleep", "label": "Sleep"}
                         elif field == "label":
                             self.payload["open_panel"] = {"kind": "sleep", "label": complete}
                         else:

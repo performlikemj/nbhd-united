@@ -20,6 +20,7 @@ from pydantic import Field, field_validator, model_validator
 from apps.common import jev
 from apps.common.tenant_tz import tenant_tz, tenant_tz_name
 from apps.router.chat_gates import chat_shape_enabled
+from apps.router.panels import LOG_METRICS, PANEL_KINDS
 
 SURFACES = {
     "training_week": "Their workouts or training schedule across days: what sessions they did or have planned this week or month, streaks, missed sessions",
@@ -77,7 +78,8 @@ QUESTIONS = {
 }
 
 
-PANELS = ("sleep", "schedule", "training_week", "workout", "timer")
+PANELS = tuple(kind for kind in PANEL_KINDS if kind != "tasks")
+FITNESS_SURFACES = frozenset({"training_week", "workout_detail", "body_weight"})
 RANGES = ("today", "yesterday", "tomorrow", "this_week", "last_week", "this_month", "last_month", "unspecified")
 DECISIONS = ("open", "update", "none")
 REASONS = ("ok", "disabled", "no_panel", "low_confidence", "redaction_unconfirmed", "unavailable", "panel_disabled")
@@ -91,6 +93,8 @@ SURFACE_PANELS = {
     "training_week": "training_week",
     "workout_detail": "workout",
     "timer": "timer",
+    "body_weight": "log_table",
+    "journal": "journal_table",
 }
 
 
@@ -123,6 +127,7 @@ class ChatShapeResponse(jev.StrictModel):
     enabled: bool = True
     decision: Decision = "none"
     panel: Panel | None = None
+    metric: Literal[LOG_METRICS] | None = None
     range: TimeRange = "unspecified"
     day: date | None = None
     duration_seconds: int | None = Field(default=None, gt=0)
@@ -136,6 +141,8 @@ class ChatShapeResponse(jev.StrictModel):
     def consistent_decision(self):
         if (self.decision == "none") != (self.panel is None):
             raise ValueError("Panel must match decision")
+        if self.metric is not None and self.panel != "log_table":
+            raise ValueError("Metric is only for log tables")
         if self.duration_seconds is not None and self.panel != "timer":
             raise ValueError("Duration is only for timers")
         if (self.reason == "ok") != (self.decision != "none"):
@@ -228,7 +235,7 @@ def decide_panel(
     open_panel: OpenPanel | None = None,
     enabled_panels: frozenset[str] = frozenset(PANELS),
 ) -> tuple[Decision, Panel | None, Reason]:
-    """The directive's six rules, in order; no I/O or hidden settings."""
+    """Resolve surfaces and fitness-family confidence; no I/O or hidden settings."""
     panel = SURFACE_PANELS.get(surface.choice)
     top_two = sorted(surface.probabilities, key=surface.probabilities.get, reverse=True)[:2]
     tie = (
@@ -236,11 +243,17 @@ def decide_panel(
         and abs(surface.probabilities[top_two[0]] - surface.probabilities[top_two[1]]) <= 0.15 + 1e-9
         and resolved_range == "today"
     )
+    family_confident = (
+        surface.choice in FITNESS_SURFACES
+        and sum(surface.probabilities.get(key, 0.0) for key in FITNESS_SURFACES) >= 0.6
+    )
+    if family_confident and surface.confidence < 0.5:
+        panel = "log_table" if surface.probabilities.get("body_weight", 0.0) >= 0.6 else "training_week"
     if tie:
         panel = "workout"
     if panel is None or (visual_helps < 0.75 and follow_up < 0.5):
         return "none", None, "no_panel"
-    if surface.confidence < 0.5 and not tie:
+    if surface.confidence < 0.5 and not (tie or family_confident):
         return "none", None, "low_confidence"
     family = {"training_week", "workout"}
     same_family = open_panel is not None and (panel == open_panel.kind or {panel, open_panel.kind} <= family)
@@ -252,7 +265,7 @@ def decide_panel(
 
 logger = logging.getLogger(__name__)
 
-SHAPE_BUDGET_SECONDS = 2.5
+SHAPE_BUDGET_SECONDS = 4.0
 # Bounded admission: timed-out local inference cannot create unlimited workers
 # or a queue of stale requests. A completed detector never starts late Jev work.
 # Shared-socket operations have per-job timeouts, but Python cannot safely kill
@@ -270,6 +283,7 @@ class _ShapeTimings:
         self._lock = Lock()
         self._elapsed = {"redact": 0.0, "jev": 0.0}
         self._active = None
+        self.texts = 0
 
     @contextmanager
     def measure(self, stage):
@@ -303,11 +317,17 @@ def shape_chat(payload: ChatShapeRequest, tenant, *, deadline: float | None = No
     finally:
         elapsed = timings.milliseconds()
         logger.info(
-            "chat_shape_timing redact_ms=%.3f jev_ms=%.3f reason=%s",
+            "chat_shape_timing redact_ms=%.3f jev_ms=%.3f reason=%s texts=%d",
             elapsed["redact"],
             elapsed["jev"],
             result.reason,
-            extra={"redact_ms": elapsed["redact"], "jev_ms": elapsed["jev"], "reason": result.reason},
+            timings.texts,
+            extra={
+                "redact_ms": elapsed["redact"],
+                "jev_ms": elapsed["jev"],
+                "reason": result.reason,
+                "texts": timings.texts,
+            },
         )
     return result
 
@@ -373,15 +393,16 @@ def _shape_chat(payload, tenant, deadline, panels, timings):
     from apps.pii.ephemeral import redact_texts_ephemeral_checked
     from apps.pii.redactor import as_confirmed
 
-    # Confirm every complete supplied field before selecting/shortening model
-    # context. Even history omitted from Jev must not bypass this privacy gate.
-    turns = payload.recent_turns
+    # Fresh topics use only the latest message. Follow-ups confirm every full
+    # history field and the panel label before selecting/shortening context.
+    turns = payload.recent_turns if payload.open_panel is not None else []
     texts = [payload.text, *(turn.text for turn in turns)]
     if payload.open_panel is not None:
         texts.append(payload.open_panel.label)
     try:
         if monotonic() >= deadline:
             return ChatShapeResponse(reason="unavailable")
+        timings.texts = len(texts)
         with timings.measure("redact"):
             outcomes = redact_texts_ephemeral_checked(texts, tenant, deadline=deadline)
         if monotonic() >= deadline:
@@ -396,13 +417,14 @@ def _shape_chat(payload, tenant, deadline, panels, timings):
         return ChatShapeResponse(reason="redaction_unconfirmed")
     state = {
         "latest_message": redacted[0],
-        "recent_turns": [
-            f"{turn.role}: {truncate_redacted(text)}" for turn, text in list(zip(turns, redacted[1:]))[-2:]
-        ],
         "open_panel": (
             f"{payload.open_panel.kind}: {truncate_redacted(redacted[-1])}" if payload.open_panel else "none"
         ),
     }
+    if payload.open_panel is not None:
+        state["recent_turns"] = [
+            f"{turn.role}: {truncate_redacted(text)}" for turn, text in list(zip(turns, redacted[1:]))[-2:]
+        ]
     try:
         with timings.measure("jev"):
             answers = jev.decide(state, QUESTIONS, deadline=deadline).answers
@@ -423,6 +445,7 @@ def _shape_chat(payload, tenant, deadline, panels, timings):
         return ChatShapeResponse(
             decision=decision,
             panel=panel,
+            metric="body_weight" if panel == "log_table" else None,
             reason=reason,
             range=resolved_range,
             day=day,
