@@ -10,14 +10,14 @@ from pydantic import ValidationError
 
 from apps.common.openrouter import NoUsableChoicesError, chat_completion
 from apps.core import compose, render
-from apps.core.lesson import LESSON_JSON_SCHEMA, TRADITIONS, MeditationLesson, Tradition
+from apps.core.lesson import INTENTIONS, LESSON_JSON_SCHEMA, TRADITIONS, Intention, MeditationLesson, Tradition
 from apps.core.test_utils import ComposeSchemaCacheMixin
 from apps.core.tests import _over_segmented_manifest, _valid_manifest
 
 
-def answer(slug="wu-wei", tradition="taoist"):
+def answer(slug="wu-wei", tradition="taoist", intention="release-control"):
     manifest = _valid_manifest()
-    manifest["lesson"].update(teaching_slug=slug, tradition=tradition)
+    manifest["lesson"].update(teaching_slug=slug, tradition=tradition, intention=intention)
     return ({"choices": [{"message": {"content": json.dumps(manifest)}}]}, "test/model")
 
 
@@ -45,6 +45,10 @@ class LessonTests(ComposeSchemaCacheMixin, SimpleTestCase):
         }
 
     def test_vocabulary_schema_and_validation(self):
+        self.assertEqual(get_args(Intention), INTENTIONS)
+        self.assertEqual(LESSON_JSON_SCHEMA["properties"]["intention"]["enum"], list(INTENTIONS))
+        self.assertIn("intention", LESSON_JSON_SCHEMA["required"])
+        self.assertIn(", ".join(INTENTIONS), compose._SYSTEM_PROMPT)
         self.assertEqual(get_args(Tradition), TRADITIONS)
         self.assertEqual(LESSON_JSON_SCHEMA["properties"]["tradition"]["enum"], list(TRADITIONS))
         self.assertIn(", ".join(TRADITIONS), compose._SYSTEM_PROMPT)
@@ -53,6 +57,7 @@ class LessonTests(ComposeSchemaCacheMixin, SimpleTestCase):
         self.assertEqual(MeditationLesson.model_validate(lesson).teaching_slug, "wu-wei")
         for field, value in (
             ("tradition", "invented"),
+            ("intention", "invented"),
             ("teaching_slug", "x" * 41),
             ("core_teaching", "x" * 201),
             ("summary", "x" * 401),
@@ -358,3 +363,79 @@ class LessonTests(ComposeSchemaCacheMixin, SimpleTestCase):
         completion.side_effect = [bad_answer, bad_answer]
         with self.assertRaises(compose.ComposeError):
             compose.author_manifest(self.signals, model="test/model")
+
+    @patch("apps.core.compose.chat_completion")
+    def test_same_intention_with_new_tradition_and_teaching_gets_correction(self, completion):
+        self.signals["recent_meditations"][0]["lesson"]["intention"] = "release-control"
+        completion.side_effect = [
+            answer("gentle-effort", "buddhist"),
+            answer("delight-in-small-things", "sufi", "joy"),
+        ]
+        result = compose.author_manifest(self.signals)
+        self.assertEqual(result["lesson"]["intention"], "joy")
+        self.assertEqual(completion.call_count, 2)
+        feedback = completion.call_args_list[1].args[1][-1]["content"]
+        self.assertIn("reason=intention", feedback)
+        self.assertIn("release-control", feedback)
+        self.assertIn("2026-09-07", feedback)
+
+    @patch("apps.core.compose.chat_completion")
+    def test_different_intention_accepted_first(self, completion):
+        self.signals["recent_meditations"][0]["lesson"]["intention"] = "release-control"
+        completion.return_value = answer("delight-in-small-things", "sufi", "joy")
+        result = compose.author_manifest(self.signals)
+        self.assertEqual(result["lesson"]["intention"], "joy")
+        completion.assert_called_once()
+
+    @patch("apps.core.compose.chat_completion")
+    def test_intention_exhaustion_accepts_last_valid_and_logs_reason(self, completion):
+        self.signals["recent_meditations"][0]["lesson"]["intention"] = "release-control"
+        completion.return_value = answer("gentle-effort", "buddhist")
+        with self.assertLogs("apps.core.compose", level="WARNING") as logs:
+            result = compose.author_manifest(self.signals)
+        self.assertEqual(result["lesson"]["intention"], "release-control")
+        self.assertEqual(completion.call_count, 2 * len(compose._compose_models()))
+        self.assertIn("variety clash accepted reason=intention", " ".join(logs.output))
+
+    @patch("apps.core.compose.chat_completion")
+    def test_legacy_and_other_intentions_are_unknown(self, completion):
+        entries = [{"lesson": {}}, {"lesson": {"intention": "other"}}, {}, {"lesson": None}]
+        completion.return_value = answer("gentle-effort", "buddhist")
+        compose.author_manifest({"recent_meditations": entries})
+        completion.assert_called_once()
+        self.assertEqual(compose._recent_intentions(entries), [])
+        self.assertNotIn("AVOID INTENTIONS", compose._format_signals({"recent_meditations": entries}))
+        legacy = _valid_manifest()["lesson"]
+        del legacy["intention"]
+        with self.assertRaises(ValidationError):
+            MeditationLesson.model_validate(legacy)  # New output must supply it, never default.
+
+    @patch("apps.core.compose.chat_completion")
+    def test_intention_window_counts_sits_not_known_intentions(self, completion):
+        entries = [{}] * 4 + [{"lesson": {"intention": "release-control"}}]
+        completion.side_effect = [answer(), answer(intention="joy")]
+        result = compose.author_manifest({"recent_meditations": entries})
+        self.assertEqual(result["lesson"]["intention"], "joy")
+        self.assertEqual(completion.call_count, 2)
+        completion.reset_mock()
+        completion.side_effect = None
+        completion.return_value = answer()
+        compose.author_manifest({"recent_meditations": [{}] + entries})
+        completion.assert_called_once()
+
+    def test_prompt_avoid_intentions_survive_full_history_budget(self):
+        entries = [
+            {"title": "x" * 2700, "lesson": {"intention": "release-control"}},
+            {"lesson": {"intention": "joy"}},
+            {"lesson": {}},
+            {"lesson": {"intention": "other"}},
+            {"lesson": {"intention": "joy"}},
+            {"lesson": {"intention": "rest"}},
+        ]
+        self.assertEqual(compose._recent_meditation_lines(entries), [])
+        prompt = compose._format_signals({"recent_meditations": entries})
+        self.assertIn("AVOID INTENTIONS (used in last 5 sits): release-control, joy", prompt)
+        self.assertNotIn(", rest", prompt)
+        self.assertNotIn("permission to set it down", compose._SYSTEM_PROMPT)
+        self.assertNotIn("setting down whatever today held", compose._format_signals({}))
+        self.assertIn("Do NOT treat planning, organizing, building, or ambition as a flaw", compose._SYSTEM_PROMPT)

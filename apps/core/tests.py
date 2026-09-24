@@ -37,6 +37,7 @@ def _valid_manifest(*, total: int = 600) -> dict:
     return {
         "lesson": {
             "tradition": "taoist",
+            "intention": "release-control",
             "teaching_slug": "wu-wei",
             "core_teaching": "Let attention settle without force.",
             "summary": "Release the urge to force calm. Let the breath move on its own.",
@@ -1759,7 +1760,7 @@ class ComposeAuthoringTests(ComposeSchemaCacheMixin, SimpleTestCase):
 
         for tradition in TRADITIONS:
             self.assertIn(tradition, system)
-        self.assertIn("serve what today's signals show", system)
+        self.assertIn("support today's concrete aspect and chosen intention", system)
         self.assertIn("Never preach", system)
         self.assertIn("never presume what this person believes", system)
 
@@ -2587,6 +2588,15 @@ class MeditationLookBackTests(TestCase):
         self.assertEqual(len(recent), 20)
         self.assertEqual(recent[0]["title"], "Sit 1")  # newest kept
         self.assertEqual(recent[-1]["title"], "Sit 20")  # the 21st-oldest is dropped
+
+    def test_history_includes_intention_but_does_not_invent_legacy_intention(self):
+        self._sit(1, lesson={"tradition": "taoist", "intention": "release-control"})
+        self._sit(2, lesson={"tradition": "zen"})
+        self._sit(3, lesson={})
+        recent = services._recent_meditation_entries(self.tenant)
+        self.assertEqual(recent[0]["lesson"]["intention"], "release-control")
+        self.assertNotIn("intention", recent[1]["lesson"])
+        self.assertNotIn("lesson", recent[2])
 
     def test_sit_with_neither_title_nor_theme_is_dropped(self):
         self._sit(1, title="", theme="")
