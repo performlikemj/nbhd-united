@@ -27,6 +27,7 @@ from apps.router.talk_route import (
     QUICK_READS,
     READ_ONLY_MIN,
     REASONS,
+    TALK_ROUTE_BUDGET_SECONDS,
     AckKind,
     QuickRead,
     Reason,
@@ -166,7 +167,7 @@ class TalkRouteViewTests(TestCase):
         self.assertEqual(
             body["questions"], {key: value.model_dump(exclude_none=True) for key, value in QUESTIONS.items()}
         )
-        self.assertLessEqual(self.post.call_args.kwargs["timeout"].total, 0.8)
+        self.assertLessEqual(self.post.call_args.kwargs["timeout"].total, TALK_ROUTE_BUDGET_SECONDS)
         self.assertEqual(self.redact.call_args.args[0], [self.payload["text"]])
         self.assertIn("deadline", self.redact.call_args.kwargs)
 

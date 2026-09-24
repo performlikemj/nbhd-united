@@ -35,7 +35,7 @@ Reason = Literal[REASONS]
 ACK_MIN = 0.6
 QUICK_READ_MIN = 0.85
 READ_ONLY_MIN = 0.85
-TALK_ROUTE_BUDGET_SECONDS = 0.8
+TALK_ROUTE_BUDGET_SECONDS = 1.2
 
 
 class TalkRouteRequest(jev.StrictModel):
