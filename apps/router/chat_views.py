@@ -48,6 +48,7 @@ from apps.router.inbound_media import (
     store_inbound_image,
 )
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
+from apps.router.panels import rehydrate_panels
 from apps.router.pending_queue import enqueue_message_for_tenant, placeholder_redactions
 from apps.router.reply_text import clamp_reply_text
 from apps.router.services import build_chat_context_marker, build_datetime_context
@@ -560,6 +561,7 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None, user_text: Redac
         # reply (iOS-only); title REHYDRATED above. null when the turn carried no
         # (valid) marker. Shared source of truth with the ?since= feed.
         "journal_link": journal_link,
+        "panels": rehydrate_panels(msg.panels, entity_map, tenant_id=msg.tenant_id),
     }
 
 
@@ -783,7 +785,11 @@ def enqueue_tenant_turn(
     # "this is a chat turn, don't pre-load workspace docs" marker + any
     # attachment marker, then the user's (redacted) text.
     message_text = (
-        build_datetime_context(user_tz) + build_chat_context_marker("ios") + image_marker + document_marker + llm_text
+        build_datetime_context(user_tz)
+        + build_chat_context_marker("ios", tenant=tenant)
+        + image_marker
+        + document_marker
+        + llm_text
     )
 
     payload = {
@@ -1403,11 +1409,13 @@ def _parse_partial(data: dict) -> tuple[str | None, int | None]:
     if seq <= 0:
         return None, None
     from apps.router.journal_link import strip_streaming_journal_link_marker
+    from apps.router.panels import strip_streaming_panels
     from apps.router.quick_replies import strip_streaming_quick_reply_marker
 
-    # Both are no-ops unless their own opener is the trailing fragment, and only
-    # one marker can be the reply's final line, so chaining them is safe.
-    text = strip_streaming_journal_link_marker(strip_streaming_quick_reply_marker(raw_text[:_MAX_PARTIAL_TEXT_CHARS]))
+    # Remove panel fences first so trailing quick-reply / journal markers keep
+    # their existing placement contract. Partial JSON is normal during streaming.
+    text = strip_streaming_panels(raw_text[:_MAX_PARTIAL_TEXT_CHARS])
+    text = strip_streaming_journal_link_marker(strip_streaming_quick_reply_marker(text))
     return text, seq
 
 

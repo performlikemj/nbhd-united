@@ -347,8 +347,11 @@ def reconcile_plan_state(
             if new_dur != workout.duration_minutes:
                 patch["duration_minutes"] = new_dur
         if "detail_json" in template and isinstance(template["detail_json"], dict):
-            if workout.detail_json != template["detail_json"]:
-                patch["detail_json"] = template["detail_json"]
+            from .set_contract import preserve_logged_sets
+
+            detail = preserve_logged_sets(template["detail_json"], workout.detail_json)
+            if workout.detail_json != detail:
+                patch["detail_json"] = detail
         # The create path maps the template's ``target_rpe`` (or ``rpe``) onto
         # Workout.rpe; mirror that here so a per-week deload that lowers the
         # target RPE actually re-prescribes a kept workout.
@@ -467,8 +470,7 @@ def apply_reconciliation(
     from django.db import transaction
     from django.utils import timezone
 
-    from apps.pii.store_authoring import author_store_fields
-
+    from .authoring import author_store_fields
     from .catalog_annotation import reinsert_catalog_refs
     from .models import PlanSlot, Workout, WorkoutSource, WorkoutStatus
 

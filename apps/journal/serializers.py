@@ -199,6 +199,7 @@ class JournalEntrySerializer(serializers.ModelSerializer):
             "date",
             "mood",
             "energy",
+            "energy_score",
             "wins",
             "challenges",
             "reflection",
@@ -267,6 +268,12 @@ class JournalEntrySerializer(serializers.ModelSerializer):
         from .store_authoring import owner_store_representation
 
         return owner_store_representation(instance, tenant, data, model_label="journal.JournalEntry")
+
+
+class MoodCheckInSerializer(serializers.Serializer):
+    energy_score = serializers.IntegerField(min_value=1, max_value=10)
+    feeling = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    date = serializers.DateField(required=False)
 
 
 # ---------------------------------------------------------------------------

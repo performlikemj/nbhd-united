@@ -2048,6 +2048,8 @@ def _detect_pii(
     text: str,
     entities: list[str],
     score_threshold: float,
+    *,
+    deadline: float | None = None,
 ) -> list[DetectedEntity]:
     """Detect PII using DeBERTa (contextual) + Presidio regex (financial).
 
@@ -2082,10 +2084,33 @@ def _detect_pii(
     # Pattern recognizers below still run, so financial PII stays redacted.
     try:
         pii_pipeline = get_pii_pipeline()
-        model_results = pii_pipeline(detect_text)
+        if deadline is None:
+            model_results = pii_pipeline(detect_text)
+        else:
+            from time import monotonic
+
+            from apps.pii.shared_client import SharedPiiPipeline
+
+            if monotonic() >= deadline:
+                raise TimeoutError("Redaction deadline exceeded")
+            if isinstance(pii_pipeline, SharedPiiPipeline):
+                # Ephemeral requests have a shorter caller budget. Their
+                # timeouts must not open the normal chat client's breaker.
+                ephemeral_pipeline = SharedPiiPipeline(
+                    socket_path=pii_pipeline.socket_path,
+                    engine=pii_pipeline.engine,
+                    deadline_s=pii_pipeline.deadline_s,
+                )
+                model_results = ephemeral_pipeline(detect_text, deadline=deadline)
+            else:
+                model_results = pii_pipeline(detect_text)
+            if monotonic() >= deadline:
+                raise TimeoutError("Redaction deadline exceeded")
         _neural_detector_outcome.available = True
-    except Exception:
+    except Exception as exc:
         _neural_detector_outcome.available = False
+        if deadline is not None and (isinstance(exc, TimeoutError) or getattr(exc, "outcome", None) == "timeout"):
+            raise TimeoutError("Redaction deadline exceeded") from None
         model_results = []
 
     for ent in model_results:

@@ -2384,7 +2384,7 @@ def _send_apology_for_dropped_pending_message(tenant: Tenant, msg: PendingMessag
 
 
 def _build_batch_chat_content(
-    batch: list[PendingMessage], fallback_user_id: str, channel: str | None = None
+    batch: list[PendingMessage], fallback_user_id: str, channel: str | None = None, *, tenant=None
 ) -> tuple[str, str, str]:
     """Build the ``content`` string + routing context for a deliverable batch.
 
@@ -2439,6 +2439,7 @@ def _build_batch_chat_content(
         user_timezone=user_tz,
         timestamps=timestamps,
         channel=channel,
+        tenant=tenant,
     )
     return content, user_param, user_tz
 
@@ -2709,7 +2710,7 @@ def _drain_ios_batch(
         )
 
     thread_id = batch[0].channel_user_id
-    content, user_param, user_tz = _build_batch_chat_content(batch, thread_id, channel="ios")
+    content, user_param, user_tz = _build_batch_chat_content(batch, thread_id, channel="ios", tenant=tenant)
 
     # Bridge proactive-message continuity into the iOS turn. Unlike the
     # Telegram/LINE ingress handlers (which prepend this block before enqueue),
@@ -2900,7 +2901,11 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         return None
     write_started = time.monotonic()
     now = timezone.now()
-    if ai_text:
+    from apps.router.panels import extract_panels, prepare_panels
+
+    ai_text, panels = extract_panels(ai_text or "")
+    panels = prepare_panels(tenant, panels)
+    if ai_text or panels:
         # A coalesced batch (N>1) yields ONE combined reply. Attach it to a single
         # representative row (the last message in the batch) so the since-feed,
         # thread history, and the USER.md digest each emit exactly one assistant
@@ -2932,6 +2937,7 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
                 # Quick-reply button labels ride the same representative row, for
                 # the same reason. null when the reply carried no marker.
                 quick_replies=quick_replies or None,
+                panels=panels or None,
                 # The "View in Journal" deep-link rides the same representative row,
                 # for the same reason. null when the reply carried no marker.
                 journal_link=journal_link or None,
@@ -2940,6 +2946,10 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
             if other_ids:
                 AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=other_ids).update(
                     reply_text="",
+                    panels=None,
+                    quick_replies=None,
+                    journal_link=None,
+                    reply_redactions=None,
                     status=AppChatMessage.Status.READY,
                     replied_at=now,
                     partial_text="",
@@ -3144,8 +3154,10 @@ def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) ->
     # Telegram has no transport for either here, so just strip the markers
     # (never let them leak as raw text).
     from apps.router.journal_link import extract_journal_link
+    from apps.router.panels import extract_panels
     from apps.router.quick_replies import extract_quick_replies
 
+    ai_text, _panels = extract_panels(ai_text)
     ai_text, _quick_replies = extract_quick_replies(ai_text, tenant_id=tenant.id, channel="telegram_drain")
     ai_text, _journal_link = extract_journal_link(ai_text, tenant_id=tenant.id, channel="telegram_drain")
 

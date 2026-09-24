@@ -381,7 +381,34 @@ def resolve_user_channel(user) -> str | None:
 
 
 class SendToUserSerializer(serializers.Serializer):
-    message = serializers.CharField(max_length=8192)
+    message = serializers.CharField(max_length=8192, allow_blank=True)
+    panels = serializers.JSONField(required=False, allow_null=True)
+
+    def validate_panels(self, value):
+        from apps.router.panels import chat_panels_enabled, validate_panels
+
+        if not chat_panels_enabled(self.context.get("tenant")):
+            logger.warning("panels_dropped reason=tenant_disabled")
+            return []
+        return validate_panels(value)
+
+    def validate(self, data):
+        from apps.router.panels import chat_panels_enabled, extract_panels
+
+        # Strip on every channel and outside the rollout gate. Explicit panels
+        # (even empty/null/invalid) take precedence over the fallback block.
+        data["message"], fallback = extract_panels(data["message"])
+        if "panels" not in data:
+            if chat_panels_enabled(self.context.get("tenant")):
+                data["panels"] = fallback
+            else:
+                if fallback:
+                    logger.warning("panels_dropped reason=tenant_disabled")
+                data["panels"] = []
+        if not data["message"] and not data["panels"]:
+            raise serializers.ValidationError("message or valid panels required")
+        return data
+
     thread_id = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=64)
     parse_mode = serializers.ChoiceField(
         choices=["Markdown", "HTML", "plain"],
@@ -487,7 +514,7 @@ class CronDeliveryView(APIView):
             )
 
         # Validate payload
-        serializer = SendToUserSerializer(data=request.data)
+        serializer = SendToUserSerializer(data=request.data, context={"tenant": tenant})
         if not serializer.is_valid():
             return Response(serializer.errors, status=http_status.HTTP_400_BAD_REQUEST)
 
@@ -498,6 +525,7 @@ class CronDeliveryView(APIView):
         # quote-reply excerpt) are stored placeholder-space; only the copy
         # actually sent to the user is rehydrated.
         placeholder_message_text = serializer.validated_data["message"]
+        panels = serializer.validated_data.get("panels", [])
         parse_mode = serializer.validated_data.get("parse_mode", "Markdown")
 
         from apps.router.models import ChatThread
@@ -521,7 +549,8 @@ class CronDeliveryView(APIView):
         # Strip the generic marker before every transport, but retain its labels
         # in placeholder space on ProactiveOutbound. The row is cross-channel:
         # even a Telegram/LINE delivery can later render pills in the iOS feed.
-        # Quick-replies parsing stays first to preserve its final-line contract;
+        # The serializer already stripped panel fences; quick-replies now runs
+        # first among the remaining markers to preserve its final-line contract;
         # journal-link extraction below is placement-tolerant on the remainder.
         from apps.router.journal_link import extract_journal_link
         from apps.router.quick_replies import extract_quick_replies
@@ -566,6 +595,12 @@ class CronDeliveryView(APIView):
                 # Job identification and fallback lookup are best-effort. A
                 # missing chip must never block the underlying delivery.
                 pass
+
+        # Panels have no external-channel representation. Persist through the
+        # app-feed branch even without devices; never send an empty text chunk.
+        # Keep eval evidence isolated from the owner feed and APNs.
+        if panels and not placeholder_message_text.strip() and channel != "eval":
+            channel = "app"
 
         # Final owner-facing integrity guard.
         entity_map = tenant.pii_entity_map
@@ -673,6 +708,7 @@ class CronDeliveryView(APIView):
                     # the send carried no marker.
                     journal_link=journal_link,
                     quick_replies=quick_replies,
+                    panels=panels,
                     artifact_dedup_key=artifact_dedup_key,
                     thread_id=thread_id,
                 )
@@ -729,6 +765,7 @@ class CronDeliveryView(APIView):
                     job_name=job_name,
                     journal_link=journal_link,
                     quick_replies=quick_replies,
+                    panels=panels,
                     artifact_dedup_key=artifact_dedup_key,
                     thread_id=thread_id,
                 )
@@ -819,6 +856,7 @@ class CronDeliveryView(APIView):
                 # the send carried no marker.
                 journal_link=journal_link,
                 quick_replies=quick_replies,
+                panels=panels,
                 artifact_dedup_key=artifact_dedup_key,
                 thread_id=thread_id,
             )

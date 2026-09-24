@@ -583,6 +583,10 @@ class Tenant(models.Model):
         ),
     )
     journal_shaping_enabled = models.BooleanField(default=False)
+    mood_context_enabled = models.BooleanField(
+        default=False,
+        help_text="Include the latest mood self-report in assistant context; canary opt-in.",
+    )
     digest_thread_attribution_enabled = models.BooleanField(
         default=False,
         help_text="Label non-main iOS chat content in the shared conversation digest with its source thread",

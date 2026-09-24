@@ -380,7 +380,7 @@ class HorizonsView(APIView):
                 date__gte=thirty_days_ago,
             )
             .order_by("date")
-            .values("date", "mood", "energy", "pii_receipts")
+            .values("date", "mood", "energy", "energy_score", "pii_receipts")
         )
 
         # 5. Momentum (30 days) — message counts + journal dates
@@ -547,6 +547,7 @@ class HorizonsView(APIView):
                         "date": str(m["date"]),
                         "mood": rehydrate_for_tenant(tenant, m["mood"]),
                         "energy": m["energy"],
+                        "energy_score": m["energy_score"],
                         "pii_receipts": resolve_receipt_values(
                             m.get("pii_receipts") or {},
                             getattr(tenant, "pii_entity_map", None),
