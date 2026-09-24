@@ -7,6 +7,7 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { writeFile, mkdtemp, rm, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -350,9 +351,18 @@ test("reconcileOnce: list failure makes no mutations", async () => {
   assert.deepEqual(calls, [["cron", "list", "--json"]]);
 });
 
-test("pinned 9.4 source registers each emitted flag; negative light context is edit-only", async () => {
-  const root = process.env.OPENCLAW_PACKAGE_ROOT || "/tmp/openclaw-src-9.4/package";
-  const source = await readFile(path.join(root, "dist/cron-cli-BTI9dsDQ.mjs"), "utf8");
+// Pins buildAddArgs' emitted flags against the REAL 2026.9.4 cron CLI source.
+// Runs only where the pinned package is extracted (local dev, or a CI job that
+// vendors it via OPENCLAW_PACKAGE_ROOT); skips gracefully otherwise so the
+// hosted test job — which does not ship the bundle — stays green.
+const _pinnedRoot = process.env.OPENCLAW_PACKAGE_ROOT || "/tmp/openclaw-src-9.4/package";
+const _pinnedBundle = path.join(_pinnedRoot, "dist/cron-cli-BTI9dsDQ.mjs");
+test("pinned 9.4 source registers each emitted flag; negative light context is edit-only", {
+  skip: existsSync(_pinnedBundle)
+    ? false
+    : `pinned 9.4 package source not present at ${_pinnedBundle} (set OPENCLAW_PACKAGE_ROOT to run)`,
+}, async () => {
+  const source = await readFile(_pinnedBundle, "utf8");
   const start = source.indexOf("function registerCronMutationOptions(");
   const end = source.indexOf("\n}", start);
   const options = source.slice(start, end);
