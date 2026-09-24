@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     ffmpeg \
     tzdata \
+    wamerican \
     && if apt-cache show tzdata-legacy >/dev/null 2>&1; then \
         apt-get install -y --no-install-recommends tzdata-legacy; \
     fi \

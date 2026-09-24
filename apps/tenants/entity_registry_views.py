@@ -1,5 +1,8 @@
 """Paged registry reads and reversible, owner-directed bulk lifecycle changes."""
 
+from functools import cache
+from pathlib import Path
+
 from django.core import signing
 from django.db import transaction
 from django.utils import timezone
@@ -17,12 +20,27 @@ MAX_BATCH = 2000
 _CURSOR_SALT = "entity-registry-page-v1"
 
 
+@cache
+def _english_words():
+    """Read ordinary words once; capitalized dictionary entries are proper nouns."""
+    try:
+        with Path("/usr/share/dict/words").open(encoding="utf-8") as words:
+            return frozenset(
+                word for line in words if 3 <= len(word := line.strip()) <= 20 and word.isalpha() and word.islower()
+            )
+    except OSError:
+        return frozenset()
+
+
 def looks_like_everyday_word(name):
-    """Advisory only: share existing rules without changing redaction policy."""
+    """Advisory settings evidence only; never a redaction policy predicate."""
+    token = name.strip()
+    if token.isalpha() and token.lower() in _english_words():
+        return True
+
     from apps.pii.hygiene import is_junk_span
     from apps.pii.redactor import is_never_a_name
 
-    token = name.strip()
     return is_never_a_name(name) or (
         token.isalpha() and token.lower() != token.upper() and is_junk_span(token.lower(), "PERSON")[0]
     )
@@ -74,7 +92,7 @@ def paged_registry_response(tenant, params):
             for value in (name, entry.get("relationship", ""), entry.get("notes", ""), placeholder)
         ):
             continue
-        looks_everyday = looks_like_everyday_word(name)
+        looks_everyday = looks_like_everyday_word(name) if everyday else None
         if everyday and not looks_everyday:
             continue
         metadata = raw if isinstance(raw, dict) else {}
@@ -105,6 +123,11 @@ def paged_registry_response(tenant, params):
     if after is not None:
         entries = [entry for entry in entries if sort_key(entry) > after]
     page = entries[:page_size]
+    if not everyday:
+        # Unfiltered browsing only needs flags on the returned page. Select-all
+        # above needs none, and dictionary hits skip the fallback heuristics.
+        for entry in page:
+            entry["looks_like_everyday_word"] = looks_like_everyday_word(entry["name"])
     next_cursor = None
     if len(entries) > page_size:
         next_cursor = signing.dumps({"scope": scope, "after": sort_key(page[-1])}, salt=_CURSOR_SALT)
@@ -194,18 +217,25 @@ class EntityRegistryRestoreView(APIView):
             entity_map = dict(locked.pii_entity_map or {})
             denylist = dict(locked.pii_denylist or {})
             results = []
+            update_fields = {}
             for placeholder in placeholders:
                 if placeholder not in entity_map:
                     results.append({"placeholder": placeholder, "status": "not_found"})
                     continue
                 raw = entity_map[placeholder]
                 result_status = "restored" if is_retired(raw) else "already_active"
-                entity_map[placeholder] = to_storage_value(
-                    get_name(raw), existing=raw, retired=None, retired_at=None, retired_reason=None
-                )
-                denylist.pop(canonical_key(get_name(raw)), None)
+                if result_status == "restored":
+                    entity_map[placeholder] = to_storage_value(
+                        get_name(raw), existing=raw, retired=None, retired_at=None, retired_reason=None
+                    )
+                    update_fields["pii_entity_map"] = entity_map
+                key = canonical_key(get_name(raw))
+                if key in denylist:
+                    del denylist[key]
+                    update_fields["pii_denylist"] = denylist
                 results.append({"placeholder": placeholder, "status": result_status})
-            Tenant.objects.filter(pk=tenant.pk).update(pii_entity_map=entity_map, pii_denylist=denylist)
+            if update_fields:
+                Tenant.objects.filter(pk=tenant.pk).update(**update_fields)
         tenant.pii_entity_map = entity_map
         tenant.pii_denylist = denylist
         return Response({"results": results})

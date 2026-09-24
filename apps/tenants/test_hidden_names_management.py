@@ -1,18 +1,51 @@
 """Contract tests for hidden-name browsing, name-wide stop, and exact undo."""
 
 from time import perf_counter
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIClient
 
 from apps.pii.egress import redact_known_values
 from apps.pii.entity_registry import canonical_key
 from apps.pii.redactor import rehydrate_for_tenant
+from apps.tenants.entity_registry_views import _english_words, looks_like_everyday_word
 from apps.tenants.models import Tenant, User
 
 URL = "/api/v1/tenants/settings/entity-registry/"
 DENY_URL = "/api/v1/tenants/settings/pii-denylist/"
+
+
+class EverydayWordTests(SimpleTestCase):
+    def setUp(self):
+        _english_words.cache_clear()
+        self.addCleanup(_english_words.cache_clear)
+
+    def test_lowercase_dictionary_entries_are_cached_and_advisory(self):
+        words = (
+            "gently\nconstellation\ngravity\nswift\nsanity\nretire\nEmma\nTokyo\nUPPER\nMixed\nan\ncan't\n"
+            + "a" * 21
+            + "\n"
+        )
+        with patch("apps.tenants.entity_registry_views.Path.open", mock_open(read_data=words)) as opened:
+            for name in ("Gently", "Constellation", "Gravity", "Swift", "Sanity", "Retire"):
+                with self.subTest(name=name):
+                    self.assertTrue(looks_like_everyday_word(name))
+            for name in ("Emma", "Tokyo", "Gently Emma"):
+                with self.subTest(name=name):
+                    self.assertFalse(looks_like_everyday_word(name))
+            self.assertEqual(
+                _english_words(), frozenset({"gently", "constellation", "gravity", "swift", "sanity", "retire"})
+            )
+            opened.assert_called_once_with(encoding="utf-8")
+
+    def test_missing_dictionary_silently_caches_empty_fallback(self):
+        with patch("apps.tenants.entity_registry_views.Path.open", side_effect=FileNotFoundError) as opened:
+            self.assertFalse(looks_like_everyday_word("Gently"))
+            self.assertTrue(looks_like_everyday_word("Calendar"))  # Existing fleet rule.
+            self.assertTrue(looks_like_everyday_word("A"))  # Existing hygiene rule.
+            self.assertEqual(_english_words(), frozenset())
+            opened.assert_called_once()
 
 
 class HiddenNamesManagementTests(TestCase):
@@ -120,6 +153,32 @@ class HiddenNamesManagementTests(TestCase):
         for size, expected in [(None, 100), (200, 200), (201, 200)]:
             params = {"q": ""} if size is None else {"page_size": size}
             self.assertEqual(len(self.client.get(URL, params).json()["entries"]), expected)
+
+    def test_1400_entry_get_only_computes_needed_flags(self):
+        self.seed({f"[PERSON_{n}]": "Gently" for n in range(1400)})
+        with (
+            patch("apps.tenants.entity_registry_views._english_words", return_value=frozenset({"gently"})),
+            patch(
+                "apps.tenants.entity_registry_views.looks_like_everyday_word", wraps=looks_like_everyday_word
+            ) as flag,
+            patch("apps.pii.redactor.is_never_a_name") as fallback,
+        ):
+            for params, page_size in [({"q": ""}, 100), ({"page_size": 200}, 200), ({"everyday": "false"}, 100)]:
+                flag.reset_mock()
+                response = self.client.get(URL, params)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["total"], 1400)
+                self.assertEqual(flag.call_count, page_size)
+                self.assertTrue(all(e["looks_like_everyday_word"] for e in response.json()["entries"]))
+            flag.reset_mock()
+            self.assertEqual(self.client.get(URL, {"select_all": "true"}).json()["total"], 1400)
+            flag.assert_not_called()
+            self.assertEqual(self.client.get(URL, {"everyday": "true"}).json()["total"], 1400)
+            self.assertEqual(flag.call_count, 1400)
+            fallback.assert_not_called()
+        # Advisory browsing must not change whether the word is hidden.
+        self.tenant.refresh_from_db()
+        self.assertEqual(redact_known_values(self.tenant, "Gently", seam="test"), "[PERSON_0]")
 
     def test_invalid_query_parameters(self):
         for params in [
@@ -235,8 +294,34 @@ class HiddenNamesManagementTests(TestCase):
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.pii_entity_map["[PERSON_1]"], {"name": "Alice", "provisional": True})
         self.assertEqual(self.tenant.pii_entity_map["[LOCATION_2]"], stopped)
-        self.assertEqual(self.tenant.pii_entity_map["[PERSON_3]"], {"name": "Bob"})
+        self.assertEqual(self.tenant.pii_entity_map["[PERSON_3]"], "Bob")
         self.assertEqual(self.tenant.pii_denylist, {"untouched": {}})
+
+    def test_restore_active_entries_is_a_true_noop(self):
+        entries = {
+            "[PERSON_1]": "Alice",
+            "[PERSON_2]": {"name": "Bob", "updated_at": "before", "retired": False, "retired_at": "old", "opaque": [1]},
+        }
+        self.seed(entries)
+        with self.assertNumQueries(3):  # savepoint, locked read, release; no UPDATE
+            response = self.post("restore", list(entries))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([r["status"] for r in response.json()["results"]], ["already_active", "already_active"])
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.pii_entity_map, entries)
+
+    def test_restore_active_entry_with_deny_key_only_writes_denylist(self):
+        self.seed({"[PERSON_1]": "Alice"}, {"alice": {"reason": "manual"}})
+        with self.assertNumQueries(4) as queries:
+            response = self.post("restore", ["[PERSON_1]"])
+        self.assertEqual(response.json()["results"][0]["status"], "already_active")
+        updates = [q["sql"] for q in queries.captured_queries if q["sql"].startswith("UPDATE")]
+        self.assertEqual(len(updates), 1)
+        self.assertIn('"pii_denylist"', updates[0])
+        self.assertNotIn('"pii_entity_map"', updates[0])
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.pii_entity_map, {"[PERSON_1]": "Alice"})
+        self.assertEqual(self.tenant.pii_denylist, {})
 
     def test_mutation_batch_validation_and_2000_boundary(self):
         for action in ("bulk-stop", "restore"):
