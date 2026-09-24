@@ -10,7 +10,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import SimpleTestCase, override_settings
 
-from apps.core.lesson import TRADITIONS, MeditationLesson
+from apps.core.lesson import INTENTIONS, TRADITIONS, MeditationLesson
 from apps.core.management.commands import backfill_meditation_lessons as backfill
 from apps.core.models import MeditationSession, MeditationStatus
 from apps.tenants.models import Tenant
@@ -19,6 +19,7 @@ from apps.tenants.models import Tenant
 def answer(**changes):
     lesson = {
         "tradition": "taoist",
+        "intention": "release-control",
         "teaching_slug": "wu-wei",
         "core_teaching": "Act without forcing.",
         "summary": "Notice where unnecessary effort creates tension.",
@@ -64,7 +65,10 @@ class LessonBackfillTests(SimpleTestCase):
         return (row.id for row in rows)
 
     def run_command(self, rows, *args):
-        self.session_filter.return_value.order_by.return_value.values_list.return_value = self.candidate_ids(rows)
+        qs = self.session_filter.return_value
+        if "--missing-intention" in args:
+            qs = qs.exclude.return_value
+        qs.order_by.return_value.values_list.return_value = self.candidate_ids(rows)
         call_command("backfill_meditation_lessons", "--tenant", str(self.tenant.id), *args, stdout=self.output)
         return self.output.getvalue()
 
@@ -104,6 +108,7 @@ class LessonBackfillTests(SimpleTestCase):
         self.assertEqual(call.args[0], "test/primary")
         self.assertEqual(call.kwargs["response_format"]["json_schema"]["schema"], MeditationLesson.model_json_schema())
         self.assertIn(", ".join(TRADITIONS), call.args[1][0]["content"])
+        self.assertIn(", ".join(INTENTIONS), call.args[1][0]["content"])
 
     def test_skips_existing_lesson_and_repeated_run(self):
         session = self.session()
@@ -340,3 +345,27 @@ class LessonBackfillTests(SimpleTestCase):
         self.tenant_get.side_effect = Tenant.DoesNotExist
         with self.assertRaisesRegex(CommandError, "not found"):
             self.run_command([])
+
+    def test_missing_intention_preserves_existing_fields_and_skips_completed(self):
+        legacy = json.loads(answer()[0]["choices"][0]["message"]["content"])
+        del legacy["intention"]
+        legacy["summary"] = "Original summary stays unchanged."
+        session = self.session(lesson=legacy.copy())
+        complete = self.session(lesson={**legacy, "intention": "other"})
+        output = self.run_command([session, complete], "--missing-intention")
+        self.assertEqual(session.lesson, {**legacy, "intention": "release-control"})
+        self.session_filter.return_value.exclude.assert_called_once_with(lesson__has_key="intention")
+        self.completion.assert_called_once()
+        session.save.assert_called_once()
+        complete.save.assert_not_called()
+        self.assertIn("written=1 skipped=1", output)
+
+    def test_missing_intention_dry_run_and_default_skip(self):
+        legacy = json.loads(answer()[0]["choices"][0]["message"]["content"])
+        del legacy["intention"]
+        session = self.session(lesson=legacy.copy())
+        self.run_command([session], "--missing-intention", "--dry-run")
+        self.run_command([session])
+        self.assertEqual(session.lesson, legacy)
+        self.completion.assert_not_called()
+        session.save.assert_not_called()
