@@ -8,12 +8,12 @@
 - Follow DIRECTIVE_openclaw_94_fleet_migration.md and RECON_openclaw_94_fleet.md.
 ## State
 - Done: Migration, guards, lifecycle fixes and runbook implemented; 213 focused tests and static/migration checks pass. Final Docker gate passed (9292 tests, 43 skipped; frontend lint/build passed).
-- Now: All gates passed; creating scoped commit and draft PR.
-- Next: Commit, push and open draft PR; release orchestrator owns any later canary/prod execution.
+- Now: Implementation complete; draft PR https://github.com/performlikemj/nbhd-united/pull/1650 open against main.
+- Next: Review draft PR; release orchestrator owns any later canary/prod execution.
 ## Task Map
 ```
 CONTINUITY.md
-  └─ CONTINUITY_openclaw_94_migration.md (active)
+  └─ CONTINUITY_openclaw_94_migration.md (complete; draft PR #1650)
 ```
 ## Active ledgers
 - CONTINUITY_openclaw_94_migration.md

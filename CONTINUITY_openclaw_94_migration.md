@@ -14,8 +14,8 @@ Owner: Codex
 - Fail closed on ambiguous cron provenance and failed verification.
 ## State
 - Done: Implementation, runbook, 213 focused tests, static/migration checks; final Docker gate green (9292 tests, 43 skipped; frontend lint/build PASS).
-- Now: All gates passed; committing/pushing and creating draft PR.
-- Next: Commit/push/draft PR. No production execution.
+- Now: Complete: implementation commit d6081fca pushed; draft PR #1650 open against main.
+- Next: Release orchestrator review and later canary execution. No production execution by this task.
 ## Links
 - Upstream: CONTINUITY.md
 - Related: docs/runbooks/openclaw-94-migration.md
@@ -56,3 +56,5 @@ Owner: Codex
 - Third Docker backend PASS: 9289 tests / 43 skipped; frontend still running. A fourth gate is required after the no-op verification change.
 - Third Docker gate PASS: backend 9289 tests / 43 skipped and frontend lint/build. Final no-op verification suite: 213 PASS; Ruff and migration drift checks PASS. Fourth serialized gate running on final code.
 - Final Docker gate PASS on complete code: 9292 backend tests / 43 skipped; frontend lint and static build PASS; exit 0. Focused suite 213 PASS, Ruff lint/format PASS, migration drift check no changes, diff whitespace checks PASS. No production calls.
+- Git: implementation d6081fca pushed on feat/openclaw-94-tenant-migration; draft PR https://github.com/performlikemj/nbhd-united/pull/1650 targets main; never merged. Final ledger-only completion commit does not change validated code.
+- Open release risks: real ACR/console/canary behavior and synthetic chat/Brave/delivery/hibernate checks remain for release orchestrator; resolve agent re-sync IDs and maintenance-window one-shots. No inverse migration or automatic rollback.
