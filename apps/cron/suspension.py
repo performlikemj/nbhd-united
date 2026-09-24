@@ -161,7 +161,12 @@ def _file_lifecycle(tenant, *, suspend):
     """
     import time
 
-    from apps.orchestrator.runtime_operator import list_crons, set_cron_enabled
+    from apps.orchestrator.runtime_operator import (
+        capture_cron_declarations,
+        list_crons,
+        restore_crons,
+        set_cron_enabled,
+    )
 
     from .share_cron_sync import write_tenant_crons_file
 
@@ -170,9 +175,17 @@ def _file_lifecycle(tenant, *, suspend):
     action = "disabled" if suspend else "enabled"
     result = {action: 0, "errors": 0, "job_names": []}
     if suspend:
+        if not state:
+            jobs = capture_cron_declarations(tenant)
+            state = {
+                "active": True,
+                "enabled_ids": [j["id"] for j in jobs if j.get("enabled", True)],
+                "declarations": [j for j in jobs if not j.get("declarationKey", "").startswith("nbhd:")],
+            }
+            Tenant.objects.filter(pk=tenant.pk).update(cron_suspend_state=state)
+            tenant.cron_suspend_state = state
         if not state.get("active"):
-            jobs = list_crons(tenant)
-            state = {"active": True, "enabled_ids": [j["id"] for j in jobs if j["enabled"]]}
+            state["active"] = True
             Tenant.objects.filter(pk=tenant.pk).update(cron_suspend_state=state)
             tenant.cron_suspend_state = state
         write_tenant_crons_file(tenant)
@@ -209,11 +222,26 @@ def _file_lifecycle(tenant, *, suspend):
     Tenant.objects.filter(pk=tenant.pk).update(cron_suspend_state=state)
     tenant.cron_suspend_state = state
     write_tenant_crons_file(tenant)
-    enabled_ids = set(state.get("enabled_ids", []))
-    for job in list_crons(tenant):
-        if job["id"] in enabled_ids and not job["enabled"] and not job["declarationKey"].startswith("nbhd:"):
-            set_cron_enabled(tenant, job["id"], True)
-            result[action] += 1
+    declarations = state.get("declarations")
+    if declarations is None:
+        # Old ID-only recovery records cannot establish what was lost.
+        raise RuntimeError("recovery_declarations_missing")
+    restored = restore_crons(tenant, declarations) if declarations else {"verified": True}
+    if not restored.get("verified"):
+        raise RuntimeError("recovery_not_verified")
+    from apps.orchestrator.openclaw_migration import _signed_match
+    from apps.orchestrator.runtime_operator import inspect_signed_crons
+
+    from .share_cron_sync import _desired_jobs
+
+    expected = {j["declarationKey"] for j in _desired_jobs(tenant)}
+    for attempt in range(8):
+        inspection = inspect_signed_crons(tenant)
+        if _signed_match(inspection) and {m["key"] for m in inspection["matches"]} == expected:
+            break
+        time.sleep(5)
+    else:
+        raise RuntimeError("signed_resume_not_verified")
     Tenant.objects.filter(pk=tenant.pk).update(cron_suspend_state={})
     tenant.cron_suspend_state = {}
     return result

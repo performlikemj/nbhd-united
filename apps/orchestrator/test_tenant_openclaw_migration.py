@@ -161,7 +161,7 @@ class MigrationOrderingTests(TestCase):
         with (
             patch.object(migration, "get_app", side_effect=RuntimeError("private sdk detail")),
             patch.dict(migration.HANDLERS, {s: Mock() for s in migration.STEPS}),
-            self.assertRaisesRegex(CommandError, "verification FAILED: RuntimeError") as error,
+            self.assertRaisesRegex(CommandError, "verification_unavailable") as error,
         ):
             call_command("migrate_tenant_openclaw", tenants=f"{self.tenant.pk},{second.pk}", tag=TAG)
         self.assertNotIn("private sdk detail", str(error.exception))
@@ -236,7 +236,7 @@ class MigrationStepTests(TestCase):
         with patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"details": {"jobs": jobs}}) as http:
             evidence = migration.capture(self.tenant, rec)
             migration.capture(self.tenant, rec)
-        self.assertEqual(http.call_count, 1)
+        self.assertEqual(http.call_count, 2)
         self.assertEqual(rec["cron_export"], jobs)
         self.assertEqual(evidence["removed"], 0)
         self.assertTrue(CronJob.objects.filter(tenant=self.tenant, name="db-only").exists())
@@ -323,6 +323,7 @@ class MigrationStepTests(TestCase):
         )
         calls = []
         with (
+            patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": []}),
             patch.object(migration, "get_app", return_value=app),
             patch.object(
                 migration.azure_client, "update_container_image", side_effect=lambda *a, **k: calls.append("image")
@@ -430,16 +431,12 @@ class RuntimeGuardTests(SimpleTestCase):
         self.assertFalse(image_only_update_allowed(tenant, TAG))
 
     def test_registry_digest_validation(self):
-        with patch.object(
-            migration.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=json.dumps(DIGEST))
-        ) as run:
-            self.assertEqual(migration.registry_digest("test.azurecr.io/nbhd-openclaw:" + TAG), DIGEST)
-        self.assertEqual(run.call_args.kwargs["timeout"], 60)
         with (
-            patch.object(migration.subprocess, "run", return_value=SimpleNamespace(returncode=1)),
-            self.assertRaisesRegex(migration.MigrationError, "ACR"),
+            patch("azure.identity.ManagedIdentityCredential", side_effect=RuntimeError("private-token")),
+            self.assertRaisesRegex(migration.MigrationError, "acr_digest_unavailable") as error,
         ):
             migration.registry_digest("test.azurecr.io/nbhd-openclaw:" + TAG)
+        self.assertNotIn("private-token", str(error.exception))
 
 
 class LifecycleAndDispatchTests(TestCase):
@@ -541,10 +538,11 @@ class LifecycleAndDispatchTests(TestCase):
         disabled = job("disabled", enabled=False, declarationKey="")
         after = [enabled | {"enabled": False}, disabled]
         with (
+            patch("apps.orchestrator.runtime_operator.capture_cron_declarations", return_value=[enabled, disabled]),
             patch("apps.cron.share_cron_sync.write_tenant_crons_file") as write,
             patch(
                 "apps.orchestrator.runtime_operator.list_crons",
-                side_effect=[[enabled, disabled], [enabled, disabled], after, after],
+                side_effect=[[enabled, disabled], after, after],
             ),
             patch("apps.orchestrator.runtime_operator.set_cron_enabled") as toggle,
             patch("apps.cron.suspension.invoke_gateway_tool") as http,
@@ -556,12 +554,23 @@ class LifecycleAndDispatchTests(TestCase):
         http.assert_not_called()
         with (
             patch("apps.cron.share_cron_sync.write_tenant_crons_file"),
+            patch("apps.orchestrator.runtime_operator.restore_crons", return_value={"verified": True}) as restore,
+            patch(
+                "apps.orchestrator.runtime_operator.inspect_signed_crons",
+                return_value={
+                    "matches": [
+                        {"match": True, "id": "one", "key": f"nbhd:{CronJob.objects.get(tenant=self.tenant).pk}"}
+                    ],
+                    "extras": [],
+                    "expected": 1,
+                },
+            ),
             patch("apps.orchestrator.runtime_operator.list_crons", return_value=after),
             patch("apps.orchestrator.runtime_operator.set_cron_enabled") as toggle,
             patch("apps.cron.suspension.invoke_gateway_tool") as http,
         ):
             resume_tenant_crons(self.tenant)
-        toggle.assert_called_once_with(self.tenant, "operator-id", True)
+        restore.assert_called_once_with(self.tenant, [enabled, disabled])
         self.assertEqual(len(_desired_jobs(self.tenant)), 1)
         http.assert_not_called()
 
@@ -570,6 +579,7 @@ class LifecycleAndDispatchTests(TestCase):
 
         self.modern()
         with (
+            patch("apps.orchestrator.runtime_operator.capture_cron_declarations", return_value=[job()]),
             patch("apps.orchestrator.runtime_operator.list_crons", return_value=[job()]),
             patch("apps.cron.share_cron_sync.write_tenant_crons_file", side_effect=RuntimeError("share")),
             self.assertRaises(RuntimeError),
@@ -596,7 +606,8 @@ class LifecycleAndDispatchTests(TestCase):
         self.modern()
         managed = job(declarationKey="nbhd:1")
         with (
-            patch("apps.orchestrator.runtime_operator.list_crons", side_effect=[[managed], [managed], [], []]),
+            patch("apps.orchestrator.runtime_operator.capture_cron_declarations", return_value=[managed]),
+            patch("apps.orchestrator.runtime_operator.list_crons", side_effect=[[managed], [], []]),
             patch("apps.cron.share_cron_sync.write_tenant_crons_file"),
             patch("apps.orchestrator.runtime_operator.set_cron_enabled") as toggle,
             patch("time.sleep") as sleep,

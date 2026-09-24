@@ -7,9 +7,7 @@ its source cron export contains reminder payloads and must never be printed.
 from __future__ import annotations
 
 import copy
-import json
 import re
-import subprocess
 import time
 import uuid
 from datetime import timedelta
@@ -41,6 +39,12 @@ class MigrationError(RuntimeError):
     pass
 
 
+class VerificationError(MigrationError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
 def _save(tenant, record):
     record["updated_at"] = timezone.now().isoformat()
     record["lease_until"] = (timezone.now() + timedelta(minutes=30)).isoformat()
@@ -51,38 +55,72 @@ def _save(tenant, record):
 
 
 def registry_digest(image: str) -> str:
-    """ACR metadata only. Never include CLI stderr (which may contain credentials)."""
-    if "@sha256:" in image:
-        digest = image.rsplit("@", 1)[1]
-    else:
+    """Resolve through ACR's data plane using the system-assigned identity.
+
+    No CLI dependency, user-assigned client ID, token logging or redirects.
+    """
+    from azure.identity import ManagedIdentityCredential
+
+    try:
         registry, reference = image.split("/", 1)
-        result = subprocess.run(
-            [
-                "az",
-                "acr",
-                "repository",
-                "show",
-                "--name",
-                registry.split(".")[0],
-                "--image",
-                reference,
-                "--query",
-                "digest",
-                "--output",
-                "json",
-                "--only-show-errors",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
+        if not re.fullmatch(r"[a-z0-9]+\.azurecr\.io", registry):
+            raise ValueError("registry")
+        if "@" in reference:
+            repository, ref = reference.split("@", 1)
+            repository = repository.split(":", 1)[0]
+        else:
+            repository, ref = reference.rsplit(":", 1)
+        if repository != "nbhd-openclaw" or not re.fullmatch(r"[A-Za-z0-9_.:-]+", ref):
+            raise ValueError("reference")
+        credential = ManagedIdentityCredential()
+        try:
+            aad = credential.get_token("https://containerregistry.azure.net/.default").token
+        finally:
+            credential.close()
+        exchange = requests.post(
+            f"https://{registry}/oauth2/exchange",
+            data={"grant_type": "access_token", "service": registry, "access_token": aad},
+            timeout=30,
+            allow_redirects=False,
         )
-        if result.returncode:
-            raise MigrationError("ACR digest check failed: image missing or registry permission unavailable")
-        digest = json.loads(result.stdout)
-    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-        raise MigrationError("ACR did not return a valid digest")
-    return digest
+        exchange.raise_for_status()
+        token = requests.post(
+            f"https://{registry}/oauth2/token",
+            data={
+                "grant_type": "refresh_token",
+                "service": registry,
+                "scope": f"repository:{repository}:pull",
+                "refresh_token": exchange.json()["refresh_token"],
+            },
+            timeout=30,
+            allow_redirects=False,
+        )
+        token.raise_for_status()
+        response = requests.head(
+            f"https://{registry}/v2/{repository}/manifests/{ref}",
+            headers={
+                "Authorization": "Bearer " + token.json()["access_token"],
+                "Accept": ", ".join(
+                    (
+                        "application/vnd.oci.image.manifest.v1+json",
+                        "application/vnd.oci.image.index.v1+json",
+                        "application/vnd.docker.distribution.manifest.v2+json",
+                        "application/vnd.docker.distribution.manifest.list.v2+json",
+                    )
+                ),
+            },
+            timeout=30,
+            allow_redirects=False,
+        )
+        response.raise_for_status()
+        digest = response.headers.get("Docker-Content-Digest")
+        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ValueError("digest")
+        if "@" in reference and digest != ref:
+            raise ValueError("digest mismatch")
+        return digest
+    except Exception:
+        raise MigrationError("acr_digest_unavailable") from None
 
 
 def get_app(tenant):
@@ -134,22 +172,36 @@ def capture(tenant, record):
     from apps.cron.postgres_canonical import upsert_from_gateway_jobs
     from apps.orchestrator.cron_reconcile import _complete_cron_observation, _is_unmanaged_cron
 
-    # Persist the HTTP export BEFORE touching Postgres or creating any revision.
-    if "cron_export" not in record:
-        response = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-        jobs = _complete_cron_observation(response)
-        if jobs is None or not isinstance(jobs, list):
-            raise MigrationError("Cron provenance uncertain: HTTP cron.list did not return a complete list")
-        if any(not isinstance(j, dict) or not j.get("name") or not (j.get("id") or j.get("jobId")) for j in jobs):
-            raise MigrationError("Cron provenance uncertain: unnamed or unidentified jobs")
-        names = [j["name"] for j in jobs]
-        if len(set(names)) != len(names):
-            raise MigrationError("Cron provenance uncertain: duplicate names require operator review")
-        record["cron_export"] = jobs
-        record["cron_export_at"] = timezone.now().isoformat()
-        record["cron_source"] = "live HTTP cron.list, includeDisabled=true; no fallback"
-        _save(tenant, record)
-    jobs = record["cron_export"]
+    from .cron_declarations import supported_declaration
+
+    # The source stays writable until cutover. Every retry obtains fresh truth.
+    response = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+    jobs = _complete_cron_observation(response)
+    if jobs is None or not isinstance(jobs, list):
+        raise MigrationError("Cron provenance uncertain: incomplete live export")
+    if any(not isinstance(j, dict) or not j.get("name") or not (j.get("id") or j.get("jobId")) for j in jobs):
+        raise MigrationError("Cron provenance uncertain: unnamed or unidentified jobs")
+    if len({j["name"] for j in jobs}) != len(jobs):
+        raise MigrationError("Cron provenance uncertain: duplicate names")
+    if any(not supported_declaration(j) for j in jobs):
+        raise MigrationError("unsupported_cron")
+    previous = record.get("cron_export")
+    if previous is not None and previous != jobs:
+        record.setdefault("cron_export_history", []).append({"at": record.get("cron_export_at"), "jobs": previous})
+    # Record import ownership BEFORE the first DB write, so interrupted imports
+    # can update their own rows without replacing pre-existing canonical truth.
+    owned = set(record.get("imported_names", []))
+    if "imported_names" not in record:
+        existing = set(CronJob.objects.filter(tenant=tenant).values_list("name", flat=True))
+        owned = {j["name"] for j in jobs} - existing if tenant.postgres_cron_canonical else {j["name"] for j in jobs}
+    else:
+        existing = set(CronJob.objects.filter(tenant=tenant).values_list("name", flat=True))
+        owned |= {j["name"] for j in jobs} - existing
+    record["imported_names"] = sorted(owned)
+    record["cron_export"] = jobs
+    record["cron_export_at"] = timezone.now().isoformat()
+    record["cron_source"] = "live HTTP cron.list, includeDisabled=true; no fallback"
+    _save(tenant, record)
     # Canonical rows win conflicts; the export remains available for recovery.
     # A noncanonical import cannot replace typed rows from a different authority.
     if not tenant.postgres_cron_canonical and CronJob.objects.filter(tenant=tenant, creation_path="typed").exists():
@@ -161,6 +213,9 @@ def capture(tenant, record):
             delete_missing=False,
             preserve_existing=tenant.postgres_cron_canonical,
         )
+        # Re-capture user edits/cancellations only for rows owned by this import.
+        upsert_from_gateway_jobs(tenant, [j for j in jobs if j["name"] in owned], delete_missing=False)
+        CronJob.objects.filter(tenant=tenant, name__in=owned - {j["name"] for j in jobs}).update(enabled=False)
     Tenant.objects.filter(pk=tenant.pk).update(postgres_cron_canonical=True)
     tenant.postgres_cron_canonical = True
     # Keep non-agent unmanaged rows in the signed desired set permanently. Agent
@@ -175,6 +230,10 @@ def capture(tenant, record):
     ]
     record["preserved_unmanaged_ids"] = [str(pk) for pk in preserved]
     record["needs_agent_resync"] = needs_resync
+    from .cron_declarations import supported_declaration
+
+    if any(not supported_declaration(j) for j in _desired_jobs(tenant)):
+        raise MigrationError("unsupported_cron")
     _save(tenant, record)
     return {
         **result,
@@ -182,6 +241,74 @@ def capture(tenant, record):
         "needs_agent_resync": needs_resync,
         "disabled_retained": CronJob.objects.filter(tenant=tenant, enabled=False).count(),
     }
+
+
+def assert_cutover_safe(jobs):
+    from apps.cron.pending_at_views import _at_fires_at_ms
+
+    from .hibernation import _find_earliest_next_run
+
+    now = int(timezone.now().timestamp() * 1000)
+    for job in jobs:
+        if (job.get("state") or {}).get("runningAtMs") or job.get("runningAtMs"):
+            raise MigrationError("cron_running")
+        if not job.get("enabled", True):
+            continue
+        schedule = job.get("schedule") or {}
+        due = _at_fires_at_ms(job) if schedule.get("kind") == "at" else _find_earliest_next_run([job], now)
+        if due is None:
+            raise MigrationError("cron_next_fire_unknown")
+        if due <= now + 20 * 60 * 1000:
+            raise MigrationError("cron_imminent")
+
+
+def one_shot_dispositions(tenant, record):
+    from apps.cron.pending_at_views import _at_fires_at_ms
+
+    exports = [h["jobs"] for h in record.get("cron_export_history", [])] + [record.get("cron_export", [])]
+    captured_by_id = {
+        j.get("id") or j.get("jobId"): j
+        for jobs in exports
+        for j in jobs
+        if (j.get("schedule") or {}).get("kind") == "at"
+    }
+    captured = list(captured_by_id.values())
+    if not captured:
+        return
+    observed = runtime_operator.list_crons(tenant)
+    rows = {r.name: str(r.pk) for r in CronJob.objects.filter(tenant=tenant)}
+    now = int(timezone.now().timestamp() * 1000)
+    dispositions = []
+    delivered_ids = {d["id"] for d in record.get("one_shot_dispositions", []) if d["disposition"] == "delivered"}
+    for job in captured:
+        due = _at_fires_at_ms(job)
+        matches = [
+            j
+            for j in observed
+            if j.get("id") == (job.get("id") or job.get("jobId"))
+            or j.get("declarationKey") == "nbhd:" + rows.get(job["name"], "missing")
+        ]
+        delivered = any(
+            (j.get("state") or {}).get("lastDelivered") is True
+            and (j.get("state") or {}).get("lastRunAtMs", 0) >= (due or now)
+            for j in matches
+        )
+        if not job.get("enabled", True):
+            disposition = "disabled_retained"
+        elif delivered or (job.get("id") or job.get("jobId")) in delivered_ids:
+            disposition = "delivered"
+        elif due and due > now and len(matches) == 1 and matches[0].get("enabled", True):
+            disposition = "pending_runtime"
+        elif due and due <= now:
+            disposition = "expired_undelivered"
+        else:
+            disposition = "pending_missing"
+        dispositions.append({"id": job.get("id") or job.get("jobId"), "disposition": disposition})
+    record["one_shot_dispositions"] = dispositions
+    if any(d["disposition"] == "expired_undelivered" for d in dispositions):
+        raise MigrationError("one_shot_expired_undelivered")
+    if any(d["disposition"] == "pending_missing" for d in dispositions):
+        raise MigrationError("one_shot_pending_missing")
 
 
 def wait_healthy(tenant, *, image=None, suffix=None, timeout=300):
@@ -210,6 +337,11 @@ def image_step(tenant, record):
     image, suffix = evidence["target_image"], evidence["revision_suffix"]
     app = get_app(tenant)
     if _image(app) != image or app.template.revision_suffix != suffix:
+        if VERSION in _image(app):
+            raise MigrationError("unexpected_target_revision")
+        record["evidence"]["capture"] = capture(tenant, record)
+        assert_cutover_safe(record["cron_export"])
+        _save(tenant, record)
         azure_client.update_container_image(tenant.container_id, image, revision_suffix=suffix, operation_timeout=300)
     # If a process died after the Azure write, re-use that revision instead of
     # creating another revision and losing the just-restored ephemeral state.
@@ -278,6 +410,7 @@ def verify(tenant, record):
     for index in range(2):
         if index:
             time.sleep(25)
+        one_shot_dispositions(tenant, record)
         inspection = runtime_operator.inspect_signed_crons(tenant)
         if not _signed_match(inspection) or {m["key"] for m in inspection["matches"]} != expected_keys:
             record["verification_failure"] = {"inspection": inspection, "expected_keys": sorted(expected_keys)}
@@ -313,8 +446,21 @@ def verify_existing(tenant, record):
         result = verify(tenant, evidence)
         return {"status": "NOOP", "steps": [], "note": "Already on 9.4; verification PASS", "verification": result}
     except Exception as exc:
-        reason = str(exc) if isinstance(exc, (MigrationError, runtime_operator.OperatorError)) else type(exc).__name__
-        raise MigrationError(f"Already on 9.4; verification FAILED: {reason}. {RECOVERY}") from None
+        reason = (
+            str(exc)
+            if isinstance(exc, (MigrationError, runtime_operator.OperatorError))
+            else "verification_unavailable"
+        )
+        codes = {
+            "Already-9.4 Azure image and DB version/tag disagree": "image_version_mismatch",
+            "Operator cron metadata does not match Postgres desired set": "cron_mismatch",
+            "Unmatched enabled legacy cron remains; duplicate cleanup requires operator review": "legacy_crons_unresolved",
+            "Cron IDs changed across two polls 25 seconds apart": "cron_ids_unstable",
+            "Recent console logs contain migration/runtime errors": "runtime_errors",
+            "Bounded revision/proxy-health/healthz wait expired": "health_unavailable",
+        }
+        code = codes.get(reason, reason if re.fullmatch(r"[a-z_]+", reason) else "verification_unavailable")
+        raise VerificationError(code) from None
 
 
 def migrate_tenant(tenant_id, tag: str, *, dry_run=False) -> dict:

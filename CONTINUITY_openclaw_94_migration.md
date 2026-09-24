@@ -14,8 +14,8 @@ Owner: Codex
 - Fail closed on ambiguous cron provenance and failed verification.
 ## State
 - Done: Implementation, runbook, 213 focused tests, static/migration checks; final Docker gate green (9292 tests, 43 skipped; frontend lint/build PASS).
-- Now: Complete: implementation commit d6081fca pushed; draft PR #1650 open against main.
-- Next: Release orchestrator review and later canary execution. No production execution by this task.
+- Now: Fix round 1 complete and validated; committing/pushing scoped changes on the same branch.
+- Next: Commit/push fix round 1, then release orchestrator review and canaries. No production execution by this task.
 ## Links
 - Upstream: CONTINUITY.md
 - Related: docs/runbooks/openclaw-94-migration.md
@@ -58,3 +58,40 @@ Owner: Codex
 - Final Docker gate PASS on complete code: 9292 backend tests / 43 skipped; frontend lint and static build PASS; exit 0. Focused suite 213 PASS, Ruff lint/format PASS, migration drift check no changes, diff whitespace checks PASS. No production calls.
 - Git: implementation d6081fca pushed on feat/openclaw-94-tenant-migration; draft PR https://github.com/performlikemj/nbhd-united/pull/1650 targets main; never merged. Final ledger-only completion commit does not change validated code.
 - Open release risks: real ACR/console/canary behavior and synthetic chat/Brave/delivery/hibernate checks remain for release orchestrator; resolve agent re-sync IDs and maintenance-window one-shots. No inverse migration or automatic rollback.
+
+## Fix round 1
+- Goal: R1–R8 regression-first fixes and read-only verify-only; no production access.
+- Now: reproducing review findings; next focused checks, Docker gate, scoped commit and push.
+
+### Fix round 1 regression evidence
+- Initial regression-first run: 20 tests, 7 failures / 3 errors. Reproduced R1 real-redactor response loss; R2 absent resume and poisoned snapshot; R3 recovery cleared with missing jobs; R4 false PASS after expiration; R5 stale export reused; R6 destination mismatch accepted; R7 CLI-dependent registry failure; R8 no warning; verify-only unknown option. Added imminent/unsupported preflight tests also failed before fixes.
+- Implemented private outer-node response, private share-to-DB full declaration capture and verified restore, aborted-suspension recovery, snapshot retention, live re-capture/history and owned-row cancellation, 20-minute/running cutover guard, explicit one-shot dispositions, shared supported-field contract and execution-field mapping, system-assigned MI ACR data plane, structured warning and read-only verify-only codes.
+- Local focused suite: 161 PASS. Node sync suite: 28 PASS, 1 optional pinned package-source test skipped. Ruff check/format PASS; makemigrations --check --dry-run no changes; git diff --check PASS.
+- Docker gate started after confirming no nbhd-docker-gate container was running; log /private/tmp/oc94-r1-docker-gate.log. Only local isolated Postgres used (port 55494).
+- Own local Postgres volume: 510eccb009cc1d88b05a1d0fa16e7723899c720d2a9ad815ccedcb19604b5c1e; retain ownership evidence for targeted cleanup only.
+
+- Extra integration probe found ES-module export syntax in the embedded controller comparator. Added to real-redactor regression, observed failure, fixed, then 161 focused tests passed again. Offline real-Node controller bridge also PASS.
+- First round-1 Docker gate intentionally stopped (137) after this fix; its own volume d9a06bfc26e042b3c739e89a9291a887f1e2fb14af793f9d44d60a900910225f removed. Corrected serialized gate running; log /private/tmp/oc94-r1-docker-gate-final.log.
+
+- R8 lookahead follow-up: regression reproduced an unstructured traceback and two warnings when queue retry also failed. Both unknown-cron-state idle paths now emit one payload-free structured WARNING. Expanded focused suite: 173 PASS; Ruff/format PASS.
+- Superseded second gate stopped before full tests; removed only its recorded volume c0f01e72bb8f7f0d83f487a2bfc141fdd2cf7bef506b4fc6bce82d6368169dc4. Final complete-code serialized gate: /private/tmp/oc94-r1-docker-gate-complete.log.
+- Draft PR #1650 confirmed open/draft, head feat/openclaw-94-tenant-migration, base main. No production access or merges.
+
+### Regression index (all included in the passing 173-test focused suite)
+- R1: test_r1_real_redactor_private_response_survives — no NBHD_RESULT before fix; real redactor and embedded pinned comparator pass after fix.
+- R2: test_r2_aborted_hibernate_resumes_scheduling / test_r2_retry_keeps_original_snapshot — missing resume and overwritten snapshot reproduced; also test_r2_azure_failure_restores_before_return.
+- R3: test_r3_missing_noncanonical_job_cannot_clear_recovery — state incorrectly cleared before fix; full declaration durability, verified resume, real-Node private-file recreation covered by additional R3 tests.
+- R4: test_r4_expired_captured_one_shot_fails_verification / test_r4_imminent_job_defers_before_image — both previously failed to raise; test_r4_all_one_shot_dispositions_accounted_for covers pending/delivered.
+- R5: test_r5_retry_recaptures_live_edit_and_keeps_history — zero HTTP calls before fix; live recapture, history and canceled imported-row handling now pass.
+- R6: test_r6_destination_mismatch_never_matches_or_deletes / test_r6_unsupported_declaration_rejected_at_capture — false match and accepted unsupported delivery reproduced; all mapped execution fields tested with Node.
+- R7: test_r7_system_identity_acr_data_plane — CLI-dependent failure before fix; mocked AAD/exchange/token/manifest HEAD succeeds with exact pull scope, no client ID.
+- R8: test_r8_suspend_probe_failure_warns_once_without_payload — missing warning before fix; lookahead test_gateway_failure_defers_even_if_retry_publish_fails also reproduced traceback/two warnings, now single structured line.
+- Verify-only: test_verify_only_is_read_only_and_reason_codes_only — unknown option before fix; PASS code and unchanged DB record after fix.
+- Final gate's own Postgres volume: 660abbdaec232c3caf039ad4529e7db2c71193c886b5ccf29ee2857d31c62c26 (container suffix 81340).
+
+### Fix round 1 final validation
+- `ruff check .`: PASS; `ruff format --check .`: PASS (1677 files); `makemigrations --check --dry-run`: no changes; `git diff --check`: PASS.
+- Focused suite: 173 tests PASS. Real Node/redactor regressions executed locally. Node signed-sync suite: 28 PASS / 1 optional package-source check skipped.
+- Complete-code `make docker-gate`: PASS, exit 0. Backend: 9324 tests in 681.094s, 52 skipped; config validator/security audit PASS; frontend lint and static build PASS. Log: /private/tmp/oc94-r1-docker-gate-complete.log.
+- Removed only own recorded anonymous volumes and own nbhd-oc94-r1-tests container; no broad Docker pruning. No production calls, deployment or merge.
+- Release risks: build a fresh runtime image with the updated signed adapter; real managed-identity/ACR and console behavior still require approved canaries. Unsupported declarations and unresolved expired one-shots intentionally stop migration. Existing ID-only lifecycle recovery records cannot prove missing payload restoration and remain blocked for manual recovery.

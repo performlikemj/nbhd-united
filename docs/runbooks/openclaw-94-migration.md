@@ -159,3 +159,53 @@ reset completed steps, or run a competing image bump to force progress.
 Operational CLI contracts are checked against the upstream
 [9.4 cron commands](https://github.com/openclaw/openclaw/blob/v2026.9.4/src/cli/cron-cli/register.cron-simple.ts)
 and [config revision response](https://github.com/openclaw/openclaw/blob/v2026.9.4/src/gateway/config-get-response.ts).
+
+## Review-round safety checks and read-only verification
+
+For an already-9.4 tenant, use `--verify-only` (in the approved management
+context, by the release orchestrator):
+
+```sh
+python manage.py migrate_tenant_openclaw --tenant <uuid> --verify-only
+```
+
+This performs no tenant, image, config, cron, or migration-record writes.
+Output is `PASS verified` or `FAIL <reason_code>`; failure exits nonzero and stops
+the explicit batch. It checks the tenant's existing image, regardless of the
+configured fleet target. Use this for the MJ and `1c77c8c1` health checks.
+
+- ACR digest resolution uses the Django container's **system-assigned managed
+  identity**, requiring AcrPull on `nbhdunited`. It uses the ACR token exchange
+  and manifest HEAD APIs, with no Azure CLI dependency or token logging.
+- Every capture retry and the final pre-image check read live HTTP truth again.
+  Earlier exports remain in private `cron_export_history`; import-owned canceled
+  rows are disabled, and edited rows are refreshed without deleting other DB rows.
+- Running jobs, unknown next-fire times, and jobs due within 20 minutes defer
+  image replacement (`cron_running`, `cron_next_fire_unknown`, `cron_imminent`).
+  Choose a quiet maintenance window; frequent recurring jobs may require an
+  explicitly coordinated scheduling change before migration can proceed.
+- Unknown execution fields and unsupported declarations fail before replacement
+  (`unsupported_cron`). The shared field contract preserves delivery recipient,
+  channel, account/thread, session, retention, thinking, pacing and other mapped
+  execution controls. Arbitrary scripts and fixed interval anchors are refused.
+- Verification records every captured one-shot, including historical exports.
+  Expired reminders without positive delivery evidence fail with
+  `one_shot_expired_undelivered`; missing future reminders fail with
+  `one_shot_pending_missing`. Cancellation vs. delivery cannot be inferred from
+  absence alone. Review private records and delivery evidence before recovery;
+  never mark an absent reminder delivered merely to pass verification.
+- Hibernation stores full noncanonical declarations in private
+  `cron_suspend_state`, transfers them through authenticated share files, and
+  recreates lost jobs after EmptyDir destruction. Payloads never cross
+  `NBHD_RESULT` or appear in logs. Temporary files are removed after transfer.
+  The recovery record clears only after restored declarations and signed jobs
+  are verified. An aborted suspension resumes scheduling immediately; failed
+  recovery retains the record and original schedule snapshot for retry.
+- `idle_hibernate_skipped tenant=<short-id> reason=<code>` is one structured
+  WARNING per failed capture/suspend/probe attempt. Monitor this in Log Analytics
+  for unexpectedly awake containers and retained recovery records.
+
+Deploy the orchestrator changes and build a fresh OpenClaw image from this
+branch before migrating. The controller supplies its current comparison code
+for read-only checks and restoration on existing 9.4 images; the image's signed
+poller also needs the updated adapter to apply all execution fields.

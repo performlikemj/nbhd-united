@@ -86,7 +86,7 @@ class ApplyPendingConfigsImageTests(TestCase):
         self.assertEqual(response.json()["image_enqueued"], 0)
         self.assertEqual(response.json()["image_skipped_imminent_cron"], 1)
         self.assertEqual(_extract_batch_tasks(mock_batch, "apply_single_tenant_image"), [])
-        self.assertIn(str(tenant.id), logs.output[0])
+        self.assertIn(str(tenant.id)[:8], logs.output[0])
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
     @patch("apps.cron.publish.publish_batch", side_effect=_batch_return_len)

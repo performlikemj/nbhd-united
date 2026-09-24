@@ -1,0 +1,61 @@
+{
+  "job": [
+    "id",
+    "jobId",
+    "name",
+    "displayName",
+    "description",
+    "declarationKey",
+    "enabled",
+    "schedule",
+    "payload",
+    "delivery",
+    "sessionTarget",
+    "sessionKey",
+    "wakeMode",
+    "agentId",
+    "deleteAfterRun",
+    "pacing",
+    "state",
+    "createdAt",
+    "createdAtMs",
+    "updatedAtMs",
+    "nextRunAtMs",
+    "runningAtMs",
+    "status"
+  ],
+  "payload": [
+    "kind",
+    "message",
+    "text",
+    "event",
+    "model",
+    "fallbacks",
+    "thinking",
+    "timeoutSeconds",
+    "toolsAllow",
+    "toolsAllowIsDefault",
+    "lightContext"
+  ],
+  "delivery": [
+    "mode",
+    "channel",
+    "to",
+    "accountId",
+    "threadId",
+    "bestEffort"
+  ],
+  "schedule": [
+    "kind",
+    "expr",
+    "tz",
+    "everyMs",
+    "at",
+    "atMs",
+    "staggerMs"
+  ],
+  "pacing": [
+    "min",
+    "max"
+  ]
+}

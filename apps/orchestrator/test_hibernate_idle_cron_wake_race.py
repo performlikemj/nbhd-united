@@ -376,8 +376,10 @@ class CronActiveOrImminentTests(TestCase):
                 mock_invoke.side_effect = error
                 with self.assertLogs("apps.orchestrator.hibernation", level="WARNING") as logs:
                     self.assertEqual(_cron_active_or_imminent(tenant), "cron_state_unknown")
-                self.assertIn(str(tenant.id), logs.output[0])
-                self.assertIn("deferring hibernation/image replacement", logs.output[0])
+                self.assertIn(str(tenant.id)[:8], logs.output[0])
+                self.assertEqual(len(logs.output), 1)
+                self.assertIn("reason=cron_state_unknown", logs.output[0])
+                self.assertNotIn("Traceback", logs.output[0])
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_skips_disabled_jobs(self, mock_invoke):

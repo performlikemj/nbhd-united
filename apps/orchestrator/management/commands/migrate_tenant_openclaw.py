@@ -5,6 +5,7 @@ import uuid
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from apps.orchestrator import openclaw_migration
 from apps.orchestrator.openclaw_migration import MigrationError, migrate_tenant
 from apps.tenants.models import Tenant
 
@@ -17,7 +18,9 @@ class Command(BaseCommand):
         scope.add_argument("--tenant")
         scope.add_argument("--tenants", help="Comma-separated explicit UUID list; stops on first failure")
         parser.add_argument("--tag", default=None)
-        parser.add_argument("--dry-run", action="store_true")
+        mode = parser.add_mutually_exclusive_group()
+        mode.add_argument("--dry-run", action="store_true")
+        mode.add_argument("--verify-only", action="store_true")
 
     def handle(self, *args, **options):
         raw = options["tenant"] or options["tenants"]
@@ -29,6 +32,16 @@ class Command(BaseCommand):
             raise CommandError("Unknown tenant in batch; nothing changed")
         tag = options["tag"] or settings.OPENCLAW_IMAGE_TAG
         for tenant_id in ids:
+            if options["verify_only"]:
+                tenant = Tenant.objects.get(pk=tenant_id)
+                try:
+                    openclaw_migration.verify_existing(tenant, tenant.openclaw_migration or {})
+                except openclaw_migration.VerificationError as exc:
+                    raise CommandError(f"FAIL {exc.code}") from None
+                except Exception:
+                    raise CommandError("FAIL verification_unavailable") from None
+                self.stdout.write("PASS verified")
+                continue
             try:
                 result = migrate_tenant(tenant_id, tag, dry_run=options["dry_run"])
             except MigrationError as exc:

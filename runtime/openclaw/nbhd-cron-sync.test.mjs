@@ -177,7 +177,7 @@ test("buildAddArgs: parameters never enable a command/script payload or field", 
     assert.equal(buildAddArgs(job), null);
   }
   const event = typedJob();
-  event.payload.kind = "systemEvent";
+  event.payload = {kind:"systemEvent", text:"event"};
   const args = buildAddArgs(event);
   assert.ok(args.includes("--system-event"));
   for (const flag of ["--model", "--fallbacks", "--timeout-seconds", "--tools", "--light-context", "--command", "--script"]) {
@@ -204,6 +204,8 @@ test("sameCron: contract-only change detected; runtime state ignored", () => {
   const current = typedJob();
   const desired = typedJob();
   current.id = "runtime-id";
+  current.status = "idle";
+  current.schedule.staggerMs = 0;
   current.state = { nextRunAtMs: 99999 };
   current.schedule.anchorMs = 1234;
   current.wakeMode = "now";
