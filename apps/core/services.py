@@ -178,7 +178,11 @@ def _recent_meditation_entries(tenant: Tenant, *, limit: int = 20) -> list[dict]
         entry = {"date": row["date"].isoformat() if row["date"] else "", "title": title, "theme": theme}
         lesson = row["lesson"]
         if isinstance(lesson, dict) and lesson:
-            entry["lesson"] = {key: lesson.get(key, "") for key in ("tradition", "teaching_slug", "core_teaching")}
+            entry["lesson"] = {
+                key: lesson.get(key, "")
+                for key in ("tradition", "teaching_slug", "core_teaching", "intention")
+                if key in lesson
+            }
         entries.append(entry)
     return entries
 

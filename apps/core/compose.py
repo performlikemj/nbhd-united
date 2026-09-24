@@ -28,7 +28,7 @@ from pydantic import ValidationError
 from apps.billing.constants import DEEPSEEK_FLASH_MODEL, DEEPSEEK_MODEL, GEMMA_MODEL
 from apps.common.openrouter import NoUsableChoicesError, chat_completion
 from apps.core import render
-from apps.core.lesson import TRADITIONS, MeditationLesson, MeditationManifest, normalize_teaching_slug
+from apps.core.lesson import INTENTIONS, TRADITIONS, MeditationLesson, MeditationManifest, normalize_teaching_slug
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +123,11 @@ _SYSTEM_PROMPT = (
     '  global_tone: "soft, slow, warm; unhurried with generous space"\n'
     "  total_target_seconds: 600\n"
     "  ambient: null\n"
-    "  lesson: { tradition, teaching_slug, core_teaching, summary, practice }\n"
+    "  lesson: { tradition, intention, teaching_slug, core_teaching, summary, practice }\n"
     f"    tradition: exactly one of {', '.join(TRADITIONS)}; other is the honest exit\n"
+    f"    intention: exactly one of {', '.join(INTENTIONS)}; other is the honest exit when none fits\n"
+    "    intention names the personal invitation actually expressed in the narration, independent of tradition.\n"
+    "    Use release-control for invitations to loosen planning or control; do not relabel them to evade variety.\n"
     "    teaching_slug: kebab-case tag for the ONE idea, 2-40 characters\n"
     "    core_teaching: one sentence, at most 200 characters\n"
     "    summary: 2-3 sentences, at most 400 characters\n"
@@ -170,6 +173,7 @@ _SYSTEM_PROMPT = (
     "one re-anchoring cue, the closing takeaway — while a guided one sits at the high end. Never name the "
     "density and never add a key for it.\n\n"
     "VARIETY — every sit must feel like a new doorway:\n"
+    "- Do not repeat an intention in AVOID INTENTIONS; choose a different personal invitation, not just a new label.\n"
     "- Do not reuse any `teaching_slug` that appears in RECENT MEDITATIONS.\n"
     "- Do not use the same `tradition` as either of the two most recent sits.\n"
     "- Your input may include a RECENT MEDITATIONS list (newest first, with each sit's title and theme). "
@@ -181,7 +185,7 @@ _SYSTEM_PROMPT = (
     "WISDOM LESSON — each sit teaches ONE small idea:\n"
     f"- Draw it from these traditions: {', '.join(TRADITIONS)}.\n"
     "- The teaching in the phases and the closing takeaway must express the SAME idea as lesson.\n"
-    "- CHOOSE the idea to serve what today's signals show this person is carrying — not at random. Rotate "
+    "- CHOOSE the idea to support today's concrete aspect and chosen intention. Rotate "
     "which tradition you draw on against the recent sits.\n"
     "- Teach it plainly and invitationally, in a sentence or two, within core_practice or a teaching "
     'phase. Attribute it simply where that helps ("the Stoics called this…", "there is a Zen word for this…").\n'
@@ -212,8 +216,9 @@ _SYSTEM_PROMPT = (
     "- Speech text is short (1-3 sentences), calm, second-person, present-tense. Never read instructions aloud.\n"
     '- Always address them as "you". NEVER use a name or any [BRACKETED_TOKEN] — those are voiced literally by TTS.\n'
     "- The heart of the sit — core_practice, or whichever middle phase carries it — is the personalized part: "
-    "gently name what the signals suggest they're carrying, and offer permission to set it down. Be specific "
-    "but kind; never clinical, never list their data back.\n"
+    "pick ONE concrete aspect of today and offer ONE intention from the intention vocabulary. "
+    "Do NOT treat planning, organizing, building, or ambition as a flaw to fix unless today's signals "
+    "explicitly show distress about it. Be kind and specific; never clinical, never list their data back.\n"
     "- closing gives one small carry-forward intention.\n\n"
     "OUTPUT FORMAT (strict):\n"
     "- Write ALL text — title, theme, every speech segment — in ENGLISH.\n"
@@ -303,6 +308,19 @@ def _recent_meditation_lines(entries: list, *, budget: int = _RECENT_MEDITATIONS
     return lines
 
 
+def _recent_intentions(entries: list) -> list[tuple[dict, str]]:
+    """Known intentions within five sits, including legacy sits in the window."""
+    result = []
+    for entry in entries[:5]:
+        if not isinstance(entry, dict):
+            continue
+        lesson = entry.get("lesson")
+        intention = lesson.get("intention") if isinstance(lesson, dict) else None
+        if intention in INTENTIONS and intention != "other":
+            result.append((entry, intention))
+    return result
+
+
 def _format_signals(signals: dict, target_seconds: float = render.DEFAULT_TOTAL_TARGET_SECONDS) -> str:
     """Render the gathered signals as a compact prompt context (no raw PII dumps)."""
     lines: list[str] = ["Here is what you've gathered about this person's recent days:"]
@@ -310,6 +328,10 @@ def _format_signals(signals: dict, target_seconds: float = render.DEFAULT_TOTAL_
     if recent_meditations:
         lines.append("RECENT MEDITATIONS (newest first):")
         lines.extend(recent_meditations)
+    intentions = dict.fromkeys(i for _, i in _recent_intentions(signals.get("recent_meditations") or []))
+    if intentions:
+        # Independent of the prose history budget: never truncate this constraint.
+        lines.append("AVOID INTENTIONS (used in last 5 sits): " + ", ".join(intentions))
     notes = signals.get("recent_notes") or []
     if notes:
         lines.append("Recent daily-note snippets:")
@@ -333,8 +355,8 @@ def _format_signals(signals: dict, target_seconds: float = render.DEFAULT_TOTAL_
         lines.append(f"What they've asked to keep in mind: {signals['additional_context']}")
     if len(lines) == 1:
         lines.append(
-            "- (little specific signal this week — compose a gentle, universal sit about arriving, "
-            "breathing, and setting down whatever today held)"
+            "- (little specific signal this week — choose one present-moment aspect, such as breath or "
+            "contact with the chair, and one fresh intention from the vocabulary; do not invent a burden)"
         )
     minutes = max(1, round(target_seconds / 60))
     scale = target_seconds / render.DEFAULT_TOTAL_TARGET_SECONDS
@@ -489,7 +511,9 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
     lessons = [(e, e.get("lesson") or {}) for e in recent if isinstance(e.get("lesson"), dict)]
     traditions = [(e, lesson["tradition"]) for e, lesson in lessons if lesson.get("tradition")][:2]
     slugs = [(e, str(lesson["teaching_slug"])) for e, lesson in lessons if lesson.get("teaching_slug")]
+    intentions = _recent_intentions(signals.get("recent_meditations") or [])
     last_valid_clash = None
+    last_clash_reason = ""
 
     for model_id in candidates:
         model_body = dict(body)
@@ -566,8 +590,13 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
                 ),
                 None,
             )
+            clash_reason = "teaching_slug"
             if clash is None:
+                clash_reason = "tradition"
                 clash = next((e for e, tradition in traditions if tradition == lesson.tradition), None)
+            if clash is None:
+                clash_reason = "intention"
+                clash = next((e for e, intention in intentions if intention == lesson.intention), None)
             if clash is None:
                 logger.info(
                     "compose: outcome=%s reason=%s model=%s slug=%s",
@@ -579,19 +608,22 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
                 return manifest
 
             last_valid_clash = manifest
+            last_clash_reason = clash_reason
             if attempt:
-                _record(model_id, f"variety_clash reason=variety_clash retry_reason={retry_reason}")
+                _record(model_id, f"variety_clash reason={clash_reason} retry_reason={retry_reason}")
                 break
             rejection = (
-                f"Rejected: teaching '{lesson.teaching_slug}' / tradition '{lesson.tradition}' repeats the sit on {clash.get('date', 'unknown')}. "
-                f"Choose a different teaching AND a tradition not in {[t for _, t in traditions]}; avoid all of: {[slug for _, slug in slugs]}."
+                f"Rejected: reason={clash_reason}; intention '{lesson.intention}' / teaching '{lesson.teaching_slug}' / tradition '{lesson.tradition}' repeats the sit on {clash.get('date', 'unknown')}. "
+                f"Choose a different teaching AND a tradition not in {[t for _, t in traditions]}; avoid all of: {[slug for _, slug in slugs]}. "
+                f"Choose an intention not in {[i for _, i in intentions]}; change the personal invitation itself."
             )
             retry_reason = "variety_clash"
             model_messages = model_messages + _correction(content, rejection)
 
     if last_valid_clash is not None and not getattr(settings, "CORE_COMPOSE_STRICT_VARIETY", False):
         logger.warning(
-            "compose: variety clash accepted outcome=clash_accepted slug=%s",
+            "compose: variety clash accepted reason=%s outcome=clash_accepted slug=%s",
+            last_clash_reason,
             last_valid_clash["lesson"]["teaching_slug"],
         )
         return last_valid_clash

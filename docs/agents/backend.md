@@ -83,10 +83,14 @@ and variety clashes share one corrective retry per model, with redacted feedback
 HTTP 200 empty/unusable choices are transient and get the existing backed-off retry.
 
 The latest 20 playable sits supply history (2,600 characters, whole entries).
-Reject normalized teaching-slug repeats and either of the two latest known
-traditions; allow one corrective retry per model, then the next model. If no
+Reject normalized teaching-slug repeats, either of the two latest known
+traditions, and known intentions used in the last five sits (missing/`other` is
+unknown). A compact `AVOID INTENTIONS` line sits outside the history character
+budget. Planning and ambition alone are not evidence of distress; the prompt
+chooses one concrete aspect and one varied personal invitation.
+For each clash the corrective feedback identifies its reason; allow one corrective retry per model, then the next model. If no
 candidate succeeds but a structurally valid clash exists, accept the last one
-with a warning. `CORE_COMPOSE_STRICT_VARIETY=True` disables that fallback
+with a warning including `reason=intention` for an intention clash. `CORE_COMPOSE_STRICT_VARIETY=True` disables that fallback
 (default false). Logs expose `accepted_first`, `accepted_after_retry`, and
 `clash_accepted`. Legacy empty lessons contribute title/theme only; narration
 alignment with lesson metadata remains a prompt requirement.
@@ -94,6 +98,10 @@ alignment with lesson metadata remains a prompt requirement.
 Legacy sits need lesson backfilling to close the cold start: empty lessons cannot enforce tradition/teaching variety.
 Run `python manage.py backfill_meditation_lessons --tenant <uuid> --limit 40 --dry-run`, then repeat without `--dry-run`; dry-run makes no LLM calls or writes.
 Run per tenant, owner first; `--all` processes Core-enabled tenants with the limit applied per tenant.
+
+Add `--missing-intention` to also fill intention on existing lessons without that
+key, preserving their other fields. Existing missing intentions stay unknown until
+backfilled; new lessons require a Literal from the shared vocabulary in `lesson.py`.
 
 ## Meditation TTS
 

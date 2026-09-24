@@ -21,6 +21,22 @@ TRADITIONS: tuple[str, ...] = (
 )
 Tradition = Literal[TRADITIONS]
 
+INTENTIONS: tuple[str, ...] = (
+    "appreciation",
+    "curiosity",
+    "connection",
+    "body-awareness",
+    "courage",
+    "rest",
+    "self-kindness",
+    "patience",
+    "steadiness",
+    "joy",
+    "release-control",
+    "other",
+)
+Intention = Literal[INTENTIONS]
+
 
 def normalize_teaching_slug(value: str) -> str:
     """Comparison key: punctuation and casing cannot bypass the variety gate."""
@@ -31,6 +47,7 @@ class MeditationLesson(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     tradition: Tradition
+    intention: Intention
     teaching_slug: str = Field(min_length=2, max_length=40, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     core_teaching: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1, max_length=400)
