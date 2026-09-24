@@ -1,169 +1,196 @@
-# Cron feed, redactor, and chat delegation — round 2
+# OpenClaw 2026.9.4 — USER.md cap and cron parameter carry
 
-Branch: `fix/cron-feed-redactor-subagent`; base: `fbb00fdfda08fcb0d3a3ac52bb6140e53f365cc9`.
-Round 2 restores the deliberate scheduler response contracts. No tenant rows,
-real tenant logs, or secrets were read; prefix coverage uses the supplied
-seven-day aggregate survey and synthetic fixtures.
+## Delivery status
 
-## C3 — app feed and response contracts
+Implemented in `fix/openclaw-9-4-usermd-and-cron-sync`, continuing the saved work, based on `71f0ca40`. **Not committed and not image-build verified: sandbox permissions block both Git's worktree index and the Docker socket.** The requested two commits remain outstanding. No push, PR, deployment, production access, persistent DB access/mutations, or escalation-timer implementation occurred. Latency implementation files were not edited.
 
-- `apps/router/cron_delivery.py:358`: eligible app device → Telegram → LINE →
-  app feed; explicit eval sinks still win. A transportless user can receive a
-  feed row without allowing notifications.
-- `apps/router/cron_delivery.py:406`: one content-free reject log for every
-  non-200 response AND every `status=blocked` response. Reasons are allowlisted;
-  custom job names are hashed, and tenant IDs are shortened to eight characters.
-- `apps/router/cron_delivery.py:460`: unknown tenant returns **404** with
-  `{"error":"tenant_not_found"}`. Inactive/suspended tenant returns **200** with
-  `{"status":"blocked","reason":"tenant_not_active"}`; inactive user shares
-  that branch with reason `user_inactive`. Expected non-delivery must not cause
-  QStash/cron retries. Neither branch persists or sends.
-- `apps/router/cron_delivery.py:694`: successful app persistence returns
-  `delivered_to=["app_feed"]`, retaining the requested tenant-owned thread.
-- `apps/router/push_views.py:347` shares device eligibility between routing and
-  fan-out. `apps/router/proactive_context.py:262` guards app push scheduling:
-  no eligible token means return the persisted row without invoking a worker.
-- Tests: `apps/router/test_cron_delivery.py:83` exercises a real unknown-tenant
-  response and its single log; the status table now expects 404.
-  `apps/router/test_proactive_push.py:646` asserts exact 200/blocked bodies,
-  separate reasons, one content-free log, no feed row and no push.
-  `apps/cron/tests/test_suspension.py:226` is restored to its original 200
-  contract (therefore no remaining diff in that file).
-  Existing no/revoked-token, requested-thread/feed, eval isolation and routing
-  regressions remain. `apps/friends/test_pr6.py:352` and
-  `apps/journal/test_extraction.py:191` now verify tokenless feed delivery with
-  no push, Telegram or LINE send.
+Passed: 31 Node tests; 15 database-free Django tests; Ruff formatting and repository-wide lint; migration drift check; full-package patch/idempotence and imported-helper smoke check. The exact Docker RUN step must still pass on a machine with Docker access before rollout.
 
-### Exhaustive resolve_user_channel caller audit
+## Root causes and implementation
 
-Searched the entire repository with `rg -n 'resolve_user_channel'` (excluding
-obsolete exported patches), then checked actual Python calls with AST. There
-are **seven production call sites**; imports and historical prose are not calls.
+9.4 clamps USER.md to 4,000 characters after resolving the configurable budgets. Our 26,000/80,000 settings cannot override it; 5.28 had no USER-specific cap. The container cron adapter independently omitted typed parameters and the enforcement description when constructing CLI arguments.
 
-| Caller (call line) | Effect for an active user with no transport/token |
+| Changed file:line | Change |
 | --- | --- |
-| `apps/router/cron_delivery.py:826`, `CronDeliveryView._resolve_channel` | Returns app; endpoint entitlement branch runs first, then persists to the requested feed thread. Shared recorder guard prevents push scheduling. |
-| `apps/core/services.py:798`, `notify_meditation_ready` | Previously skipped; now records an app readiness notice. Active-tenant check remains. App branch never invokes Telegram/LINE; recorder eligibility guard prevents tokenless push. Core regression asserts feed plus no push/send. |
-| `apps/integrations/sautai_notify.py:45`, `notify_sautai_plan_ready` | Previously skipped; now records an app meal-plan readiness notice. Active-tenant check remains. App branch and recorder guard prevent transport/push calls. Updated sautai regression covers this. |
-| `apps/router/system_notify.py:58`, `_resolve_channel` | System notice uses `_send_app` and persists a feed row; returns whether persistence succeeded. Shared guard prevents tokenless push; no Telegram/LINE branch executes. |
-| `apps/friends/digest.py:87`, `_deliver_text` | Weekly digest now persists an app feed row and reports delivery on persistence. Shared guard prevents tokenless push; no messaging send occurs. New regression covers all three send boundaries. |
-| `apps/journal/extraction.py:648`, `run_extraction_for_tenant` | Extraction/reconciliation already ran; now its nonempty summary also reaches the app feed. Shared guard prevents tokenless push; no messaging summary sender runs. Existing linked-but-unconfigured messaging fallback is unchanged. Updated regression checks persistence and all send boundaries. |
-| `apps/tenants/envelope.py:50`, `_resolve_delivery_channel_label` | Profile/USER.md now labels a transportless user `NBHD app` instead of omitting the label, including provisioning renders. Labels have no send side effects; they are not entitlement checks. Both tenant and orchestrator profile fixture suites cover the labels. |
+| `runtime/openclaw/patches/user-bootstrap-cap.mjs:8` | Pins the exact 9.4 standalone bootstrap, worker, and analyzer filenames. |
+| `runtime/openclaw/patches/user-bootstrap-cap.mjs:24` | Checks package name/version, inventories all JS bundles containing the cap, asserts exact constants/clamp/export/import aliases, raises both constants to `26e3`, and replaces both analyzer literal predicates with the imported constant. Checks all proposed module syntax before writes, then `node --check`s every resulting file. Reruns are byte-for-byte no-ops. |
+| `runtime/openclaw/patches/user-bootstrap-cap.smoke.mjs:7` | Real-helper test: USER.md and SOUL.md each inject the entire 9,500-character Unicode-containing input without warnings; lower per-file and aggregate budgets still truncate. CLI entry point imports the installed helper and real dependencies. |
+| `runtime/openclaw/patches/user-bootstrap-cap.test.mjs:51` | Executes actual standalone and worker helper code with upstream string/UTF-16 helpers; compares non-USER behavior before/after; tests analyzer diagnostics, idempotence, drift refusal, and unexpected bundle copies. Corrected the saved analyzer test fixture to declare `hasTruncation: true`. |
+| `Dockerfile.openclaw:45` | Copies the patch tools and runs patch + imported-helper smoke immediately after global OpenClaw installation. |
+| `apps/orchestrator/test_openclaw_9_4_migration.py:72` | Retains the saved regression proving 26,000/80,000 budgets survive migration. No config production code changed. |
+| `runtime/openclaw/nbhd-cron-sync.mjs:100` | Builds individual CLI flags for the supported agentTurn parameters and top-level description; applies existing safety validation at the mapper boundary too. Refuses explicit empty tool lists because the CLI would widen them to default tools. |
+| `runtime/openclaw/nbhd-cron-sync.mjs:176` | Adds `sameCron()` comparing the CLI-applicable projection, including model, ordered fallbacks, timeout, tools, light context, and contract. Ignores runtime state/interval anchors and normalizes the default wake mode and runtime-owned default tools. |
+| `runtime/openclaw/nbhd-cron-sync.mjs:204` | Retains full listed jobs for comparison. Reconcile lists first, adds missing/changed jobs, skips unchanged jobs, preserves existing desired jobs after failed adds, and limits removals to nbhd declarations. List failure causes no mutations. |
+| `runtime/openclaw/nbhd-cron-sync.test.mjs:120` | Field/absence mappings; real pinned flag registration; field-only changes and removals; fallback order; reconcile upsert/skip/retry; namespace, signature, and shell-payload rejection tests. |
+| `apps/cron/test_share_cron_sync.py:30` | Database-free Django test runs the real typed pre-save receiver, row rendering, signing, and writer on pure-reminder and task-hygiene rows, with and without fallback stamps. Checks full payload, contract including limits, declaration key and HMAC. Only ORM reads and share upload are mocked. |
 
-Interactive gates are **not callers**: `apps/actions/messaging.py:392`
-`_resolve_gate_channel` has independent originating-channel / Telegram / LINE /
-datebook-gateway-or-device selection. This change neither enables a gate nor
-invokes a tokenless gate push. The actions cron-messaging suite is included.
-Persona channel comments also are not resolver calls; no persona gate changes
-arise from C3. Delivery eligibility remains the callers' responsibility; this
-selector also supports provisioning labels and is not an authorization API.
+**Checkout discrepancy:** this branch originally had no `sameCron()` and upserted all jobs on every pass. The comparator and its reconcile use were added here to satisfy the reviewer's field-aware diff requirement. No changes to polling cadence or poll-to-push architecture were made.
 
-For completeness, the only direct **test callers** are:
+`ALLOWED_PAYLOAD_KINDS` and `DENY_FIELD_RE` are byte-identical to HEAD. The allowlist remains `{agentTurn, systemEvent}`. No shell/command/script payload flags are added; spawning still uses `execFile`, not a shell. `--json` is used only for list output.
 
-- `apps/router/test_proactive_push.py:372–437`: `test_token_beats_telegram_and_line`,
-  `test_app_token_wins_over_telegram`, `test_token_only_resolves_to_app`,
-  `test_telegram_only_resolves_to_telegram`, `test_line_only_resolves_to_line`,
-  `test_telegram_beats_line_without_token`, `test_no_transport_resolves_to_app_feed`,
-  `test_revoked_token_does_not_override_linked_messaging`. They assert unchanged
-  linked ordering, eligible-device precedence, revoked-device fallback and the
-  new app-feed default; they do not send.
-- `apps/router/test_eval_sink_channel.py:55–138`:
-  `test_eval_sink_tenant_with_no_channel_resolves_to_the_sink`,
-  `test_real_tenant_with_no_transport_has_app_feed`,
-  `test_synthetic_demo_tenant_keeps_normal_channel_behavior`,
-  `test_synthetic_demo_without_a_channel_is_not_an_eval_sink`,
-  `test_eval_sink_preempts_a_linked_channel`, `test_eval_sink_preempts_a_registered_device`,
-  `test_eval_sink_always_wins_regardless_of_linked_surfaces`,
-  `test_without_the_flag_the_app_first_order_holds`. The non-sink transportless
-  expectations become app; explicit eval behavior stays isolated. These calls
-  only assert selection and never send.
+## CLI verification and gaps
 
-## D — surveyed operational prefixes, complete masking, fail closed
+Both local copies have the same pinned `dist/cron-cli-BTI9dsDQ.mjs`: `/tmp/openclaw-src-9.4/package/` and `/Users/mjjones/oc94-probe/`. Flag registrations are at line 421; list parsers at 231/235; agentTurn payload mapping at 788–797; description at 831 and in the add parameters at 852. No online lookup was needed because the requested exact version's source is local.
 
-- `runtime/openclaw/redact-stdout.js:72`: admit exactly the required lowercase
-  bracket slug shape `^\[[a-z][a-z0-9_:./-]{0,40}\] `, node fatal frame shape
-  `^\[\d+:0x[0-9a-f]+\] `, and the nine named entrypoint shell prefixes.
-  Explicit timestamp/logger, httpx, access, startup and structured-JSON rules
-  remain. Unknown prose, uppercase/spaced brackets, malformed JSON and decoder
-  failures drop. Admitted fields still undergo whole-value masking.
-- `runtime/openclaw/redact-stdout.test.mjs:279`: synthetic pass table includes
-  all 23 prefixes from the supplied seven-day survey, including tool-policy,
-  registry, shutdown, watcher, entrypoint, bracket tools-invoke, curl/rm/cp,
-  node fatal frames and openrouter startup lines. Drop cases include Here,
-  Still, Ping!, Got, 🏡 and 3am; slug boundary and field-masking checks added.
-- **125 Node tests pass** using the documented command:
-  `NBHD_REDACT_STDOUT_DISABLE_AUTOINSTALL=1 node --test runtime/openclaw/redact-stdout.test.mjs`.
-  The bare command intentionally fails the test file's environment precondition;
-  the documented command passes. Operational prefixes remain a convention:
-  call sites must put free content in masked fields.
+| Desired field | Individual cron add flag | Carry status |
+| --- | --- | --- |
+| `payload.model` | `--model <model>` | Carried when present. |
+| `payload.fallbacks` | `--fallbacks <list>` | Ordered comma-separated list; explicit `[]` becomes an empty argument and remains an empty override in the CLI parser. Absent stays omitted. |
+| `payload.timeoutSeconds` | `--timeout-seconds <n>` | Carried; upstream validates a positive integer. |
+| `payload.toolsAllow` | `--tools <list>` | Nonempty lists carried. Explicit empty lists are refused; see below. |
+| `payload.lightContext: true` | `--light-context` | Carried, restoring pure_reminder's lightweight request. |
+| `payload.lightContext: false` | None on **add** | Cannot be preserved as explicit false through this add-only adapter. |
+| Top-level `description` / `nbhd.v1` contract | `--description <text>` | Entire string carried as one argument, including enforcement JSON/limits. There is no separate contract field to invent. |
+| `agentId` | `--agent <id>` | Existing forwarding retained. |
 
-## B4 — inline gated chat delegation
+**Explicit false is a real add CLI gap.** `--no-light-context` is registered only for `cron edit` (line 1049), not `cron add`. The add serializer emits `lightContext: opts.lightContext === true ? true : void 0` (795). Therefore false emits no flag and compares as absent. A true→false change is detected and the declarative upsert replaces the payload without true, but this does not persist explicit false. Multiline typed full-context jobs retain ordinary full bootstrap behavior; command-style single-line prompts could still trigger upstream's automatic lightweight heuristic. Explicit false requires a separate operator edit or upstream CLI support; this implementation does not invent an add flag or expand scope into edit sequencing.
 
-- `apps/orchestrator/personas.py:540` defines the inline >30-second offload
-  contract, rendered at `:706` only by the existing subagent tenant gate:
-  spawn first, acknowledge immediately, no fork, read-only helper, one completion
-  send to the requesting thread, bridge backstop, honest timeout/failure handling.
-- `apps/orchestrator/config_generator.py:231` removes the dead subagent cron
-  index row. No wildcard, fleet allowlist or workspace rule compatibility change.
-- `apps/orchestrator/test_rules_delivery.py:76` covers gated persona renders;
-  `:100` pins ungated bytes to the pre-change SHA-256. Workspace-index and
-  reminder-budget tests cover the removed row and all-gates render. Budget
-  remains 24,333 characters against ceiling 25,950 / cap 26,000.
-- **19 Node bridge tests pass**. Django rules/budget/redaction results below.
+**Empty tools are another CLI gap.** `parseCronToolsAllow` returns undefined for an empty list, which cannot mean “allow no tools.” The mapper refuses such a declaration instead of broadening it. Current typed jobs all have nonempty allowlists. Removing an explicit toolsAllow field also cannot clear a previously installed allowlist via add: upstream `applyDeclarativeJobSpec` preserves previous tools when the field is omitted (`dist/list-snapshot-revision-Dgg3Ai6M.mjs:1265`). Clearing that policy requires the operator edit path (`--clear-tools`). These restrictions are not hidden by the comparator.
 
-## Round 2 verification and commits
+Django production changes were unnecessary: `apps/cron/signals.py:134` derives the full payload and `:162` writes the contract into description; `apps/orchestrator/cron_reconcile.py:412` copies row.data and removes only gateway metadata; `apps/cron/share_cron_sync.py:38,70,95` reads that shape, stamps declaration keys, signs, and writes it. The new test verifies all this without a DB. Fallback stamping is synthetic test input only; no escalation logic was added.
 
-- Formatting: all changed Python files formatted; `make lint`: PASS.
-- `manage.py makemigrations --check --dry-run`: `No changes detected`.
-- Focused Django suites: **701 pass** (93.660s). Modules: router `test_push`,
-  `test_proactive_push`, `test_proactive_context`, `test_cron_delivery`,
-  `test_cron_delivery_placeholder_at_rest`, `test_reply_text`, `tests_line`,
-  `test_eval_sink_channel`, `test_system_notify`; Core `tests`; integrations
-  `test_sautai_client`; cron `tests.test_suspension`; orchestrator
-  `test_cron_envelope`; tenants `test_envelope`; Friends `test_pr6`; journal
-  `test_extraction`; actions `test_cron_messaging`.
-- Rules/workspace/budget: **36 pass**; Django redaction: **10 pass**
-  (combined run: 46 tests, 0.622s). Modules: orchestrator `test_rules_delivery`,
-  `test_workspace_rules`, `test_reminder_capability`, `test_log_redaction`.
-  Django runs use `manage.py test <modules> --noinput --keepdb`, an isolated
-  synthetic Postgres database, and background threads disabled.
-- **Docker gate: PASS (both Linux legs)**. Exactly one round-2 invocation,
-  after checking no `nbhd-docker-gate-*` container existed:
+## Verification commands and verbatim tails
 
-  ```sh
-  TMPDIR=/Users/mjjones/Library/Caches/nbhd-docker-gate-tmp \
-  DOCKER_GATE_CACHE=/Users/mjjones/Library/Caches/nbhd-docker-gate make docker-gate
-  ```
+Node 24.19.0. Commands below were run in this worktree. Logs are local `/tmp/usermd-fix-*.log` files.
 
-  Gate result lines (backend summary plus final leg results):
+### Node tests and syntax
 
-  ```text
-  Ran 8771 tests in 694.760s
-  OK (skipped=36)
-  Config validator: PASS
-  Security audit: PASS
-  === BACKEND LEG: PASS ===
-  === FRONTEND LEG: PASS ===
-  === DOCKER CI-PARITY GATE: PASS ===
-  ```
+```sh
+node --check runtime/openclaw/nbhd-cron-sync.mjs
+node --test runtime/openclaw/patches/user-bootstrap-cap.test.mjs runtime/openclaw/nbhd-cron-sync.test.mjs
+```
 
-  Full synthetic log: `/tmp/cron-feed-redactor-round2-docker-gate.log`.
-  All 22 changed source/test files match the successful Docker snapshot.
-  Frontend lint, TypeScript and static build pass. Test/gate containers removed.
-- Three scoped commits on the actual branch: D `a70fcae8`; C3 `eaf29acf`;
-  B4 is the final commit (`HEAD`), titled
-  `fix(orchestrator): deliver gated offload instructions inline in chat`,
-  including this report, the directive and continuity ledger.
-- Worktree index is writable; all staging used explicit paths.
-  `commit-patches/` remains untracked and contains obsolete round-1 exports;
-  use the actual branch commits. No push or PR performed. Nothing remains
-  blocked or unfinished within the requested local scope.
+Syntax check exited 0 with no output. Node test tail:
 
-## Deployment handoff
+```text
+[nbhd:cron-sync] WARN crons file signature INVALID — ignoring (not written by Django)
+✔ reconcileOnce: signature and kind controls hold; removals stay in nbhd namespace (0.787292ms)
+[nbhd:cron-sync] WARN cron list failed, skipping reconcile: synthetic list failure
+✔ reconcileOnce: list failure makes no mutations (0.506959ms)
+✔ pinned 9.4 source registers each emitted flag; negative light context is edit-only (0.308416ms)
+✔ real 9.4 bundles: full USER.md, unchanged non-USER files, budgets, idempotence (3030.460333ms)
+✔ fails before any write on changed version (117.7385ms)
+✔ fails before any write on changed export alias (159.06775ms)
+✔ fails before any write on changed worker clamp alias (272.888083ms)
+✔ fails before any write on changed diagnostic predicate (844.065666ms)
+✔ fails before any write on changed duplicate constant (153.706208ms)
+✔ refuses an unexpected bundled copy (78.929917ms)
+ℹ tests 31
+ℹ suites 0
+ℹ pass 31
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4749.758833
+```
 
-Orchestrator owns integration, push/PR and deployment. D requires rolling the
-updated OpenClaw runtime image; C3 requires Django deployment. After deployment,
-refresh MJ's per-tenant config/workspace when main is quiet so B4 reaches chat.
-Preserve the existing tenant allowlist. Verify with synthetic probes and
-operational metadata only. `CONTINUITY_rules_delivery.md` remains absent from
-this checkout; the directive and source/tests supplied that context.
+### Full package patch and runtime import
+
+Copied the **entire** pristine 218 MB 9.4 package to a temporary directory; patched the copy twice and ran `user-bootstrap-cap.smoke.mjs` on it. The complete dist inventory was checked, not just fixtures. Original staged packages were unchanged.
+
+The copy's `node_modules` was a read-only-use symlink to dependencies of locally installed OpenClaw **2026.9.1**. This proves the actual patched 9.4 helper imports and runs on this host with those dependencies; it does **not** establish the exact 9.4 Docker dependency environment or gateway startup.
+
+```text
+[user-bootstrap-cap] changed 3 bundles; USER.md cap=26000; node --check passed
+[user-bootstrap-cap] changed 0 bundles; USER.md cap=26000; node --check passed
+[user-bootstrap-cap] installed runtime loaded; USER.md and SOUL.md inject all 9500 chars without warnings; lower budgets enforced
+```
+
+### Python formatting and lint
+
+```sh
+.venv/bin/ruff format apps/cron/test_share_cron_sync.py apps/orchestrator/test_openclaw_9_4_migration.py
+.venv/bin/ruff check
+```
+
+```text
+2 files left unchanged
+All checks passed!
+```
+
+### Targeted Django tests
+
+The worktree's saved `.venv/bin/python` symlink initially failed to import Django; invoking the actual existing parent virtualenv interpreter works. No dependencies were installed or shared virtualenv files changed.
+
+```sh
+env DJANGO_SETTINGS_MODULE=config.settings.test DATABASE_URL=sqlite:///:memory:   SECRET_KEY=local-verification-only NBHD_DISABLE_BACKGROUND_THREADS=True AZURE_MOCK=true   /Users/mjjones/Projects/nbhd-united/.venv/bin/python manage.py test   apps.cron.test_share_cron_sync.SignedParameterCarryTest   apps.orchestrator.test_openclaw_9_4_migration.OpenClaw94MigrationTransformTest   apps.orchestrator.test_cron_reconcile_system_jobs --noinput
+```
+
+These are SimpleTestCase tests: no test database is created, no real DB is queried or mutated. DB-backed TestCase classes/full suite were not run under the no-DB fence.
+
+```text
+...............
+----------------------------------------------------------------------
+Ran 15 tests in 0.005s
+
+OK
+Found 15 test(s).
+System check identified no issues (0 silenced).
+```
+
+### Migration drift
+
+```sh
+env DJANGO_SETTINGS_MODULE=config.settings.development DATABASE_URL=sqlite:///:memory:   SECRET_KEY=local-verification-only NBHD_DISABLE_BACKGROUND_THREADS=True AZURE_MOCK=true   /Users/mjjones/Projects/nbhd-united/.venv/bin/python manage.py makemigrations --check --dry-run
+```
+
+```text
+No changes detected
+```
+
+### Required Docker image build — blocked
+
+```sh
+docker build -f Dockerfile.openclaw -t nbhd-openclaw:9.4-usermd-cron-sync .
+```
+
+```text
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+permission denied while trying to connect to the docker API at unix:///Users/mjjones/.colima/default/docker.sock
+time="2026-09-20T17:00:50+09:00" level=error msg="Can't add file /Users/mjjones/Projects/nbhd-united/.claude/worktrees/usermd-fix/.dockerignore to tar: io: read/write on closed pipe"
+```
+
+No image was built; the patch RUN step did not execute in Docker. Approval policy is `never`, so this session cannot request expanded Docker access.
+
+### Docker gate — blocked
+
+The script needs no production credentials and creates disposable test containers, but its Docker preflight cannot pass in this sandbox.
+
+```sh
+DOCKER_GATE_CACHE=/tmp/usermd-fix-docker-cache bash scripts/docker-gate.sh
+```
+
+```text
+Docker daemon is unavailable.
+```
+
+### Git and remaining commits — blocked
+
+`git diff --check` passes with no output. Explicit-path staging for fix #1 failed before any index update:
+
+```text
+fatal: Unable to create '/Users/mjjones/Projects/nbhd-united/.git/worktrees/usermd-fix/index.lock': Operation not permitted
+```
+
+The worktree's real Git directory is outside writable roots. No commits could be made, no hooks were bypassed, and no refs were updated. When Git access is available, keep the fixes in these **two separate commits** (commands are handoff instructions, not executed commits):
+
+```sh
+git add Dockerfile.openclaw runtime/openclaw/patches/user-bootstrap-cap.mjs runtime/openclaw/patches/user-bootstrap-cap.smoke.mjs runtime/openclaw/patches/user-bootstrap-cap.test.mjs apps/orchestrator/test_openclaw_9_4_migration.py
+git commit -m "fix(openclaw): raise USER.md bootstrap cap in every 9.4 bundle"
+git add runtime/openclaw/nbhd-cron-sync.mjs runtime/openclaw/nbhd-cron-sync.test.mjs apps/cron/test_share_cron_sync.py REPORT.md
+git commit -m "fix(openclaw): carry cron parameters and compare field changes"
+```
+
+Preexisting untracked `BUILD_BRIEF.md`, `COMBINED_BRIEF.md`, `MUSTDOS.md`, and `codex_run.pid` are left alone and excluded from those commits.
+
+## Deploy handoff — orchestrator/reviewer only
+
+1. Review the explicit CLI gaps above, finish the two commits, and rerun the exact Docker build plus docker-gate where Docker is available. Require both build-time patch and runtime-import smoke success lines. Do not treat this report's host smoke as a successful image build.
+2. The orchestrator/reviewer builds and pushes the **OpenClaw runtime image** from these commits to the normal registry, preserving `OPENCLAW_VERSION=2026.9.4`, and records its immutable digest. The file's author owns the manual canary image roll; no deployment was performed here.
+3. Roll the canary tenant onto that digest. Apply/regenerate its config through the normal control-plane workflow, retaining `agents.defaults.bootstrapMaxChars=26000` and `bootstrapTotalMaxChars=80000`. Ensure the desired cron document is regenerated/signed from canonical rows with typed data and the intended fallback stamp. A config-only update cannot install this runtime patch.
+4. After the in-container sync, use the operator `openclaw cron list --json` path to inspect the canary declarations. Confirm model, fallback ordering, timeout, nonempty toolsAllow, true lightContext for pure_reminder, and complete description/contract. Confirm a fields-only fallback change reaches the installed declaration on the next sync pass; configuration of model aliases/availability remains the control plane's responsibility.
+5. Observe the **next scheduled full-context cron run** (daily briefing/task hygiene), recording its session/run identity. Confirm the `agent/embedded` log no longer contains `workspace bootstrap file USER.md ... (limit 4000); truncating in injected context`. Check that the canary has the expected roughly 9–10K USER.md and sufficient aggregate bootstrap budget. Absence of the warning from a lightweight pure_reminder run alone is not proof of full USER injection. If a warning remains at 26K or a smaller aggregate remainder, inspect the effective per-agent budgets/file lengths; the patch retains normal budget enforcement.
