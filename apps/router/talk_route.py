@@ -6,12 +6,11 @@ from threading import BoundedSemaphore
 from time import monotonic
 from types import SimpleNamespace
 from typing import Literal
-from uuid import UUID
 
-from django.conf import settings
 from pydantic import Field
 
 from apps.common import jev
+from apps.router.chat_gates import talk_route_enabled  # noqa: F401  (re-exported for callers/tests)
 
 ACK_KINDS = (
     "calendar",
@@ -91,21 +90,6 @@ QUESTIONS = {
         },
     ),
 }
-
-
-def talk_route_enabled(tenant) -> bool:
-    if tenant is None:
-        return False
-    allowed = set()
-    for part in str(getattr(settings, "TALK_ROUTE_TENANT_IDS", "") or "").split(","):
-        try:
-            allowed.add(UUID(part.strip()))
-        except ValueError:
-            continue
-    try:
-        return UUID(str(tenant.id)) in allowed
-    except (AttributeError, ValueError):
-        return False
 
 
 def decide_route(ack: jev.ChoiceAnswer, quick: jev.ChoiceAnswer, read_only: float) -> TalkRouteResponse:

@@ -254,11 +254,13 @@ class ParserTests(SimpleTestCase):
             with self.subTest(text=text):
                 self.assertEqual(parse_duration(text), expected)
 
-    def test_gate_exact_ids_no_wildcard(self):
+    def test_gate_exact_ids_and_exact_wildcard(self):
         tenant = SimpleNamespace(id=uuid4())
         for value, expected in [
             ("", False),
-            ("*", False),
+            ("*", True),
+            ("**", False),
+            ("*x", False),
             (str(uuid4()), False),
             (f" {str(tenant.id).upper()} , other", True),
         ]:

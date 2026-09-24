@@ -134,7 +134,7 @@ class PanelSchemaTests(SimpleTestCase):
 
         tenant = SimpleNamespace(id=uuid4())
         private = [{"kind": "tasks", "title": "private-sentinel"}]
-        for gate in ("", str(uuid4()), "*"):
+        for gate in ("", str(uuid4()), "**"):
             for data in ({"message": "Hello", "panels": private}, {"message": "Hello\n" + block(private)}):
                 with (
                     override_settings(CHAT_SHAPE_TENANT_IDS=str(tenant.id), CHAT_PANELS_TOOL_TENANT_IDS=gate),
@@ -171,7 +171,7 @@ class PanelSchemaTests(SimpleTestCase):
                 self.assertTrue(serializer.is_valid(), serializer.errors)
             self.assertEqual(serializer.validated_data["message"], "Hello")
 
-    def test_gates_are_independent_exact_case_insensitive_and_have_no_wildcard(self):
+    def test_gates_are_independent_exact_case_insensitive_with_exact_wildcard(self):
         tenant = SimpleNamespace(id=uuid4())
         for helper, setting, other in (
             (chat_shape_enabled, "CHAT_SHAPE_TENANT_IDS", chat_panels_tool_enabled),
@@ -180,7 +180,9 @@ class PanelSchemaTests(SimpleTestCase):
             for gate, expected in (
                 (None, False),
                 ("", False),
-                ("*", False),
+                ("*", True),
+                ("**", False),
+                ("*x", False),
                 (str(uuid4()), False),
                 (f" {uuid4()}, {str(tenant.id).upper()} , ", True),
             ):
