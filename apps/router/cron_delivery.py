@@ -385,21 +385,23 @@ class SendToUserSerializer(serializers.Serializer):
     panels = serializers.JSONField(required=False, allow_null=True)
 
     def validate_panels(self, value):
-        from apps.router.panels import chat_panels_enabled, validate_panels
+        from apps.router.chat_gates import chat_panels_tool_enabled
+        from apps.router.panels import validate_panels
 
-        if not chat_panels_enabled(self.context.get("tenant")):
+        if not chat_panels_tool_enabled(self.context.get("tenant")):
             logger.warning("panels_dropped reason=tenant_disabled")
             return []
         return validate_panels(value)
 
     def validate(self, data):
-        from apps.router.panels import chat_panels_enabled, extract_panels
+        from apps.router.chat_gates import chat_panels_tool_enabled
+        from apps.router.panels import extract_panels
 
         # Strip on every channel and outside the rollout gate. Explicit panels
         # (even empty/null/invalid) take precedence over the fallback block.
         data["message"], fallback = extract_panels(data["message"])
         if "panels" not in data:
-            if chat_panels_enabled(self.context.get("tenant")):
+            if chat_panels_tool_enabled(self.context.get("tenant")):
                 data["panels"] = fallback
             else:
                 if fallback:

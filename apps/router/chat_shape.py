@@ -17,6 +17,7 @@ from pydantic import Field, field_validator, model_validator
 
 from apps.common import jev
 from apps.common.tenant_tz import tenant_tz, tenant_tz_name
+from apps.router.chat_gates import chat_shape_enabled
 
 SURFACES = {
     "training_week": "Their workouts or training schedule across days: what sessions they did or have planned this week or month, streaks, missed sessions",
@@ -140,14 +141,6 @@ class ChatShapeResponse(jev.StrictModel):
         if (self.reason == "disabled") != (not self.enabled):
             raise ValueError("Enabled must match reason")
         return self
-
-
-def chat_shape_enabled(tenant) -> bool:
-    raw = str(getattr(settings, "CHAT_SHAPE_TENANT_IDS", "") or "")
-    allowed = {part.strip().lower() for part in raw.split(",") if part.strip()}
-    if not allowed or tenant is None:
-        return False
-    return str(tenant.id).lower() in allowed
 
 
 def chat_shape_panels() -> frozenset[str]:

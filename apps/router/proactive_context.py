@@ -129,7 +129,7 @@ def record_proactive_outbound(
         message_text = redact_known_values(tenant, message_text, seam="proactive_outbound_storage")
         from apps.router.panels import prepare_panels
 
-        panels = prepare_panels(tenant, panels)
+        panels = prepare_panels(tenant, panels, tool=True)
         transcript_redaction = None
         transcript_quarantine = None
         if getattr(tenant, "recall_capture_enabled", False):

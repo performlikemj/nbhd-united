@@ -71,9 +71,10 @@ def _channel_via(channel: str | None) -> str:
 
 
 def _panel_chat_context(channel, tenant) -> str:
-    from apps.router.panels import CHAT_PANEL_INSTRUCTION, chat_panels_enabled
+    from apps.router.chat_gates import chat_shape_enabled
+    from apps.router.panels import CHAT_PANEL_INSTRUCTION
 
-    if (channel or "").strip().lower() in {"ios", "app"} and chat_panels_enabled(tenant):
+    if (channel or "").strip().lower() in {"ios", "app"} and chat_shape_enabled(tenant):
         return CHAT_PANEL_INSTRUCTION
     return ""
 

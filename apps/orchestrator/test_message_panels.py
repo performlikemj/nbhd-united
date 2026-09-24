@@ -15,6 +15,7 @@ from apps.router.panels import MORNING_PANEL_INSTRUCTION, PANEL_KINDS
 from apps.tenants.models import Tenant, User
 
 
+@override_settings(CHAT_PANELS_TOOL_TENANT_IDS="", CHAT_SHAPE_TENANT_IDS="")
 class MorningPanelPromptTests(SimpleTestCase):
     def setUp(self):
         self.tenant = Tenant(
@@ -30,7 +31,7 @@ class MorningPanelPromptTests(SimpleTestCase):
             schedule={"kind": "cron", "expr": "0 7 * * *", "tz": "Asia/Tokyo"},
         )["payload"]
 
-    @override_settings(CHAT_SHAPE_TENANT_IDS="")
+    @override_settings(CHAT_PANELS_TOOL_TENANT_IDS="")
     def test_non_gated_prompts_match_pre_change_bytes(self):
         # Captured from the unmodified base before implementing panels.
         for message, digest in (
@@ -44,8 +45,23 @@ class MorningPanelPromptTests(SimpleTestCase):
             self.assertNotIn("attach panels", message)
         self.assertNotIn("nbhd_fuel_summary", self.typed()["toolsAllow"])
 
-    def test_both_gated_prompts_include_references_and_read_only_evidence_tool(self):
+    def test_shape_only_prompts_are_byte_identical_to_non_gated(self):
+        before = _build_morning_briefing_prompt(self.tenant), self.typed()
         with override_settings(CHAT_SHAPE_TENANT_IDS=str(self.tenant.id)):
+            self.test_non_gated_prompts_match_pre_change_bytes()
+            self.assertEqual((_build_morning_briefing_prompt(self.tenant), self.typed()), before)
+
+    def test_tool_only_prompts_match_both_gates(self):
+        with override_settings(CHAT_PANELS_TOOL_TENANT_IDS=str(self.tenant.id)):
+            before = _build_morning_briefing_prompt(self.tenant), self.typed()
+            with override_settings(CHAT_SHAPE_TENANT_IDS=str(self.tenant.id)):
+                self.assertEqual((_build_morning_briefing_prompt(self.tenant), self.typed()), before)
+        self.assertIn(MORNING_PANEL_INSTRUCTION, before[0])
+
+    def test_both_gated_prompts_include_references_and_read_only_evidence_tool(self):
+        with override_settings(
+            CHAT_SHAPE_TENANT_IDS=str(self.tenant.id), CHAT_PANELS_TOOL_TENANT_IDS=str(self.tenant.id)
+        ):
             typed = self.typed()
             for message in (_build_morning_briefing_prompt(self.tenant), typed["message"]):
                 self.assertEqual(message.count(MORNING_PANEL_INSTRUCTION), 1)
@@ -65,6 +81,8 @@ class MorningPanelPromptTests(SimpleTestCase):
 
 
 @override_settings(
+    CHAT_SHAPE_TENANT_IDS="",
+    CHAT_PANELS_TOOL_TENANT_IDS="",
     OPENCLAW_JOURNAL_PLUGIN_ID="nbhd-journal-tools",
     OPENCLAW_JOURNAL_PLUGIN_PATH="/opt/nbhd/plugins/nbhd-journal-tools",
 )
@@ -84,8 +102,10 @@ class PanelToolConfigTests(SimpleTestCase):
         return json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
 
     def test_off_gate_entire_config_matches_pre_review_bytes(self):
+        # An old canary must remain safe even when shape is enabled.
+        self.tenant.container_image_tag = "2026.9.4-cronfix"
         # Captured from 1ee74fb0 before changing config generation in this round.
-        for gate in ("", "00000000-0000-4000-8000-000000000222"):
+        for gate in ("", "00000000-0000-4000-8000-000000000222", str(self.tenant.id)):
             with self.subTest(gate=gate), override_settings(CHAT_SHAPE_TENANT_IDS=gate):
                 config = generate_openclaw_config(self.tenant)
             self.assertEqual(
@@ -93,13 +113,19 @@ class PanelToolConfigTests(SimpleTestCase):
                 "d88c6883522e3f126a377b1a64067375989325041a6782501ce1591fa03cf7d5",
             )
             self.assertEqual(config["plugins"]["entries"]["nbhd-journal-tools"], {"enabled": True})
+            assert_config_writable(config)
 
     def test_gated_config_changes_only_journal_tool_flag_and_validates(self):
         with override_settings(CHAT_SHAPE_TENANT_IDS=""):
             before = generate_openclaw_config(self.tenant)
-        with override_settings(CHAT_SHAPE_TENANT_IDS=str(self.tenant.id)):
+        with override_settings(
+            CHAT_SHAPE_TENANT_IDS=str(self.tenant.id), CHAT_PANELS_TOOL_TENANT_IDS=str(self.tenant.id)
+        ):
             after = generate_openclaw_config(self.tenant)
         self.assertEqual(after["plugins"]["entries"]["nbhd-journal-tools"]["config"], {"panelsEnabled": True})
         assert_config_writable(after)
+        with override_settings(CHAT_PANELS_TOOL_TENANT_IDS=str(self.tenant.id)):
+            tool_only = generate_openclaw_config(self.tenant)
+        self.assertEqual(self.config_bytes(tool_only), self.config_bytes(after))
         after["plugins"]["entries"]["nbhd-journal-tools"].pop("config")
         self.assertEqual(self.config_bytes(after), self.config_bytes(before))
