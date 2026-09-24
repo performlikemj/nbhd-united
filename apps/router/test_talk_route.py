@@ -21,13 +21,13 @@ from apps.common.test_jev import choice_answer, envelope
 from apps.pii.redactor import RedactionOutcome
 from apps.router.talk_route import (
     ACK_KINDS,
-    TALK_ROUTE_BUDGET_SECONDS,
     ACK_MIN,
     QUESTIONS,
     QUICK_READ_MIN,
     QUICK_READS,
     READ_ONLY_MIN,
     REASONS,
+    TALK_ROUTE_BUDGET_SECONDS,
     AckKind,
     QuickRead,
     Reason,
