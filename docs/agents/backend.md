@@ -131,12 +131,34 @@ with a warning including `reason=intention` for an intention clash. `CORE_COMPOS
 `clash_accepted`. Legacy empty lessons contribute title/theme only; narration
 alignment with lesson metadata remains a prompt requirement.
 
+Meditation context uses at most eight owner excerpts from today and the prior two
+tenant-local days. Chat requires `recall_capture_enabled` and a non-null
+`recall_capture_birthday`, reads only post-birthday user text through the encrypted
+system-principal helper, and excludes on-device turns. Daily notes contribute only
+`### HH:MM — <owner display name>` quick-log entries, ending at the next heading;
+other daily-note prose is excluded. With recall capture OFF, chat is skipped and
+only owner quick logs can supply this section; when none qualify the section is
+omitted. App chat storage is verbatim, and quick-log writes can fail open: each
+selected excerpt therefore runs checked inbound detection with `MINT_REDACT_ONLY`
+and `allow_user_name=False` before truncation. Unknown detected PII becomes
+`[REDACTED]` without minting bindings or changing registry counters; unconfirmed
+or failed redaction drops the excerpt. Detection is bounded to eight candidates,
+so the section may contain fewer excerpts.
+
+At most one constellation star is offered per sit. IDs supplied to the last three
+READY/DELIVERED/DONE sits cool down before selection; services persist those IDs
+as `lesson.context_star_ids` without changing the LLM schema. An old pinned note
+is described as saved context, not recent activity. Prompt and retry templates
+are assembled after tenant/model content is scrubbed; never redact the assembled
+instructions with tenant bindings.
+
 Legacy sits need lesson backfilling to close the cold start: empty lessons cannot enforce tradition/teaching variety.
 Run `python manage.py backfill_meditation_lessons --tenant <uuid> --limit 40 --dry-run`, then repeat without `--dry-run`; dry-run makes no LLM calls or writes.
 Run per tenant, owner first; `--all` processes Core-enabled tenants with the limit applied per tenant.
 
 Add `--missing-intention` to also fill intention on existing lessons without that
-key, preserving their other fields. Existing missing intentions stay unknown until
+key, preserving their other fields (including service-owned `context_star_ids`,
+which is excluded from strict lesson validation). Existing missing intentions stay unknown until
 backfilled; new lessons require a Literal from the shared vocabulary in `lesson.py`.
 
 ## Meditation TTS

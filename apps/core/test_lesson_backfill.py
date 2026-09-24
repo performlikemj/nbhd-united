@@ -360,6 +360,16 @@ class LessonBackfillTests(SimpleTestCase):
         complete.save.assert_not_called()
         self.assertIn("written=1 skipped=1", output)
 
+    def test_missing_intention_preserves_service_owned_star_ids(self):
+        legacy = json.loads(answer()[0]["choices"][0]["message"]["content"])
+        del legacy["intention"]
+        legacy["context_star_ids"] = [123, 456]
+        session = self.session(lesson=legacy.copy())
+        output = self.run_command([session], "--missing-intention")
+        self.assertEqual(session.lesson, {**legacy, "intention": "release-control"})
+        session.save.assert_called_once()
+        self.assertIn("written=1 skipped=0 failed=0", output)
+
     def test_missing_intention_dry_run_and_default_skip(self):
         legacy = json.loads(answer()[0]["choices"][0]["message"]["content"])
         del legacy["intention"]

@@ -193,10 +193,22 @@ class Command(BaseCommand):
                         skipped_unsupported += 1
                     else:
                         if existing:
-                            lesson = MeditationLesson.model_validate({**existing, "intention": lesson.intention})
+                            lesson = MeditationLesson.model_validate(
+                                {
+                                    **{
+                                        key: value
+                                        for key, value in existing.items()
+                                        if key in MeditationLesson.model_fields
+                                    },
+                                    "intention": lesson.intention,
+                                }
+                            )
+                        # Service-owned context metadata is not part of the strict
+                        # LLM contract, but must survive an intention-only backfill.
+                        stored_lesson = {**(existing or {}), **lesson.model_dump()}
                         authored, receipts = author_store_fields(
                             tenant,
-                            {"lesson": lesson.model_dump()},
+                            {"lesson": stored_lesson},
                             model_label="core.MeditationSession",
                             seam=_SEAM,
                             writer="background",

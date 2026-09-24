@@ -78,7 +78,9 @@ def _star_activity_at(star: Lesson) -> datetime:
     return max(candidates)
 
 
-def recent_active_stars(tenant: Tenant, *, days: int = _DEFAULT_WINDOW_DAYS, limit: int = 5) -> list[Lesson]:
+def recent_active_stars(
+    tenant: Tenant, *, days: int = _DEFAULT_WINDOW_DAYS, limit: int = 5, exclude_ids: set[int] | None = None
+) -> list[Lesson]:
     """Approved stars the user has been actively working through, newest first.
 
     A star is "active" when, within the window, it was tutored, visited, or
@@ -88,6 +90,7 @@ def recent_active_stars(tenant: Tenant, *, days: int = _DEFAULT_WINDOW_DAYS, lim
     cutoff = timezone.now() - timedelta(days=days)
     qs = (
         Lesson.objects.filter(tenant=tenant, status="approved")
+        .exclude(id__in=exclude_ids or ())
         .filter(
             Q(galaxy_note__gt="")  # guard: encrypted-predicate
             | Q(last_tutored_at__gte=cutoff)

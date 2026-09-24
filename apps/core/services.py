@@ -13,7 +13,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import timedelta
+import re
+from datetime import datetime, time, timedelta
 
 from django.conf import settings
 from django.db import transaction
@@ -89,8 +90,9 @@ def gather_meditation_signals(tenant: Tenant) -> dict:
     * recent constellation activity — the stars (durable lessons) they've been
       actively working through, with their pinned notes, star reflections, and
       the honest tutoring signals. Shaped by
-      ``apps.lessons.agent_context.build_constellation_context``.
-    * recent daily-note snippets — what their week actually held.
+      ``apps.lessons.agent_context.build_star_context``; one optional star, with
+      a cooldown covering the last three playable sits.
+    * recent consented user chat and explicitly owner-authored quick logs.
 
     The journal/constellation sources egress to OpenRouter, which is configured for
     zero-data-retention — the basis for lifting the earlier PII-egress deferral on
@@ -114,21 +116,17 @@ def gather_meditation_signals(tenant: Tenant) -> dict:
     except Exception:
         logger.debug("gather_meditation_signals: recent-meditations read failed", exc_info=True)
     try:
-        # Local import — keeps the lessons embedding/search stack out of module load.
-        from apps.lessons.agent_context import build_constellation_context
-
-        constellation = build_constellation_context(tenant, days=30, limit=4)
-        stars = constellation.get("active_stars") if constellation else None
+        stars = _meditation_stars(tenant)
         if stars:
             signals["constellation_stars"] = stars
     except Exception:
         logger.debug("gather_meditation_signals: constellation read failed", exc_info=True)
     try:
-        snippets = _recent_note_snippets(tenant)
-        if snippets:
-            signals["recent_notes"] = snippets
+        words = _recent_user_words(tenant)
+        if words:
+            signals["recent_user_words"] = words
     except Exception:
-        logger.debug("gather_meditation_signals: daily-note read failed", exc_info=True)
+        logger.debug("gather_meditation_signals: user-words read failed", exc_info=True)
     try:
         goals = _active_goal_titles(tenant)
         if goals:
@@ -220,27 +218,159 @@ def _recent_fuel_summary(tenant: Tenant, *, days: int = 7) -> str:
     return f"They completed {done} {unit} in the last {days} days."
 
 
-def _recent_note_snippets(tenant: Tenant, *, days: int = 7, limit: int = 3, cap: int = 220) -> list[str]:
-    """Short, cleaned excerpts from the user's most recent daily notes.
+def _meditation_stars(tenant: Tenant, *, days: int = 30) -> list[dict]:
+    """One optional star, excluding those supplied to the last three playable sits."""
+    from apps.lessons.agent_context import build_star_context, recent_active_stars
 
-    Strips markdown headings and log scaffolding so the guide sees the reflective
-    prose, not the note's structure. Best-effort; the caller swallows failures.
+    lessons = (
+        MeditationSession.objects.filter(
+            tenant=tenant,
+            status__in=(MeditationStatus.READY, MeditationStatus.DELIVERED, MeditationStatus.DONE),
+        )
+        .order_by("-date", "-created_at")
+        .values_list("lesson", flat=True)[:3]
+    )
+    excluded = {
+        star_id
+        for lesson in lessons
+        if isinstance(lesson, dict)
+        for star_id in lesson.get("context_star_ids", [])
+        if isinstance(star_id, int)
+    }
+    stars = recent_active_stars(tenant, days=days, limit=1, exclude_ids=excluded)
+    cutoff = (timezone.now() - timedelta(days=days)).isoformat()
+    result = []
+    for star in stars:
+        context = build_star_context(star)
+        # Old pinned notes are durable context, not evidence of recent engagement.
+        for key in ("journal_entries", "tutoring_insights"):
+            context[key] = [item for item in context[key] if item["created_at"] >= cutoff]
+        context["recent_activity"] = bool(
+            context["journal_entries"]
+            or context["tutoring_insights"]
+            or (context["last_tutored_at"] or "") >= cutoff
+            or (context["last_visited_at"] or "") >= cutoff
+        )
+        result.append(context)
+    return result
+
+
+def _recent_user_words(tenant: Tenant, *, days: int = 3, limit: int = 8, cap: int = 200) -> list[str]:
+    """Bounded owner-only excerpts, newest first, across tenant-local calendar days.
+
+    Chat recall is opt-in and starts at its birthday. App private/on-device turns
+    never enter server-side meditation context. Quick logs have their own explicit
+    owner attribution and do not depend on chat recall being enabled.
     """
+    from apps.common.tenant_tz import tenant_tz
+    from apps.journal.md_utils import format_author_suffix
     from apps.journal.models import Document
+    from apps.pii.authoring import truncate_placeholder_safe
+    from apps.pii.redactor import _PLACEHOLDER_RE, MINT_REDACT_ONLY, redact_user_message_checked
+    from apps.router import enc_columns, enc_read
+    from apps.router.models import AppChatMessage, ConversationTurn
 
-    cutoff = (timezone.now() - timedelta(days=days)).date()
-    docs = Document.objects.filter(tenant=tenant, kind="daily", slug__gte=str(cutoff)).order_by("-slug")[:limit]
-    out: list[str] = []
-    for doc in docs:
-        body_lines = [
-            ln.strip() for ln in (doc.markdown or "").splitlines() if ln.strip() and not ln.lstrip().startswith("#")
-        ]
-        body = " ".join(body_lines).strip()
-        if len(body) < 12:
+    if days < 1 or limit < 1 or cap < 12:
+        return []
+    now = timezone.now()
+    tz = tenant_tz(tenant)
+    today = now.astimezone(tz).date()
+    first_day = today - timedelta(days=days - 1)
+    since = datetime.combine(first_day, time.min, tzinfo=tz)
+    candidates = []
+    # Bound the scan before filtering phatic messages; never scan full transcripts.
+    scan_limit = limit * 8
+    birthday = getattr(tenant, "recall_capture_birthday", None)
+    if getattr(tenant, "recall_capture_enabled", False) and birthday is not None:
+        chat_since = max(since, birthday)
+        messages = list(
+            AppChatMessage.objects.filter(
+                tenant=tenant,
+                source=AppChatMessage.Source.TENANT,
+                created_at__gte=chat_since,
+                created_at__lte=now,
+            )
+            .order_by("-created_at", "-id")
+            .only("created_at", "user_text", "user_text_enc")[:scan_limit]
+        )
+        texts = enc_read.read_values_bulk(
+            tenant,
+            enc_columns.APP_CHAT_MESSAGE_USER_TEXT,
+            [(m.user_text_enc, m.user_text) for m in messages],
+            principal="system",
+        )
+        candidates.extend((m.created_at, text.reveal()) for m, text in zip(messages, texts))
+        # ConversationTurn is already placeholder-space; it has no encrypted sidecar.
+        candidates.extend(
+            ConversationTurn.objects.filter(tenant=tenant, created_at__gte=chat_since, created_at__lte=now)
+            .order_by("-created_at", "-id")
+            .values_list("created_at", "user_text")[:scan_limit]
+        )
+
+    suffix = format_author_suffix(getattr(tenant.user, "display_name", ""))
+    if suffix:
+        header = re.compile(r"^### ([0-2][0-9]:[0-5][0-9])" + re.escape(suffix) + r"[ \t]*$", re.MULTILINE)
+        docs = (
+            Document.objects.filter(
+                tenant=tenant,
+                kind="daily",
+                slug__gte=str(first_day),
+                slug__lte=str(today),
+            )
+            .order_by("-slug")
+            .values_list("slug", "markdown")[:days]
+        )
+        for slug, markdown in docs:
+            # Do not slice raw text across a possible PII span before detection.
+            if len(markdown or "") > 32000:
+                continue
+            try:
+                day = datetime.strptime(slug, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            # Any following heading ends attribution; assistant sections never leak in.
+            for match in list(header.finditer((markdown or "")[:32000]))[-scan_limit:]:
+                try:
+                    stamp = datetime.combine(day, time.fromisoformat(match[1]), tzinfo=tz)
+                except ValueError:
+                    continue
+                body = re.split(r"(?m)^#{1,6}\s", markdown[match.end() : 32000], maxsplit=1)[0]
+                if stamp <= now:
+                    candidates.append((stamp, body))
+
+    out = []
+    seen = set()
+    for stamp, raw in sorted(candidates, key=lambda item: item[0], reverse=True):
+        text = " ".join((raw or "").split())
+        substantive = _PLACEHOLDER_RE.sub("", text).strip(" .,!?:;—-")
+        if (
+            len(text) < 12
+            or not substantive
+            or text.startswith(("/", "!"))
+            or re.fullmatch(r"(?:ok(?:ay)?|thanks?(?: you)?|thank you|got it|sure|yes|no)[.! ,]*", text, re.I)
+            or re.fullmatch(r"\[[^\]]+\]", text)
+            or text in seen
+        ):
             continue
-        if len(body) > cap:
-            body = body[: cap - 1].rstrip() + "…"
-        out.append(f"{doc.slug}: {body}")
+        if len(seen) == limit:
+            break
+        seen.add(text)
+        # Stored app chat is verbatim, and quick-log writes can fail open.
+        # Detect on the full selected text BEFORE capping so partial names or
+        # email addresses cannot leak at the excerpt boundary. Never mint here.
+        try:
+            outcome = redact_user_message_checked(
+                text,
+                tenant,
+                allow_user_name=False,
+                mint=MINT_REDACT_ONLY,
+            )
+        except Exception:
+            logger.warning("meditation user-words redaction failed; excerpt omitted")
+            continue
+        if not outcome.confirmed:
+            continue
+        out.append(f"{stamp.astimezone(tz).date()}: {truncate_placeholder_safe(outcome.text, cap)}")
     return out
 
 
@@ -313,7 +443,10 @@ def compose_meditation(session: MeditationSession) -> None:
         session.manifest = authored["manifest"]
         session.title = authored["title"]
         session.theme = authored["theme"]
-        session.lesson = authored["lesson"]
+        session.lesson = {
+            **authored["lesson"],
+            "context_star_ids": [star["id"] for star in signals.get("constellation_stars", [])[:1]],
+        }
         session.pii_receipts = receipts
         _save_session(session, ["manifest", "title", "theme", "lesson", "pii_receipts", "updated_at"])
 
