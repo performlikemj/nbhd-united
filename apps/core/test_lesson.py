@@ -230,7 +230,7 @@ class LessonTests(ComposeSchemaCacheMixin, SimpleTestCase):
                 self.assertIn("[PERSON_1]", retry[0]["content"])
                 self.assertIn("Rejected: ", retry[1]["content"])
                 self.assertIn("Return the corrected JSON object only.", retry[1]["content"])
-                self.assertEqual(sum(c.kwargs["seam"] == "meditation_compose_retry" for c in redact.call_args_list), 2)
+                self.assertEqual(sum(c.kwargs["seam"] == "meditation_compose_retry" for c in redact.call_args_list), 1)
                 self.assertNotIn("PRIVATE_SENTINEL", " ".join(logs.output))
                 self.assertIn("accepted_after_retry reason=invalid_manifest", " ".join(logs.output))
 

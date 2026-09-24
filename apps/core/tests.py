@@ -2462,21 +2462,6 @@ class MeditationSignalGatheringTests(TestCase):
         self.assertEqual(stars[0]["id"], star.id)
         self.assertEqual(stars[0]["galaxy_note"], "protect the off-days")
 
-    def test_gathers_recent_daily_note_snippets(self):
-        from apps.journal.models import Document
-
-        Document.objects.create(
-            tenant=self.tenant,
-            kind="daily",
-            slug=str(timezone.now().date()),
-            title="Today",
-            markdown="# Daily\nFelt scattered this morning but found focus after a walk.",
-        )
-        snippets = services.gather_meditation_signals(self.tenant).get("recent_notes")
-        self.assertTrue(snippets)
-        self.assertIn("found focus after a walk", snippets[0])
-        self.assertNotIn("# Daily", snippets[0])  # heading stripped
-
     def test_format_signals_renders_constellation(self):
         signals = {
             "constellation_stars": [
@@ -2486,6 +2471,7 @@ class MeditationSignalGatheringTests(TestCase):
                     "galaxy_note": "say it out loud",
                     "journal_entries": [{"text": "it shrank once I named it"}],
                     "tutoring_insights": [{"mastery_achieved": True}],
+                    "recent_activity": True,
                 }
             ],
         }

@@ -95,6 +95,20 @@ with a warning including `reason=intention` for an intention clash. `CORE_COMPOS
 `clash_accepted`. Legacy empty lessons contribute title/theme only; narration
 alignment with lesson metadata remains a prompt requirement.
 
+Meditation context uses at most eight owner excerpts from today and the prior two
+tenant-local days. Chat requires `recall_capture_enabled` and a non-null
+`recall_capture_birthday`, reads only post-birthday user text through the encrypted
+system-principal helper, and excludes on-device turns. Daily notes contribute only
+`### HH:MM — <owner display name>` quick-log entries, ending at the next heading;
+other daily-note prose is excluded. The bounded scan may return fewer excerpts.
+
+At most one constellation star is offered per sit. IDs supplied to the last three
+READY/DELIVERED/DONE sits cool down before selection; services persist those IDs
+as `lesson.context_star_ids` without changing the LLM schema. An old pinned note
+is described as saved context, not recent activity. Prompt and retry templates
+are assembled after tenant/model content is scrubbed; never redact the assembled
+instructions with tenant bindings.
+
 Legacy sits need lesson backfilling to close the cold start: empty lessons cannot enforce tradition/teaching variety.
 Run `python manage.py backfill_meditation_lessons --tenant <uuid> --limit 40 --dry-run`, then repeat without `--dry-run`; dry-run makes no LLM calls or writes.
 Run per tenant, owner first; `--all` processes Core-enabled tenants with the limit applied per tenant.

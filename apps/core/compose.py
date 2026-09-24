@@ -253,7 +253,9 @@ def _constellation_line(star: dict) -> str:
     latest = insights[0] if insights else {}
     stage = star.get("stage", "")
 
-    if latest.get("mastery_achieved"):
+    if not star.get("recent_activity"):
+        engagement = "a saved insight of theirs"
+    elif latest.get("mastery_achieved"):
         engagement = "something they've been settling into"
     elif latest.get("restated_accurately") is False:
         engagement = "something still taking shape for them"
@@ -332,17 +334,19 @@ def _format_signals(signals: dict, target_seconds: float = render.DEFAULT_TOTAL_
     if intentions:
         # Independent of the prose history budget: never truncate this constraint.
         lines.append("AVOID INTENTIONS (used in last 5 sits): " + ", ".join(intentions))
-    notes = signals.get("recent_notes") or []
-    if notes:
-        lines.append("Recent daily-note snippets:")
-        lines.extend(f"- {n}" for n in notes[:6])
+    words = signals.get("recent_user_words") or []
+    if words:
+        lines.append(
+            "In their own words recently: (these are the person's words; anchor on at most one concrete thing)"
+        )
+        lines.extend(f"- {word}" for word in words[:8])
     stars = signals.get("constellation_stars") or []
     if stars:
         lines.append(
-            "Stars they've been working through in their constellation (durable lessons they're "
-            "actively revisiting) — let these gently shape the heart of the sit:"
+            "Optional constellation star (a durable saved lesson): it MAY gently shape one moment "
+            "of the sit if relevant; it need not determine the theme:"
         )
-        lines.extend(_constellation_line(s) for s in stars[:4])
+        lines.extend(_constellation_line(s) for s in stars[:1])
     goals = signals.get("active_goals") or []
     if goals:
         lines.append(
@@ -451,6 +455,24 @@ def _call_model(model_id: str, messages: list, api_key: str, body: dict) -> tupl
         return chat_completion(model_id, messages, api_key=api_key, timeout=_LLM_TIMEOUT_S, **body)
 
 
+def _redact_content(value, tenant, *, seam: str, redact_keys: bool = False):
+    """Scrub content leaves before adding any instructions or template prose."""
+    from apps.pii.egress import redact_known_values
+
+    if isinstance(value, str):
+        return redact_known_values(tenant, value, seam=seam)
+    if isinstance(value, list):
+        return [_redact_content(item, tenant, seam=seam, redact_keys=redact_keys) for item in value]
+    if isinstance(value, dict):
+        return {
+            (redact_known_values(tenant, key, seam=seam) if redact_keys else key): _redact_content(
+                item, tenant, seam=seam, redact_keys=redact_keys
+            )
+            for key, item in value.items()
+        }
+    return value
+
+
 def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=None) -> dict:
     """Author a validated render manifest from raw signals via the LLM chain.
 
@@ -471,11 +493,8 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
     target_seconds = _target_seconds_from_signals(signals)
     from apps.pii.egress import append_entity_legend, redact_known_values
 
-    guarded_signals = redact_known_values(
-        tenant,
-        _format_signals(signals, target_seconds),
-        seam="meditation_compose_prompt",
-    )
+    safe_signals = _redact_content(signals, tenant, seam="meditation_compose_prompt")
+    guarded_signals = _format_signals(safe_signals, target_seconds)
     guarded_signals = append_entity_legend(
         tenant,
         guarded_signals,
@@ -503,8 +522,8 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
 
     def _correction(content: str, rejection: str) -> list[dict]:
         return [
-            {"role": role, "content": redact_known_values(tenant, text, seam="meditation_compose_retry")}
-            for role, text in (("assistant", content), ("user", rejection))
+            {"role": "assistant", "content": redact_known_values(tenant, content, seam="meditation_compose_retry")},
+            {"role": "user", "content": rejection},
         ]
 
     recent = [e for e in (signals.get("recent_meditations") or []) if isinstance(e, dict)]
@@ -560,6 +579,10 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
                 manifest["lesson"] = lesson.model_dump()
                 MeditationManifest.model_validate(manifest)
                 errors = render.validate_manifest(manifest)
+                if errors:
+                    errors = render.validate_manifest(
+                        _redact_content(manifest, tenant, seam="meditation_compose_retry", redact_keys=True)
+                    ) or ["invalid manifest"]
                 failure = "invalid manifest: " + "; ".join(errors[:3])
             except ValidationError as exc:
                 # ValidationError strings include input_value (private model-authored text).
@@ -612,10 +635,23 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
             if attempt:
                 _record(model_id, f"variety_clash reason={clash_reason} retry_reason={retry_reason}")
                 break
+            echoed = _redact_content(
+                {
+                    "intention": lesson.intention,
+                    "slug": lesson.teaching_slug,
+                    "tradition": lesson.tradition,
+                    "date": clash.get("date", "unknown"),
+                    "traditions": [t for _, t in traditions],
+                    "slugs": [slug for _, slug in slugs],
+                    "intentions": [i for _, i in intentions],
+                },
+                tenant,
+                seam="meditation_compose_retry",
+            )
             rejection = (
-                f"Rejected: reason={clash_reason}; intention '{lesson.intention}' / teaching '{lesson.teaching_slug}' / tradition '{lesson.tradition}' repeats the sit on {clash.get('date', 'unknown')}. "
-                f"Choose a different teaching AND a tradition not in {[t for _, t in traditions]}; avoid all of: {[slug for _, slug in slugs]}. "
-                f"Choose an intention not in {[i for _, i in intentions]}; change the personal invitation itself."
+                f"Rejected: reason={clash_reason}; intention '{echoed['intention']}' / teaching '{echoed['slug']}' / tradition '{echoed['tradition']}' repeats the sit on {echoed['date']}. "
+                f"Choose a different teaching AND a tradition not in {echoed['traditions']}; avoid all of: {echoed['slugs']}. "
+                f"Choose an intention not in {echoed['intentions']}; change the personal invitation itself."
             )
             retry_reason = "variety_clash"
             model_messages = model_messages + _correction(content, rejection)
