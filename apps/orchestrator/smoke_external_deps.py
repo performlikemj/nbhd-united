@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import re
+import tempfile
 import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from django.conf import settings
 
@@ -230,34 +232,25 @@ def _check_gemini_tts() -> None:
     if not api_key:
         raise SmokeSkipped("GEMINI_API_KEY is not configured")
 
-    from google.genai import types
-
     # Gemini rejects manually set deadlines below 10s. Two worst-case requests
     # plus the 2s retry backoff fit within this check's 25s runner deadline.
     client = render.make_gemini_client(api_key, timeout_ms=10_000)
     text = "Take a slow breath in, and let it go gently."
-    prompt = (
-        "Read the following aloud in a soft, calm, slow, soothing "
-        "meditation-guide voice. Be concise. Do not read these instructions aloud.\n\n"
-        f"{text}"
+    request = render.gemini_tts_request(
+        text,
+        render.DEFAULT_VOICE,
+        getattr(settings, "GEMINI_TTS_MODEL", "") or render.DEFAULT_MODEL,
+        "Be concise",
     )
     attempts = 2
     last_error = "no audio bytes"
     for attempt in range(attempts):
         try:
-            response = client.models.generate_content(
-                model=getattr(settings, "GEMINI_TTS_MODEL", "") or render.DEFAULT_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_modalities=["AUDIO"],
-                    speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=render.DEFAULT_VOICE)
-                        )
-                    ),
-                ),
-            )
-            if render._extract_audio(response):
+            response = client.models.generate_content(**request)
+            audio = render._extract_audio(response)
+            if audio:
+                with tempfile.TemporaryDirectory(prefix="core_tts_smoke_") as tmp:
+                    render._write_audio_wav(*audio, Path(tmp) / "speech.wav")
                 return
             last_error = "no audio bytes"
         except Exception as exc:  # noqa: BLE001 - mirror production's transient retry behavior

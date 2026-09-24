@@ -507,6 +507,19 @@ class RenderMeditationOrchestrationTests(TestCase):
             manifest=manifest if manifest is not None else _valid_manifest(),
         )
 
+    @override_settings(GEMINI_TTS_MODEL="gemini-2.5-flash-preview-tts")
+    def test_model_setting_still_allows_legacy_rollback(self):
+        session = self._session()
+        with (
+            patch.object(render, "render_manifest_to_audio", return_value=_fake_result()) as mock_render,
+            patch.object(services, "upload_workspace_file_binary"),
+            patch.object(services, "notify_meditation_ready"),
+        ):
+            services.render_meditation(session)
+        self.assertEqual(mock_render.call_args.kwargs["model"], "gemini-2.5-flash-preview-tts")
+        session.refresh_from_db()
+        self.assertEqual(session.model, "gemini-2.5-flash-preview-tts")
+
     def test_happy_path_sets_ready_and_fields(self):
         session = self._session()
         with (
@@ -521,7 +534,7 @@ class RenderMeditationOrchestrationTests(TestCase):
         self.assertEqual(session.status, MeditationStatus.READY)
         self.assertEqual(session.duration_ms, 601_000)
         self.assertEqual(session.guidance_text, "flattened narration")
-        self.assertEqual(session.model, "gemini-2.5-flash-preview-tts")
+        self.assertEqual(session.model, "gemini-3.8-flash-lite-tts")
         self.assertEqual(session.artifact_manifest_sha256, services._manifest_sha256(session.manifest))
         tid = str(self.tenant.id)
         self.assertEqual(session.audio_url, f"https://api.example.test/api/v1/meditations/{tid}/{session.id}.mp3")

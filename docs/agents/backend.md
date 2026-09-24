@@ -102,3 +102,14 @@ Run per tenant, owner first; `--all` processes Core-enabled tenants with the lim
 Add `--missing-intention` to also fill intention on existing lessons without that
 key, preserving their other fields. Existing missing intentions stay unknown until
 backfilled; new lessons require a Literal from the shared vocabulary in `lesson.py`.
+
+## Meditation TTS
+
+The default is `gemini-3.8-flash-lite-tts` with the Achernar (Soft) prebuilt voice.
+3.8 requests contain only the transcript in each text part; the calm-guide
+instruction and global/segment tones go in `speech_metadata.style`. The renderer
+and external-dependency smoke share the same request builder and normalize WAV
+or raw PCM responses to 24 kHz mono 16-bit WAV before processing.
+Set `GEMINI_TTS_MODEL=gemini-2.5-flash-preview-tts` (or a 3.1 TTS model) to roll
+back; those models retain the legacy inline instruction prefix. `google-genai`
+2.25.0 is required for the structured speech metadata fields.
