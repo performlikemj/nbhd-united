@@ -282,6 +282,132 @@ export function fixtureResponse(path: string, init?: RequestInit): Json | undefi
     }
   }
   if (p === "/api/v1/fuel/workouts/") return json(isEmpty ? [] : workouts);
+  if (p === "/api/v1/fuel/workouts/count/") return json({ count: isEmpty ? 0 : 42 });
+  if (p === "/api/v1/fuel/resting-hr/") {
+    return json(isEmpty ? [] : [58, 57, 59, 56, 57, 55, 56].map((bpm, i) => ({ id: `rhr-${i}`, date: isoDay(-i * 2), bpm, created_at: isoAt(-i * 2, 7) })));
+  }
+  if (p === "/api/v1/fuel/weekly-summary/") {
+    return json({
+      week_start: isoDay(-4),
+      week_end: isoDay(2),
+      by_category: isEmpty ? [] : [{ category: "strength", count: 1, total_minutes: 55 }, { category: "cardio", count: 1, total_minutes: 40 }],
+      totals: isEmpty ? { sessions: 0, minutes: 0 } : { sessions: 2, minutes: 95 },
+    });
+  }
+  if (p === "/api/v1/fuel/profile/") {
+    return json({
+      id: "fp-1", onboarding_status: "completed", fitness_level: "intermediate",
+      goals: ["Run a 10k", "Stay strong"], limitations: [], equipment: ["barbell", "dumbbells"],
+      days_per_week: 4, additional_context: "", distance_unit: "km",
+      created_at: "2025-06-01T00:00:00Z", updated_at: isoAt(-3, 9),
+    });
+  }
+  if (p === "/api/v1/journal/tree/") {
+    return json([
+      { kind: "daily", label: "Daily notes", items: isEmpty ? [] : [0, -1, -2].map((d) => ({ slug: isoDay(d), title: isoDay(d), updated_at: isoAt(d, 21) })) },
+      { kind: "weekly", label: "Weekly reviews", items: isEmpty ? [] : [{ slug: "2026-w38", title: "Week 38", updated_at: isoAt(-5, 20) }] },
+      { kind: "project", label: "Projects", items: isEmpty ? [] : [{ slug: "home-renovation", title: "Home Renovation", updated_at: isoAt(-1, 12) }] },
+      { kind: "goal", label: "Goals", items: isEmpty ? [] : [{ slug: "run-a-10k", title: "Run a 10k", updated_at: isoAt(-2, 8) }] },
+      { kind: "ideas", label: "Ideas", items: [] },
+    ]);
+  }
+  const doc = p.match(/^\/api\/v1\/journal\/documents\/([^/]+)\/([^/]+)\/$/);
+  if (doc && method === "GET") {
+    const [, kind, slug] = doc;
+    const bodies: Record<string, string> = {
+      daily: "## Morning\n\nTook the long way to coffee and noticed the city was unusually quiet. Sent the revised kitchen measurements.\n\n## Evening\n\n- [x] Push day\n- [ ] Book the counter template visit\n",
+      project: "Kitchen first, then the back porch.\n\n## Milestones\n\n- [x] Demo and haul-away\n- [x] Cabinets ordered\n- [ ] Counter template, fabricator Friday\n",
+      goal: "Base-building block: four days a week, mostly zone 2.\n",
+      weekly: "## Wins\n\n- Four sessions\n\n## Lessons\n\n- Reflect weekly, not daily\n",
+    };
+    return json({
+      id: `doc-${kind}-${slug}`, kind, slug,
+      title: kind === "daily" ? slug : slug.replace(/-/g, " ").replace(/^\w/, (c) => c.toUpperCase()),
+      markdown: isEmpty ? "" : bodies[kind] ?? "",
+      created_at: isoAt(-1, 8), updated_at: isoAt(0, 8),
+    });
+  }
+  if (p === "/api/v1/journal/status/") {
+    return json({
+      as_of: new Date().toISOString(), typed_lifecycle: true, finance_enabled: false,
+      open_tasks: isEmpty ? [] : [
+        { id: "t1", title: "Book the counter template visit", status: "open", due_date: isoDay(1), pillar: "home" },
+        { id: "t2", title: "Try the route with a friend", status: "open", due_date: null, pillar: "fitness" },
+      ],
+      active_goals: isEmpty ? [] : [{ id: "g1", title: "Run a 10k", status: "active", target_date: isoDay(40), pillar: "fitness" }],
+      obligations: [],
+    });
+  }
+  if (p === "/api/v1/dashboard/horizons/") {
+    return json({
+      north_star: isEmpty ? [] : [{ id: "ns1", source: "purpose", statement: "Build a body and a life that can go the distance. Steady, not frantic.", pillars: ["fuel", "journal"], status: "confirmed", origin: "chat", created_at: "2026-08-01T00:00:00Z" }],
+      goals: isEmpty ? [] : [{
+        id: "g1", title: "Run a 10k", slug: "run-a-10k", preview: "Base-building block: four days a week, mostly zone 2.", status: "active",
+        tasks: [
+          { id: "gt1", title: "Choose a local 10k", status: "done", due_date: null },
+          { id: "gt2", title: "Find a comfortable running rhythm", status: "done", due_date: null },
+          { id: "gt3", title: "Make room for an easy long run", status: "open", due_date: null },
+          { id: "gt4", title: "Try the route with a friend", status: "open", due_date: null },
+        ],
+        created_at: "2026-08-10T00:00:00Z", updated_at: isoAt(-2, 8),
+      }],
+      pending_extractions: [],
+      weekly_pulse: isEmpty ? [] : [{ week_start: isoDay(-11), week_end: isoDay(-5), week_rating: "thumbs-up", top_win: "Four sessions and no skipped mornings" }],
+      weekly_documents: [],
+      mood_trend: isEmpty ? [] : Array.from({ length: 14 }, (_, i) => ({ date: isoDay(-13 + i), mood: ["steady", "good", "low", "good"][i % 4], energy: String(5 + (i % 4)) })),
+      momentum: Array.from({ length: 14 }, (_, i) => ({ date: isoDay(-13 + i), message_count: isEmpty ? 0 : (i * 7) % 11, has_journal: !isEmpty && i % 2 === 0 })),
+      current_streak: isEmpty ? 0 : 14,
+      assistant_insights: isEmpty ? [] : [
+        { id: "ai1", pillar: "journal", topic_slug: "deep-work", topic_display_name: "Deep work", statement: "You write the most on focused mornings.", status: "open", confidence: 0.72, created_at: isoAt(-3, 9), last_confirmed_at: null },
+        { id: "ai2", pillar: "fuel", topic_slug: "fitness", topic_display_name: "Fitness", statement: "Cardio days line up with brighter mood entries.", status: "confirmed", confidence: 0.81, created_at: isoAt(-9, 9), last_confirmed_at: isoAt(-2, 9) },
+      ],
+      topic_signals: [],
+    });
+  }
+  if (p === "/api/v1/lessons/constellation/") {
+    const lessons = [
+      ["Start before you feel ready.", 1, "Work", 120, 90],
+      ["Protect the first hour.", 1, "Work", 180, 150],
+      ["Sleep is the first workout.", 2, "Health", 420, 110],
+      ["Easy days make hard days possible.", 2, "Health", 470, 190],
+      ["Reflect weekly, not daily.", 3, "Growth", 300, 300],
+      ["Finish the rough draft first.", 4, "Craft", 150, 360],
+    ] as const;
+    return json({
+      nodes: isEmpty ? [] : lessons.map(([text, cid, label, x, y], i) => ({ id: i + 1, text, context: "", tags: [label.toLowerCase()], cluster_id: cid, cluster_label: label, x, y, created_at: isoAt(-30 + i, 9) })),
+      edges: isEmpty ? [] : [{ source: 1, target: 2, similarity: 0.7, connection_type: "similar" }, { source: 3, target: 4, similarity: 0.66, connection_type: "similar" }],
+      affinity_edges: [],
+      clusters: isEmpty ? [] : [{ id: 1, label: "Work", count: 2, tags: ["work"] }, { id: 2, label: "Health", count: 2, tags: ["health"] }, { id: 3, label: "Growth", count: 1, tags: ["growth"] }, { id: 4, label: "Craft", count: 1, tags: ["craft"] }],
+    });
+  }
+  if (p === "/api/v1/lessons/pending/") return json([]);
+  if (p === "/api/v1/core/sessions/") {
+    return json(isEmpty ? [] : [{
+      id: "med-1", date: isoDay(0), status: "ready", completed_at: null,
+      lesson: { summary: "Begin again, gently." }, phase_arc: null,
+      title: "Begin again, gently", theme: "rest", voice: "calm", model: "", guidance_text: "",
+      audio_url: "", ogg_url: "", duration_ms: 660000, ambient_bed: "lakeshore",
+      error: "", user_feedback: "", feedback_note: "", feedback_at: null,
+      created_at: isoAt(0, 6), updated_at: isoAt(0, 6),
+    }]);
+  }
+  if (p === "/api/v1/core/profile/") {
+    return json({
+      id: "cp-1", onboarding_status: "completed", preferred_voice: "calm", preferred_duration_minutes: 11,
+      ambient_bed_enabled: true, daily_cron_enabled: true, preferred_time: "07:00", additional_context: "",
+      created_at: "2025-06-01T00:00:00Z", updated_at: isoAt(-3, 9),
+    });
+  }
+  if (p === "/api/v1/tenants/personas/") {
+    return json([
+      { key: "neighbor", label: "Neighbor", description: "Warm and practical", emoji: "" },
+      { key: "coach", label: "Coach", description: "Direct and encouraging", emoji: "" },
+    ]);
+  }
+  if (p === "/api/v1/tenants/preferences/") return json({ agent_persona: "neighbor" });
+  if (p === "/api/v1/tenants/refresh-config/") {
+    return json({ can_refresh: true, last_refreshed: isoAt(-2, 10), cooldown_seconds: 0, status: "ok", has_pending_update: false, container_image_tag: "v1", latest_image_tag: "v1", image_outdated: false });
+  }
   if (p === "/api/v1/fuel/goals/") return json([]);
   return undefined;
 }
