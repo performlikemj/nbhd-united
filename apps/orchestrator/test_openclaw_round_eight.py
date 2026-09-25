@@ -303,7 +303,8 @@ class ImageBoundaryTests(TestCase):
 
     def test_actual_share_is_reverified_and_repaired_immediately_before_submission(self):
         app = SimpleNamespace(
-            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old")
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old"),
+            latest_ready_revision_name="old-rev",
         )
         record = {
             "status": "RUNNING",

@@ -188,7 +188,11 @@ class PrestagingTests(TestCase):
             ("apps.cron.gateway_client.get_gateway_token_for_tenant", {"return_value": "local-contract-token"}),
             (
                 "apps.orchestrator.azure_client._put_share_file",
-                {"side_effect": lambda tenant, path, *, data, **kw: self.files.update({path: data})},
+                {
+                    "side_effect": lambda tenant, path, *, data=None, text=None, **kw: self.files.update(
+                        {path: data if data is not None else text}
+                    )
+                },
             ),
             (
                 "apps.orchestrator.azure_client.download_workspace_file_binary",
@@ -202,7 +206,8 @@ class PrestagingTests(TestCase):
     def test_crash_after_image_apply_has_signed_checkpoint_and_resume_reuses_revision(self):
         source = job(schedule={"kind": "at", "at": (timezone.now() + timedelta(hours=3)).isoformat()})
         app = SimpleNamespace(
-            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old")
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old"),
+            latest_ready_revision_name="old-rev",
         )
         target = "registry/nbhd-openclaw:" + TAG
         rec = {"target_image": target, "revision_suffix": "m94-saved"}
@@ -280,7 +285,8 @@ class PrestagingTests(TestCase):
 
     def test_unverified_prestage_prevents_image_submission(self):
         app = SimpleNamespace(
-            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old")
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old"),
+            latest_ready_revision_name="old-rev",
         )
         record = {"tag": TAG, "evidence": {"preflight": {"target_image": "new", "revision_suffix": "new"}}}
         with (

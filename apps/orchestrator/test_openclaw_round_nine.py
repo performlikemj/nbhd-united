@@ -316,7 +316,8 @@ class DrainAndRecoveryTests(TestCase):
             raise SystemExit("dead after submission")
 
         app = SimpleNamespace(
-            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old")
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old"),
+            latest_ready_revision_name="old-rev",
         )
         with (
             patch.object(m.time, "sleep", side_effect=drain),

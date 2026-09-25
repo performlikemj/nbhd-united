@@ -235,6 +235,21 @@ reset completed steps, or run a competing image bump to force progress.
 - After signed cutover: check the signing key, mapping of declaration keys to
   Postgres rows and duplicate metadata. Unknown
   legacy jobs are never deleted by name alone. Fix the mismatch, then resume.
+- **Bail out (`--rollback --tenant <id>`)**: every run records an undo point before
+  its first image submission, namely an Azure Files share snapshot and the pre-swap
+  revision name. Rollback mirrors the snapshot back onto the share (9.4's first
+  boot rewrites files 5.28 cannot read), redeploys the pre-swap revision's exact
+  template under an `rb-` suffix, waits for health, and only then restores the DB
+  version/tag and lifts the edit fence. The failed attempt is kept under
+  `previous`, and a later run starts fresh. Postgres cron rows are never removed;
+  the 5.28 reconciler re-pushes them. Runs recorded before this existed have no
+  undo point and use the manual path below.
+- The 9.4 config is written to the share right AFTER the image submission (a
+  5.28 runtime rejects a 9.4 config, so a failed submit leaves the 5.28 file in
+  place). A 5.28 render enables a web-search provider that 9.4 npm-installs at
+  boot; under stdout redaction that install cannot parse npm output and the
+  gateway refuses to start (E2E canary 2026-09-25). A resumed run re-stages it
+  before the health wait.
 - If old runtime recovery is unavoidable, stop the tenant under orchestrator
   control; independently identify its old binary version (especially bare SHA),
   recover the old compatible config/workspace from authoritative sources, restore

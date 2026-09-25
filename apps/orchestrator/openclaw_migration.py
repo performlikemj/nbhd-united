@@ -669,6 +669,7 @@ def image_step(tenant, record):
         # submission. Repair changed/missing bytes with atomic publication.
         stage_signed_crons(tenant, record, checkpoint="signed_prestaged")
         assert_cutover_safe([j for j, _ in canonical_inventory(tenant)] + record.get("cron_export", []))
+        capture_undo_point(tenant, record, app)
         azure_client.update_container_image(
             tenant.container_id, image, revision_suffix=suffix, operation_timeout=300, retrofit_storage=True
         )
@@ -678,9 +679,88 @@ def image_step(tenant, record):
     # submitted revision. Recovery must fence this path before health/staging too.
     if not tenant.openclaw_migration_cron_fenced:
         fence_and_drain(tenant, record)
+    # Only after submission: 5.28 cannot read a 9.4 config, so a failed submit
+    # must leave the 5.28 file in place. A 9.4 boot that raced this write
+    # restarts and picks it up (the revision restart-loops until healthy).
+    stage_94_config(tenant, record)
     health = wait_healthy(tenant, image=image, suffix=suffix)
     stage_signed_crons(tenant, record, checkpoint="signed_after_health")
     return health
+
+
+def capture_undo_point(tenant, record, app):
+    """Record what --rollback needs, once, before the first image submission."""
+    if record.get("undo"):
+        return
+    source_revision = getattr(app, "latest_ready_revision_name", None)
+    if not source_revision:
+        raise MigrationError("undo_point_unavailable")
+    record["undo"] = {
+        "share_snapshot": azure_client.snapshot_tenant_share(str(tenant.id)),
+        "source_revision": source_revision,
+        "source_image": _image(app),
+        "taken_at": timezone.now().isoformat(),
+    }
+    _save(tenant, record)
+
+
+def rollback_tenant(tenant_id) -> dict:
+    """Operator undo for a failed migration: back to the exact 5.28 runtime.
+
+    Restores the share snapshot taken before the swap (9.4's first boot
+    rewrites files 5.28 cannot read), redeploys the pre-swap revision's
+    template, waits for health, then restores the DB version/tag. Postgres
+    cron rows were never removed; the 5.28 reconciler re-pushes them.
+    """
+    tenant = Tenant.objects.get(pk=tenant_id)
+    record = dict(tenant.openclaw_migration or {})
+    undo = record.get("undo")
+    if not undo:
+        raise MigrationError("no_undo_point")
+    if record.get("status") == "RUNNING":
+        lease = parse_datetime(record.get("lease_until") or "")
+        if lease and lease > timezone.now():
+            raise MigrationError("migration_running")
+    source = record["evidence"]["preflight"]["source"]
+    Tenant.objects.filter(pk=tenant.pk).update(openclaw_migration_cron_fenced=True)
+    restored = azure_client.restore_tenant_share(str(tenant.id), undo["share_snapshot"])
+    suffix = "rb-" + uuid.uuid4().hex[:10]
+    azure_client.copy_revision(tenant.container_id, undo["source_revision"], suffix)
+    health = wait_healthy(tenant, image=undo["source_image"], suffix=suffix)
+    Tenant.objects.filter(pk=tenant.pk).update(
+        openclaw_version=source["version"], container_image_tag=source["tag"], openclaw_migration_cron_fenced=False
+    )
+    # A later run starts fresh; the attempt stays on file for audit.
+    rolled_back = {
+        "status": "ROLLED_BACK",
+        "rolled_back_at": timezone.now().isoformat(),
+        "rollback": {**restored, **health},
+        "previous": record,
+    }
+    Tenant.objects.filter(pk=tenant.pk).update(openclaw_migration=rolled_back)
+    return {"status": "ROLLED_BACK", "revision": health["revision"], **restored}
+
+
+def stage_94_config(tenant, record):
+    """Put a 9.4-rendered openclaw.json on the share before 9.4 boots from it.
+
+    9.4 reads the share config at boot. A 5.28 render enables web search with
+    a provider 9.4 must npm-install at boot, and that install cannot parse npm
+    output under stdout redaction, so the gateway refuses to start and the
+    revision restart-loops (E2E canary 2026-09-25). The 9.4 render uses the
+    image-vendored provider. The later config step still does the strict full
+    refresh; this only guarantees the first 9.4 boot reads a 9.4 config.
+    """
+    from .azure_client import upload_config_to_file_share
+    from .config_generator import config_to_json, generate_openclaw_config
+
+    _assert_owner(tenant, record)
+    rendered = Tenant.objects.select_related("user").get(pk=tenant.pk)
+    # Render only: the stored version/tag flip stays in the version step.
+    rendered.openclaw_version, rendered.container_image_tag = VERSION, record["tag"]
+    upload_config_to_file_share(str(rendered.id), config_to_json(generate_openclaw_config(rendered)))
+    record["config_prestaged_at"] = timezone.now().isoformat()
+    _save(tenant, record)
 
 
 def stage_signed_crons(tenant, record, *, checkpoint):
@@ -946,6 +1026,10 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False, takeover=None, confirm
     with transaction.atomic():
         tenant = Tenant.objects.select_for_update().select_related("user").get(pk=tenant_id)
         record = copy.deepcopy(tenant.openclaw_migration or {})
+        # A rolled-back attempt is history, not a resumable run.
+        rolled_back = [record] if record.get("status") == "ROLLED_BACK" else []
+        if rolled_back:
+            record = {}
         eligible = (
             not tenant.hibernated_at
             and tenant.status == Tenant.Status.ACTIVE
@@ -976,6 +1060,8 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False, takeover=None, confirm
             _check_lease(record, takeover, confirm_owner_dead)
             if not record:
                 record = {"tag": tag, "started_at": timezone.now().isoformat(), "completed": [], "evidence": {}}
+                if rolled_back:
+                    record["rolled_back_attempts"] = rolled_back
             # Verification is a current observation, never a resumable mutation
             # checkpoint. A crash after verifying must not certify stale state.
             record["completed"] = [s for s in record.get("completed", []) if s != "verify"]

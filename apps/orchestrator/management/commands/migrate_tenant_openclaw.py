@@ -27,6 +27,11 @@ class Command(BaseCommand):
         mode.add_argument("--dry-run", action="store_true")
         mode.add_argument("--verify-only", action="store_true")
         mode.add_argument("--report", action="store_true", help="Read-only per-tenant preservation readiness")
+        mode.add_argument(
+            "--rollback",
+            action="store_true",
+            help="Undo a failed migration: restore the pre-swap share snapshot and 5.28 revision (one tenant)",
+        )
 
     def handle(self, *args, **options):
         raw = options["tenant"] or options["tenants"]
@@ -41,6 +46,18 @@ class Command(BaseCommand):
         if options["takeover"] and (len(ids) != 1 or options["dry_run"] or options["verify_only"] or options["report"]):
             raise CommandError("Dead-owner recovery requires one tenant and execution mode")
         tag = options["tag"] or settings.OPENCLAW_IMAGE_TAG
+        if options["rollback"]:
+            if len(ids) != 1:
+                raise CommandError("Rollback takes exactly one --tenant")
+            try:
+                result = openclaw_migration.rollback_tenant(ids[0])
+            except MigrationError as exc:
+                raise CommandError(f"{ids[0]}: ROLLBACK FAILED at {exc}") from None
+            self.stdout.write(
+                f"{ids[0]}: ROLLED_BACK revision={result['revision']} "
+                f"restored={result['restored']} deleted={result['deleted']}"
+            )
+            return
         for tenant_id in ids:
             if options["report"]:
                 tenant = Tenant.objects.get(pk=tenant_id)

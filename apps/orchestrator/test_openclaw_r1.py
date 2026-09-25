@@ -108,7 +108,8 @@ class RecoveryTests(TestCase):
         imminent = job(schedule={"kind": "at", "at": (timezone.now() + timedelta(minutes=5)).isoformat()})
         rec["cron_export"] = [imminent]
         app = SimpleNamespace(
-            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old")
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old"),
+            latest_ready_revision_name="old-rev",
         )
         with (
             patch.object(migration.time, "sleep"),
@@ -184,7 +185,8 @@ class AdditionalRecoveryTests(RecoveryTests):
             migration.capture(self.tenant, rec)
         rec["evidence"]["preflight"] = {"target_image": "new", "revision_suffix": "new"}
         app = SimpleNamespace(
-            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old")
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old"),
+            latest_ready_revision_name="old-rev",
         )
         with (
             patch.object(migration.time, "sleep"),
