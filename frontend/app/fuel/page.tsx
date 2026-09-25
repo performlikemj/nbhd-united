@@ -41,7 +41,7 @@ export default function FuelPage() {
     <div className="mx-auto py-2 sm:py-6 overflow-x-hidden">
       {/* Mobile: compact eyebrow + CTA on one row — saves ~140px above the fold */}
       <div className="sm:hidden flex items-center justify-between gap-3 mb-5">
-        <span className="text-accent text-xs font-bold uppercase tracking-[0.22em]">FUEL</span>
+        <span data-os-legacy-title className="text-accent text-xs font-bold uppercase tracking-[0.22em]">FUEL</span>
         <button
           onClick={() => setNewSheet({ open: true, date: null })}
           className="glow-purple rounded-full bg-accent text-white min-h-[44px] px-4 text-sm font-semibold hover:brightness-110 active:scale-[0.98] transition flex items-center gap-1.5 shrink-0"
@@ -54,8 +54,8 @@ export default function FuelPage() {
       {/* sm+: full lyrical hero */}
       <div className="hidden sm:flex sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
         <div className="min-w-0">
-          <span className="text-accent text-[10px] font-bold uppercase tracking-[0.2em] mb-1 block">FUEL</span>
-          <h1 className="text-4xl md:text-5xl font-semibold italic leading-tight">
+          <span data-os-legacy-title className="text-accent text-[10px] font-bold uppercase tracking-[0.2em] mb-1 block">FUEL</span>
+          <h1 data-os-legacy-title className="text-4xl md:text-5xl font-semibold italic leading-tight">
             Every session,<br />
             <span className="text-ink-muted">on the calendar.</span>
           </h1>

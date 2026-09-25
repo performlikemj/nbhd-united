@@ -223,7 +223,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
     <nav aria-label="Journal sidebar" className="flex h-full w-full lg:w-[15rem] flex-col border-r border-white/[0.03] bg-[#0B0F13]/80 backdrop-blur-2xl">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-white/[0.04] px-4 py-4">
-        <div>
+        <div data-os-legacy-title>
           <h2 className="font-headline text-lg font-semibold text-ink tracking-tight">Journal</h2>
           <p className="text-[10px] uppercase tracking-[0.15em] text-ink-faint mt-0.5">Celestial Sanctuary</p>
         </div>

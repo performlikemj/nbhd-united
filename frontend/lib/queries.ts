@@ -63,6 +63,7 @@ import {
   fetchRefreshConfigStatus,
   fetchSidebarTree,
   fetchTenant,
+  fetchRecentAssistantCards,
   fetchTemplates,
   fetchTelegramStatus,
   fetchLineStatus,
@@ -1809,6 +1810,16 @@ export function useDeleteRestingHRMutation() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["fuel-resting-hr"] });
     },
+  });
+}
+
+// Web Overview — recent assistant cards (read-only; hides when none).
+export function useAssistantCardsQuery(enabled: boolean) {
+  return useQuery({
+    queryKey: ["web-assistant-cards"],
+    queryFn: () => fetchRecentAssistantCards(7),
+    staleTime: 60_000,
+    enabled: enabled && isLoggedIn(),
   });
 }
 

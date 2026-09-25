@@ -75,6 +75,8 @@ export interface Tenant {
   // privacy (GRAVITY_ENABLED off server-side) — hides the tab + enable toggle.
   gravity_available: boolean;
   fuel_enabled: boolean;
+  /** Web redesign (Open Sky) — per-tenant gate WEB_REDESIGN_TENANT_IDS. Missing = off. */
+  web_redesign?: boolean;
   core_enabled: boolean;
   byo_models_enabled: boolean;
   neighborhood_enabled: boolean;

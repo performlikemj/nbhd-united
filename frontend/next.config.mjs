@@ -7,6 +7,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const nextConfig = {
   reactStrictMode: true,
   output: 'export',
+  // `page.dev.tsx` routes (e.g. /dev/quiet, the Open Sky primitives sheet) exist
+  // only under `next dev`; production builds don't match the `dev.tsx` extension.
+  pageExtensions: process.env.NODE_ENV === 'production'
+    ? ['tsx', 'ts', 'jsx', 'js']
+    : ['dev.tsx', 'tsx', 'ts', 'jsx', 'js'],
   images: {
     unoptimized: true,
   },

@@ -331,3 +331,21 @@ When asking a coding agent for UI in this project, reference these tokens verbat
 - Canonical components: [`frontend/components/`](frontend/components/)
 - Landing primitives: [`frontend/components/landing/`](frontend/components/landing/)
 - Superseded human-readable guide: [`frontend/BRAND_GUIDE.md`](frontend/BRAND_GUIDE.md) *(pre-Constellation — do not use for code generation)*
+
+---
+
+## Web app — Open Sky (web redesign, 2026-09-25)
+
+The logged-in app for tenants with `web_redesign` (per-tenant gate `WEB_REDESIGN_TENANT_IDS`) uses **Open Sky** — the same language as the iPhone app (nbhd-ios PR #207). Everyone else keeps the Constellation skin above until the gate widens. Directive: `DIRECTIVE_web_living_galaxy.md` §2 (v3).
+
+**Where it lives.** Tokens: `--os-*` in `frontend/app/globals.css` (Tailwind `os-*` colours). The shell (`components/open-sky/shell.tsx`) sets `html.open-sky`, which also re-skins legacy sections through their existing tokens (`--bg`, `--ink-muted`, `--border`, `.glass-card` → hairline, glows off). Primitives: `components/open-sky/primitives.tsx`, charts: `components/open-sky/charts.tsx`, starfield: `components/open-sky/starfield.tsx`. Dev-only sheet of every primitive: `/dev/quiet` (`page.dev.tsx`, never in production builds).
+
+**Rules (these override §1's glass/glow devices for Open Sky screens):**
+- Content sits on the night sky (`--os-sky #07090C` + a faint static starfield). Group with space, a hairline (`--os-hairline`) and a small uppercase label (`.os-label`) — **not boxes**. A quiet surface (`--os-surface`) only for true objects you act on (an editable table, a menu, a popover).
+- One serif page title per screen (`.os-page-title`, Instrument Serif upright). Everything else Plus Jakarta Sans; numbers `tabular-nums` (`.os-num`).
+- One accent (`--os-accent #C4BBFF`) for links, selection, focus and the primary action. Teal (`--os-done`) only means done; amber (`--os-attn`) only means attention.
+- Buttons: `.os-btn` outline capsule (primary), `.os-btn-text` (secondary), `GhostCircleButton` (outline circle + word under it) for big actions. **Never filled.**
+- No gradients on UI, no glows / halos, no blur washes (the phone bar's backdrop blur is the one functional exception), no emoji.
+- Text contrast: ink `#E2E8F0`, muted α .80, faint α .62, labels α .78 (raised on iOS after "hard to read" — keep them).
+- Navigation: desktop 240 px text rail (current = white + accent tick), tablet icon rail, phone web = floating capsule bar (Overview, Log, People, More) with 12 px labels, safe areas and `100dvh`.
+- Charts: 1.5 px near-white line / thin bars, accent only for latest point or goal met, dashed hairline goal, no fills.
