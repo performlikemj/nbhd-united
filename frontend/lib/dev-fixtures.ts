@@ -174,6 +174,37 @@ const feed = [
   },
 ];
 
+// Neighborhood: two in "your sky", five others; bonds are buckets only.
+let people = [
+  ["f-1", "Aiko", "aiko", 12, true, "strong", "2024-03-02"],
+  ["f-2", "Ren", "ren", 200, true, "steady", "2025-01-15"],
+  ["f-3", "Mika", "mika", 320, false, "light", "2025-06-20"],
+  ["f-4", "Daniel", "dan", 140, false, "steady", "2023-11-08"],
+  ["f-5", "Sora", "sora", 40, false, "light", "2025-08-30"],
+  ["f-6", "Hana", "hana", 280, false, "strong", "2024-09-12"],
+  ["f-7", "Kenji", "kenji", 90, false, "light", "2025-02-01"],
+].map(([id, name, handle, hue, sky, bond, since]) => ({
+  friendship_id: id as string,
+  display_name: name as string,
+  handle: handle as string,
+  avatar_hue: hue as number,
+  bio: "",
+  spark_count: 0,
+  in_my_sky: sky as boolean,
+  bond: bond as string,
+  friends_since: since as string,
+  has_unread_thread: false,
+  thread_id: null as string | null,
+}));
+let wavesIn = [
+  { friendship_id: "w-1", direction: "incoming", display_name: "Tomo", handle: "tomo", avatar_hue: 170, note: "We met at the running club!", created_at: "" },
+];
+const missionAsks = [
+  { mission_id: "m-1", title: "Help Aiko move on Saturday", status: "active", target: {}, target_date: null as string | null, version: 1, my_commitment: "", my_status: "invited", my_role: "member" },
+  { mission_id: "m-2", title: "Ren's 10k training buddy", status: "active", target: { cadence: "weekly" }, target_date: null as string | null, version: 1, my_commitment: "", my_status: "invited", my_role: "member" },
+  { mission_id: "m-3", title: "Morning walks", status: "active", target: { cadence: "daily" }, target_date: null as string | null, version: 1, my_commitment: "Walk 20 min", my_status: "active", my_role: "owner" },
+];
+
 function json(body: Json): Json {
   return JSON.parse(JSON.stringify(body));
 }
@@ -368,18 +399,121 @@ export function fixtureResponse(path: string, init?: RequestInit): Json | undefi
     const lessons = [
       ["Start before you feel ready.", 1, "Work", 120, 90],
       ["Protect the first hour.", 1, "Work", 180, 150],
+      ["Say no to the good to keep the great.", 1, "Work", 90, 170],
+      ["Ship small, ship often.", 1, "Work", 160, 60],
       ["Sleep is the first workout.", 2, "Health", 420, 110],
       ["Easy days make hard days possible.", 2, "Health", 470, 190],
+      ["Walk after dinner.", 2, "Health", 520, 120],
       ["Reflect weekly, not daily.", 3, "Growth", 300, 300],
+      ["Ask for the feedback you fear.", 3, "Growth", 350, 260],
+      ["Notice what drains you.", 3, "Growth", 330, 340],
       ["Finish the rough draft first.", 4, "Craft", 150, 360],
+      ["Cut the first paragraph.", 4, "Craft", 200, 330],
+      ["Steal like an artist.", 4, "Craft", 110, 400],
+      ["Make it work, then make it good.", 4, "Craft", 190, 420],
+      ["Rest before you are tired.", 4, "Craft", 230, 390],
     ] as const;
     return json({
       nodes: isEmpty ? [] : lessons.map(([text, cid, label, x, y], i) => ({ id: i + 1, text, context: "", tags: [label.toLowerCase()], cluster_id: cid, cluster_label: label, x, y, created_at: isoAt(-30 + i, 9) })),
       edges: isEmpty ? [] : [{ source: 1, target: 2, similarity: 0.7, connection_type: "similar" }, { source: 3, target: 4, similarity: 0.66, connection_type: "similar" }],
       affinity_edges: [],
-      clusters: isEmpty ? [] : [{ id: 1, label: "Work", count: 2, tags: ["work"] }, { id: 2, label: "Health", count: 2, tags: ["health"] }, { id: 3, label: "Growth", count: 1, tags: ["growth"] }, { id: 4, label: "Craft", count: 1, tags: ["craft"] }],
+      clusters: isEmpty ? [] : [{ id: 1, label: "Work", count: 4, tags: ["work"] }, { id: 2, label: "Health", count: 3, tags: ["health"] }, { id: 3, label: "Growth", count: 3, tags: ["growth"] }, { id: 4, label: "Craft", count: 5, tags: ["craft"] }],
     });
   }
+  if (p === "/api/v1/datebook/agenda/") {
+    // `?agenda=stale` = last complete sync too old to cover the week; `?agenda=disabled` = not connected.
+    const mode = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("agenda") : null;
+    if (mode === "disabled") return json({ state: "datebook_disabled" });
+    const days = Array.from({ length: 7 }, (_, i) => isoDay(i));
+    const zoned = (id: string, day: number, h: number, m: number, mins: number, title: string, calendar = "Home") => ({
+      entity: "event", id, day: isoDay(day), title, location: "", notes: "", calendar_title: calendar, source_title: "iCloud", display_text: title, authorization: "full_access", read_only: false,
+      time: { kind: "zoned", start_at: isoAt(day, h, m), end_at: new Date(new Date(isoAt(day, h, m)).getTime() + mins * 60000).toISOString(), tz_id: "Asia/Tokyo" },
+    });
+    const items = isEmpty || mode === "stale" ? [] : [
+      zoned("e1", 0, 9, 30, 30, "Stand-up", "Work"),
+      zoned("e2", 0, 18, 0, 60, "Dinner with Aiko"),
+      { entity: "reminder", id: "r1", day: isoDay(1), title: "Renew passport", location: "", notes: "", list_title: "Errands", due: { kind: "all_day", date: isoDay(1) } },
+      zoned("e3", 1, 7, 0, 45, "Run club"),
+      { entity: "event", id: "e4", day: isoDay(3), title: "Kyoto trip", location: "", notes: "", calendar_title: "Home", source_title: "iCloud", display_text: "Kyoto trip", authorization: "full_access", read_only: false, time: { kind: "all_day", start_date: isoDay(3), end_date_exclusive: isoDay(5) } },
+      zoned("e5", 6, 10, 0, 60, "Dentist"),
+    ];
+    return json({
+      state: "ok",
+      server_now: new Date().toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      requested: { start_day: days[0], end_day_exclusive: isoDay(7), start_at: isoAt(0, 0), end_at: isoAt(7, 0) },
+      covered: mode === "stale" ? null : { start_at: isoAt(0, 0), end_at: isoAt(isEmpty ? 7 : 5, 0) },
+      covered_days: mode === "stale" ? [] : days.slice(0, isEmpty ? 7 : 5),
+      freshness: {
+        events_last_complete_sync_at: mode === "stale" ? new Date(Date.now() - 3 * 86400000).toISOString() : new Date(Date.now() - 12 * 60000).toISOString(),
+        reminders_last_complete_sync_at: null,
+        events_authorization: "full_access",
+        gateway_status: "active",
+      },
+      includes: { events: true, reminders: true },
+      items,
+      truncated: false,
+    });
+  }
+  if (p === "/api/v1/friends/home/") {
+    missionAsks[0].target_date = isoDay(2);
+    wavesIn = wavesIn.map((w) => ({ ...w, created_at: w.created_at || isoAt(-1, 18) }));
+    return json({
+      profile: { handle: "yuki", display_name: "Yuki", avatar_hue: 260 },
+      neighbors: isEmpty ? [] : people,
+      pending_in: isEmpty ? [] : wavesIn,
+      pending_out: isEmpty ? [] : [{ friendship_id: "w-2", direction: "outgoing", display_name: "Mei", handle: "mei", avatar_hue: 330, note: "", created_at: isoAt(-3, 9) }],
+      moments: [],
+      cursor: null,
+    });
+  }
+  if (p === "/api/v1/friends/") {
+    const legacy = (x: (typeof people)[number]) => ({ friendship_id: x.friendship_id, display_name: x.display_name, handle: x.handle, avatar_hue: x.avatar_hue, status: "accepted", since: x.friends_since });
+    return json({ profile: null, neighbors: isEmpty ? [] : people.map(legacy), pending_incoming: isEmpty ? [] : wavesIn, pending_outgoing: [] });
+  }
+  const skyEdge = p.match(/^\/api\/v1\/friends\/([^/]+)\/sky\/$/);
+  if (skyEdge) {
+    const inSky = method === "POST";
+    if (inSky && people.filter((x) => x.in_my_sky).length >= 12) return json({ error: "sky_full", cap: 12 });
+    people = people.map((x) => (x.friendship_id === skyEdge[1] ? { ...x, in_my_sky: inSky } : x));
+    return json({ friendship_id: skyEdge[1], in_my_sky: inSky });
+  }
+  const waveAct = p.match(/^\/api\/v1\/friends\/waves\/([^/]+)\/(accept|decline)\/$/);
+  if (waveAct) {
+    const w = wavesIn.find((x) => x.friendship_id === waveAct[1]);
+    wavesIn = wavesIn.filter((x) => x.friendship_id !== waveAct[1]);
+    if (w && waveAct[2] === "accept") {
+      people = [...people, { friendship_id: w.friendship_id, display_name: w.display_name, handle: w.handle, avatar_hue: w.avatar_hue, bio: "", spark_count: 0, in_my_sky: false, bond: "light", friends_since: isoDay(0), has_unread_thread: false, thread_id: null }];
+    }
+    return json({ friendship_id: waveAct[1], status: waveAct[2] === "accept" ? "accepted" : "declined" });
+  }
+  if (p === "/api/v1/friends/missions/" && method === "GET") {
+    const rows = isEmpty ? [] : missionAsks;
+    return json(url.searchParams.get("include_invited") ? rows : rows.filter((m) => m.my_status === "active"));
+  }
+  const joinM = p.match(/^\/api\/v1\/friends\/missions\/([^/]+)\/join\/$/);
+  if (joinM) {
+    const m = missionAsks.find((x) => x.mission_id === joinM[1]);
+    if (m) m.my_status = "active";
+    return json({ mission_id: joinM[1], status: "active" });
+  }
+  if (p === "/api/v1/friends/circles/" && method === "GET") {
+    return json(isEmpty ? [] : [
+      { circle_id: "c-1", name: "Sunday run club", hue: 150, member_count: 6, my_role: "member", invite_code: null },
+      { circle_id: "c-2", name: "Book swap", hue: 30, member_count: 4, my_role: "admin", invite_code: "BOOKS1" },
+    ]);
+  }
+  if (p === "/api/v1/friends/threads/") {
+    if (method === "POST") return json({ thread_id: `t-${String(bodyOf(init).friendship_id ?? "x")}`, friendship_id: bodyOf(init).friendship_id });
+    return json([]);
+  }
+  if (/^\/api\/v1\/friends\/threads\/[^/]+\/messages\/$/.test(p)) return json({ messages: [], next_cursor: null });
+  if (/^\/api\/v1\/friends\/threads\/[^/]+\/read\/$/.test(p)) return json({ ok: true });
+  if (p === "/api/v1/friends/shares/pending/") return json([]);
+  if (p === "/api/v1/friends/absorbed/") return json([]);
+  if (p === "/api/v1/friends/mission-actions/") return json([]);
+  if (p === "/api/v1/lessons/" && url.searchParams.get("status") === "approved") return json([]);
+  if (p === "/api/v1/friends/profile/") return json({ handle: "yuki", display_name: "Yuki", bio: "", avatar_hue: 260, discoverable: true });
   if (p === "/api/v1/lessons/pending/") return json([]);
   if (p === "/api/v1/core/sessions/") {
     return json(isEmpty ? [] : [{
