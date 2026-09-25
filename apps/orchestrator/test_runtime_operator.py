@@ -340,3 +340,23 @@ class OperatorReplicaSelectionTests(SimpleTestCase):
     def test_no_running_replica_refuses(self):
         with self.assertRaisesRegex(operator.OperatorError, "exactly one"):
             self.connect([self.replica("NotRunning")])
+
+
+class ConsoleLogWindowTests(SimpleTestCase):
+    def test_offset_less_utc_stamps_compare_with_an_aware_window(self):
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime(2026, 9, 25, 19, 30, tzinfo=UTC)
+        lines = [
+            json.dumps({"TimeStamp": "2026-09-25T19:28:00.1234567", "Log": "[gateway] ready"}),
+            json.dumps({"TimeStamp": "2026-09-25T19:29:00", "Log": "SQLite error: database is locked"}),
+            json.dumps({"TimeStamp": "2026-09-25T19:00:00", "Log": "SQLite error: older than window"}),
+        ]
+        response = Mock(text="\n".join(lines))
+        with (
+            patch.object(operator, "_connection", return_value=(Mock(log_stream_endpoint="https://logs"), "t")),
+            patch.object(operator.requests, "get", return_value=response),
+        ):
+            result = operator.console_error_counts(Mock(), since=now - timedelta(minutes=5))
+        self.assertEqual(result["lines"], 2)
+        self.assertEqual(result["errors"]["sqlite"], 1)

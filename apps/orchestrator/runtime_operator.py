@@ -9,6 +9,7 @@ import json
 import re
 import textwrap
 import time
+from datetime import UTC
 from pathlib import Path
 
 import requests
@@ -264,7 +265,10 @@ def console_error_counts(tenant, *, since) -> dict:
     )
     response.raise_for_status()
     rows = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    # The console log API stamps records in UTC without an offset; make them
+    # comparable with the aware verification window (E2E canary 2026-09-25).
     timestamps = [parse_datetime(row.get("TimeStamp", "")) for row in rows]
+    timestamps = [t if t is None or t.tzinfo else t.replace(tzinfo=UTC) for t in timestamps]
     if not rows or any(t is None for t in timestamps):
         raise OperatorError("Console log window unavailable")
     if len(rows) >= 300 and min(timestamps) > since:
