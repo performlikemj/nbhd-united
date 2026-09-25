@@ -282,15 +282,6 @@ def regenerate_fuel_crons(tenant: Tenant) -> dict:
 
     summary = _empty_summary()
 
-    # 9.4 gates the gateway cron.* path; the signed file carries the desired
-    # ``_fuel:*`` set instead (share_cron_sync._fuel_jobs). Rewriting it is
-    # safe while hibernated: the container applies it at boot.
-    from apps.cron.share_cron_sync import tenant_uses_file_cron_sync, write_tenant_crons_file
-
-    if tenant_uses_file_cron_sync(tenant):
-        write_tenant_crons_file(tenant)
-        return summary
-
     # Hibernated (scale 0/0) or suspended containers can't serve gateway
     # calls. The per-tenant task guards this, but the hourly fleet reconcile
     # (reconcile_fuel_crons_task) and any other caller must not slip through:
@@ -305,6 +296,14 @@ def regenerate_fuel_crons(tenant: Tenant) -> dict:
             "regenerate_fuel_crons: skipping %s (hibernated/suspended)",
             str(tenant.id)[:8],
         )
+        return summary
+
+    # 9.4 gates the gateway cron.* path; the signed file carries the desired
+    # ``_fuel:*`` set instead (share_cron_sync._fuel_jobs).
+    from apps.cron.share_cron_sync import tenant_uses_file_cron_sync, write_tenant_crons_file
+
+    if tenant_uses_file_cron_sync(tenant):
+        write_tenant_crons_file(tenant)
         return summary
 
     desired = _desired_fuel_crons(tenant)
