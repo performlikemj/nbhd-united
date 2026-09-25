@@ -298,6 +298,14 @@ def regenerate_fuel_crons(tenant: Tenant) -> dict:
         )
         return summary
 
+    # 9.4 gates the gateway cron.* path; the signed file carries the desired
+    # ``_fuel:*`` set instead (share_cron_sync._fuel_jobs).
+    from apps.cron.share_cron_sync import tenant_uses_file_cron_sync, write_tenant_crons_file
+
+    if tenant_uses_file_cron_sync(tenant):
+        write_tenant_crons_file(tenant)
+        return summary
+
     desired = _desired_fuel_crons(tenant)
     desired_by_name: dict[str, dict] = {j["name"]: j for j in desired}
 
