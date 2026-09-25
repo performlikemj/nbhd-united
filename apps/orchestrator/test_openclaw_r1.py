@@ -3,16 +3,15 @@
 import copy
 import json
 import os
-import shlex
 import shutil
 import subprocess
+import tempfile
 from datetime import timedelta
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import skipUnless
 from unittest.mock import Mock, patch
-from urllib.parse import parse_qs, urlsplit
 
 from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
@@ -22,7 +21,7 @@ from apps.cron.models import CronJob
 from apps.cron.signals import suppress_cronjob_reconcile
 from apps.orchestrator import openclaw_migration as migration
 from apps.orchestrator import runtime_operator as operator
-from apps.orchestrator.test_runtime_operator import OperatorCronAdapterTests
+from apps.orchestrator.test_runtime_operator import FakeConsole, OperatorCronAdapterTests
 from apps.orchestrator.test_tenant_openclaw_migration import DIGEST, TAG, job, record, tenant_fixture
 
 
@@ -36,18 +35,25 @@ class PrivateChannelTests(SimpleTestCase):
         )
         self.assertNotIn("NBHD_RESULT:", baseline.stdout)
 
-        def connect(url, **kwargs):
-            command = parse_qs(urlsplit(url).query)["command"][0]
-            result = subprocess.run(shlex.split(command), env=env, capture_output=True, timeout=15)
-            socket = Mock()
-            socket.recv.side_effect = [b"\x00\x01" + result.stdout, b""]
-            return socket
+        def execute(script, run_line):
+            # Mirror the streamed run line: `env NODE_OPTIONS= node "$f"` clears the redactor.
+            assert "env NODE_OPTIONS= node" in run_line
+            with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as handle:
+                handle.write(script)
+            try:
+                result = subprocess.run(
+                    ["env", "NODE_OPTIONS=", "node", handle.name], env=env, capture_output=True, timeout=15
+                )
+            finally:
+                os.unlink(handle.name)
+            return result.stdout
 
+        console = FakeConsole(execute=execute)
         with (
             patch.object(
                 operator, "_connection", return_value=(SimpleNamespace(exec_endpoint="wss://offline/exec"), "secret")
             ),
-            patch.object(operator.websocket, "create_connection", side_effect=connect),
+            patch.object(operator.websocket, "create_connection", side_effect=console.connect),
         ):
             self.assertEqual(operator.run_node(Mock(), "return {ok:true};"), {"ok": True})
             body = (
