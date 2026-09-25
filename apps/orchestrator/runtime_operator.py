@@ -38,7 +38,15 @@ def _connection(tenant):
     replicas = client.container_apps_revision_replicas.list_replicas(
         settings.AZURE_RESOURCE_GROUP, tenant.container_id, app.latest_ready_revision_name
     )
-    containers = [c for r in replicas.value for c in (r.containers or []) if c.name == "openclaw" and c.ready]
+    # A replica stopped by a restart can linger in the list, still "ready";
+    # only a running replica on a running container can serve the console.
+    containers = [
+        c
+        for r in replicas.value
+        if str(getattr(r, "running_state", "Running")) == "Running"
+        for c in (r.containers or [])
+        if c.name == "openclaw" and c.ready and str(getattr(c, "running_state", "Running")) == "Running"
+    ]
     if len(containers) != 1:
         raise OperatorError("Expected exactly one ready OpenClaw replica")
     token = client.container_apps.get_auth_token(settings.AZURE_RESOURCE_GROUP, tenant.container_id).token

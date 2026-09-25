@@ -304,3 +304,39 @@ class ImageStorageRevisionTests(SimpleTestCase):
         env = {e.name: e.value for e in app.template.containers[0].env}
         self.assertEqual({name: env[name] for name in _OC_STATE_ENV}, _OC_STATE_ENV)
         self.assertEqual(app.template.containers[0].env[0].secret_ref, "kv-secret")
+
+
+@override_settings(AZURE_RESOURCE_GROUP="test-rg")
+class OperatorReplicaSelectionTests(SimpleTestCase):
+    def connect(self, replicas):
+        from types import SimpleNamespace
+
+        client = Mock()
+        client.container_apps.get.return_value = SimpleNamespace(
+            latest_ready_revision_name="rev", latest_revision_name="rev"
+        )
+        client.container_apps_revision_replicas.list_replicas.return_value = SimpleNamespace(value=replicas)
+        client.container_apps.get_auth_token.return_value = SimpleNamespace(token="t")
+        with (
+            patch.object(operator, "is_mock", return_value=False),
+            patch.object(operator, "get_container_client", return_value=client),
+        ):
+            return operator._connection(Mock(container_id="oc-test"))
+
+    def replica(self, state, container_state="Running", ready=True):
+        from types import SimpleNamespace
+
+        container = SimpleNamespace(name="openclaw", ready=ready, running_state=container_state, exec_endpoint=state)
+        return SimpleNamespace(running_state=state, containers=[container])
+
+    def test_stopped_replica_left_by_a_restart_is_ignored(self):
+        container, _ = self.connect([self.replica("Running"), self.replica("NotRunning")])
+        self.assertEqual(container.exec_endpoint, "Running")
+
+    def test_two_running_replicas_still_refuse(self):
+        with self.assertRaisesRegex(operator.OperatorError, "exactly one"):
+            self.connect([self.replica("Running"), self.replica("Running")])
+
+    def test_no_running_replica_refuses(self):
+        with self.assertRaisesRegex(operator.OperatorError, "exactly one"):
+            self.connect([self.replica("NotRunning")])
