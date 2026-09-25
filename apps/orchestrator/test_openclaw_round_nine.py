@@ -316,12 +316,14 @@ class DrainAndRecoveryTests(TestCase):
             raise SystemExit("dead after submission")
 
         app = SimpleNamespace(
-            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old")
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old"),
+            latest_ready_revision_name="old-rev",
         )
         with (
             patch.object(m.time, "sleep", side_effect=drain),
             patch.object(m, "live_source_jobs", side_effect=source),
             patch.object(m, "get_app", return_value=app),
+            patch.object(m.azure_client, "snapshot_tenant_share", return_value="snap-test"),
             patch.object(m.azure_client, "update_container_image", side_effect=submit),
             self.assertRaises(SystemExit),
         ):

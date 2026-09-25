@@ -303,7 +303,8 @@ class ImageBoundaryTests(TestCase):
 
     def test_actual_share_is_reverified_and_repaired_immediately_before_submission(self):
         app = SimpleNamespace(
-            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old")
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old"),
+            latest_ready_revision_name="old-rev",
         )
         record = {
             "status": "RUNNING",
@@ -333,6 +334,7 @@ class ImageBoundaryTests(TestCase):
             patch.object(m, "get_app", return_value=app),
             patch.object(m, "live_source_jobs", return_value=[job()]),
             patch.object(m, "_save", side_effect=save),
+            patch.object(m.azure_client, "snapshot_tenant_share", return_value="snap-test"),
             patch.object(m.azure_client, "update_container_image", side_effect=submit) as update,
             patch.object(m, "wait_healthy", return_value={}),
         ):
@@ -372,6 +374,7 @@ class ImageBoundaryTests(TestCase):
             patch.object(m.time, "sleep"),
             patch.object(m, "get_app", return_value=app),
             patch.object(m, "wait_healthy", side_effect=health),
+            patch.object(m.azure_client, "snapshot_tenant_share", return_value="snap-test"),
             patch.object(m.azure_client, "update_container_image") as update,
         ):
             m.image_step(self.tenant, record)

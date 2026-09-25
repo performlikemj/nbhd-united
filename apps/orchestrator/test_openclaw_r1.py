@@ -108,12 +108,14 @@ class RecoveryTests(TestCase):
         imminent = job(schedule={"kind": "at", "at": (timezone.now() + timedelta(minutes=5)).isoformat()})
         rec["cron_export"] = [imminent]
         app = SimpleNamespace(
-            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old")
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old"),
+            latest_ready_revision_name="old-rev",
         )
         with (
             patch.object(migration.time, "sleep"),
             patch.object(migration, "get_app", return_value=app),
             patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": [imminent]}),
+            patch.object(migration.azure_client, "snapshot_tenant_share", return_value="snap-test"),
             patch.object(migration.azure_client, "update_container_image") as update,
             patch.object(migration, "wait_healthy"),
             self.assertRaisesRegex(migration.MigrationError, "cron_imminent"),
@@ -184,12 +186,14 @@ class AdditionalRecoveryTests(RecoveryTests):
             migration.capture(self.tenant, rec)
         rec["evidence"]["preflight"] = {"target_image": "new", "revision_suffix": "new"}
         app = SimpleNamespace(
-            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old")
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old"),
+            latest_ready_revision_name="old-rev",
         )
         with (
             patch.object(migration.time, "sleep"),
             patch.object(migration, "get_app", return_value=app),
             patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": []}),
+            patch.object(migration.azure_client, "snapshot_tenant_share", return_value="snap-test"),
             patch.object(migration.azure_client, "update_container_image") as image,
             patch.object(migration, "wait_healthy"),
             self.assertRaisesRegex(migration.MigrationError, "source_cancellation_not_projected"),
