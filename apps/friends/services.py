@@ -534,6 +534,8 @@ def neighborhood_home(tenant, since=None) -> dict:
     sky_ids = access.sky_friendship_ids(
         tenant
     )  # additive in_my_sky flag (Bounded Neighborhood; THE iOS flight contract)
+    # Web Neighborhood line thickness: a qualitative bucket, never a count.
+    bonds = access.bond_by_counterpart(tenant, edges)
 
     pending = list(
         Friendship.objects.filter(Q(requester=tenant) | Q(addressee=tenant), status=Friendship.Status.PENDING)
@@ -555,6 +557,8 @@ def neighborhood_home(tenant, since=None) -> dict:
                 **_profile_public(profiles.get(cid)),
                 "spark_count": spark_counts.get(cid, 0),
                 "in_my_sky": edge.id in sky_ids,
+                "bond": bonds.get(cid, access.BOND_LIGHT),
+                "friends_since": (edge.responded_at or edge.created_at).date().isoformat(),
                 "has_unread_thread": state.get("has_unread", False),
                 "thread_id": state.get("thread_id"),
             }

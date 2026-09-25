@@ -27,6 +27,7 @@ a party (IDOR defeated by construction, design §4.5).
 from __future__ import annotations
 
 import contextlib
+from datetime import timedelta
 
 from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -46,6 +47,7 @@ from .models import (
     LessonShareGrant,
     NeighborProfile,
     SharedGoal,
+    SharedGoalMembership,
     SharedLesson,
     SkyMembership,
     WormholeVisit,
@@ -1100,3 +1102,122 @@ def sky_roster(viewer_tenant) -> list[dict]:
         return out
 
     return _run_sky_with_rls_context(viewer_tenant, roster)
+
+
+# ── Shared-activity bond (web Neighborhood line thickness) ───────────────────
+#
+# A qualitative bucket per accepted neighbor — never a count, score, rank or
+# timestamp on the wire. Inputs are only things BOTH people already see: their
+# shared 1:1 thread, missions they are both active in, circles they are both
+# active in, and sparks granted on THEIR edge. Third-party activity never
+# counts (circle-granted sparks and group threads are excluded), the other
+# person's sky choice is never read, and every input is capped so message
+# volume can't dominate. An accepted edge is never below "light".
+
+BOND_WINDOW_DAYS = 180
+BOND_LIGHT, BOND_STEADY, BOND_STRONG = "light", "steady", "strong"
+_BOND_MESSAGE_CAP = 40  # → up to 4 points
+_BOND_MISSION_CAP = 2  # → up to 3 points
+_BOND_CIRCLE_CAP = 2  # → up to 2 points
+_BOND_SPARK_CAP = 6  # → up to 3 points
+_BOND_STEADY_AT = 2.0
+_BOND_STRONG_AT = 5.0
+
+
+def bond_points(*, messages: int, missions: int, circles: int, sparks: int) -> float:
+    """Capped, weighted evidence → points (pure; unit-tested directly)."""
+    return (
+        min(messages, _BOND_MESSAGE_CAP) / 10
+        + min(missions, _BOND_MISSION_CAP) * 1.5
+        + min(circles, _BOND_CIRCLE_CAP) * 1.0
+        + min(sparks, _BOND_SPARK_CAP) / 2
+    )
+
+
+def bond_bucket(points: float) -> str:
+    if points >= _BOND_STRONG_AT:
+        return BOND_STRONG
+    if points >= _BOND_STEADY_AT:
+        return BOND_STEADY
+    return BOND_LIGHT
+
+
+def bond_by_counterpart(viewer_tenant, edges) -> dict:
+    """``{counterpart_tenant_id: "light"|"steady"|"strong"}`` for the viewer's
+    ACCEPTED ``edges`` in a fixed number of grouped queries (no per-neighbor N+1).
+    Unknown/extra edges are ignored; non-accepted edges never get a bucket."""
+    viewer_id = _tenant_id(viewer_tenant)
+    accepted = [e for e in edges if e.status == Friendship.Status.ACCEPTED]
+    if not accepted:
+        return {}
+    by_edge = {e.id: (e.addressee_id if e.requester_id == viewer_id else e.requester_id) for e in accepted}
+    counterparts = set(by_edge.values())
+    since = timezone.now() - timedelta(days=BOND_WINDOW_DAYS)
+
+    # 1. Messages in THEIR 1:1 thread (either author), live, within the window.
+    messages: dict = {}
+    for row in (
+        FriendMessage.objects.filter(
+            thread__kind=FriendThread.Kind.DIRECT,
+            thread__friendship_id__in=list(by_edge),
+            deleted_at__isnull=True,
+            created_at__gte=since,
+        )
+        .values("thread__friendship_id")
+        .annotate(n=Count("seq"))
+    ):
+        messages[by_edge[row["thread__friendship_id"]]] = row["n"]
+
+    # 2. Missions both are ACTIVE in (goal still live or touched in the window).
+    my_goal_ids = list(
+        SharedGoalMembership.objects.filter(tenant_id=viewer_id, status="active")
+        .filter(Q(shared_goal__status=SharedGoal.Status.ACTIVE) | Q(shared_goal__created_at__gte=since))
+        .values_list("shared_goal_id", flat=True)
+    )
+    missions: dict = {}
+    if my_goal_ids:
+        for row in (
+            SharedGoalMembership.objects.filter(
+                shared_goal_id__in=my_goal_ids, status="active", tenant_id__in=counterparts
+            )
+            .values("tenant_id")
+            .annotate(n=Count("shared_goal_id", distinct=True))
+        ):
+            missions[row["tenant_id"]] = row["n"]
+
+    # 3. Circles both are ACTIVE members of.
+    my_circle_ids = my_active_circle_ids(viewer_id)
+    circles: dict = {}
+    if my_circle_ids:
+        for row in (
+            CircleMembership.objects.filter(circle_id__in=my_circle_ids, status="active", tenant_id__in=counterparts)
+            .values("tenant_id")
+            .annotate(n=Count("circle_id", distinct=True))
+        ):
+            circles[row["tenant_id"]] = row["n"]
+
+    # 4. Sparks granted on THEIR edge (either owner), ready + active, in window.
+    sparks: dict = {}
+    for row in (
+        LessonShareGrant.objects.filter(
+            friendship_id__in=list(by_edge),
+            status=LessonShareGrant.Status.ACTIVE,
+            shared_lesson__scrub_status=SharedLesson.ScrubStatus.READY,
+            created_at__gte=since,
+        )
+        .values("friendship_id")
+        .annotate(n=Count("shared_lesson_id", distinct=True))
+    ):
+        sparks[by_edge[row["friendship_id"]]] = row["n"]
+
+    return {
+        cid: bond_bucket(
+            bond_points(
+                messages=messages.get(cid, 0),
+                missions=missions.get(cid, 0),
+                circles=circles.get(cid, 0),
+                sparks=sparks.get(cid, 0),
+            )
+        )
+        for cid in counterparts
+    }
