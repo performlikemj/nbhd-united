@@ -14,12 +14,12 @@
 - Follow-up: 9.4 lifecycle (croner vs croniter semantics, suspend, idle guards).
 ## State
 - Done: Round 6 fixes implemented with failing-first tests; 75 exact-image captures (70 accepted cases, 5 blocked, 43 normalized shapes); 239 focused/contract tests PASS. Ruff/format and migration drift PASS; protected automatic/runtime paths equal fresh origin/main.
-- Now: Round 6 ready for commit/push; Docker gate PASS (9383 tests / 57 skipped, config/security and frontend lint/build). Owned local containers/volumes cleaned; no production access.
-- Next: Commit/push Round 6 to draft PR #1650; no merge or production access. Release canaries remain separately authorized work.
+- Now: Round 6 implementation 6f21bc9a committed/pushed to draft PR #1650; Docker gate PASS (9383 tests / 57 skipped, config/security and frontend lint/build). Owned local containers/volumes cleaned; no production access.
+- Next: Release orchestrator review and separately authorized canaries; no merge or production execution by this task.
 ## Task Map
 ```
 CONTINUITY.md
-  ├─ CONTINUITY_openclaw-round-six.md (active)
+  ├─ CONTINUITY_openclaw-round-six.md (complete; draft review)
   ├─ CONTINUITY_openclaw-round-five.md (complete; draft review)
   ├─ CONTINUITY_openclaw-round-four.md (complete; draft review)
   ├─ CONTINUITY_openclaw-rescope.md (complete; draft review)

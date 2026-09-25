@@ -15,8 +15,8 @@ Owner: codex
 - Quarantine is private non-signed migration JSON and commits atomically with cache removal/promotion; canonical authority and prior provenance refusals remain intact.
 ## State
 - Done: All five findings implemented; 75 local fixtures and 43-shape allowlist, 239 focused/contract tests, ruff/format/migration drift checks PASS; runbook/matrix updated.
-- Now: All gates PASS; implementation staged for commit/push to draft PR #1650. Owned local containers/volumes cleaned.
-- Next: Commit/push implementation and validation rollup; no merge or production calls.
+- Now: Implementation 6f21bc9a committed/pushed to draft PR #1650; all gates PASS; owned local containers/volumes cleaned.
+- Next: Release orchestrator review and separately authorized canaries; no merge or production calls by this task.
 ## Links
 - Upstream: CONTINUITY.md
 ## Open questions
@@ -67,3 +67,7 @@ Owner: codex
 - Fresh origin/main remains bd8abe4ea79196cf19eb44c3422b84309cb1b34c. Hibernation, cron_reconcile, tasks, container_updates, cron suspension, signed selector and entire runtime tree are identical.
 - All owned test/capture/gate containers and gate DB volumes removed; exact image retained. No production calls, deployment, PR merge, or unrelated cleanup.
 - PR #1650 remains OPEN/draft on feat/openclaw-94-tenant-migration. User-supplied untracked directives/reviews remain untouched.
+
+## Publication
+- 6f21bc9a pushed to origin/feat/openclaw-94-tenant-migration with the requested Co-Authored-By trailer. PR #1650 stays open/draft, unmerged.
+- Final cleanup leaves 18 GiB free; exact local image retained, all owned containers/DB volumes removed.
