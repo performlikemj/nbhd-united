@@ -61,6 +61,16 @@
   ],
   "observation": [
     "configRevision",
-    "effectiveAgentId"
+    "effectiveAgentId",
+    "lastDelivered",
+    "lastDeliveryStatus",
+    "lastFailureNotificationDeliveryStatus",
+    "lastRunAtMs",
+    "lastRunStatus",
+    "lastStatus",
+    "lastError",
+    "lastDurationMs",
+    "consecutiveErrors",
+    "consecutiveSkipped"
   ]
 }
