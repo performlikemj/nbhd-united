@@ -284,7 +284,8 @@ def preservation_inventory(tenant, *, canonical_pins=None):
         + json.dumps(canonical_pins or {})
         + ";"
         + "const unmanagedPrefixes="
-        + json.dumps(_UNMANAGED_PREFIXES)
+        # Fuel crons are projected by the signed writer from the Fuel models.
+        + json.dumps([p for p in _UNMANAGED_PREFIXES if p != "_fuel:"])
         + ";"
         + _LIST
         + r"""

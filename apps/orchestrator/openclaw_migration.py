@@ -230,7 +230,16 @@ def projected_canonical(canonical):
     Postgres unchanged, so enabling one later goes through the ordinary 9.4
     path. Nothing about them is lost by the image swap.
     """
-    return [(job, managed) for job, managed in canonical if job.get("enabled", True)]
+    return [(job, managed) for job, managed in canonical if job.get("enabled", True) and not _fuel_owned(job)]
+
+
+def _fuel_owned(job):
+    """``_fuel:*`` rows/jobs mirror the Fuel models, which own the desired set.
+
+    The signed file carries that set (share_cron_sync._fuel_jobs), so neither
+    a stale Postgres mirror row nor a 5.28 runtime copy is preserved as-is.
+    """
+    return str(job.get("name") or "").startswith("_fuel:")
 
 
 def preservation_precheck(tenant, jobs, *, record=None):
@@ -250,7 +259,7 @@ def preservation_precheck(tenant, jobs, *, record=None):
         if versions.get(row.name) == row.updated_at.isoformat()
     }
     protected = {j["name"] for j, _ in canonical} - recaptured
-    written = [j for j in jobs if j["name"] not in protected]
+    written = [j for j in jobs if j["name"] not in protected and not _fuel_owned(j)]
     reasons = reason_counts([(j, True) for j in written] + projected_canonical(canonical))
     names = {j["name"] for j in jobs}
     missing_owned = sum(

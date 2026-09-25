@@ -12,6 +12,7 @@ import json
 import time
 from hashlib import sha256
 from unittest import mock
+from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
@@ -164,6 +165,27 @@ class DesiredJobsTest(TestCase):
         self.assertEqual(jobs["Conflict"]["payload"]["model"], "openrouter/payload/pin")
         self.assertNotIn("model", jobs["Odd"]["payload"])
         self.assertNotIn("model", jobs["Odd"])
+
+    def test_current_fuel_set_is_carried_and_stale_mirror_rows_are_not(self):
+        _mk(self.t, "_fuel:Old Plan", kind="cron")  # stale mirror row: never projected
+        prep = {
+            "name": "_fuel:Soccer Engine",
+            "enabled": True,
+            "schedule": {"kind": "cron", "expr": "0 6 * * *", "tz": "Asia/Tokyo"},
+            "payload": {"kind": "agentTurn", "message": "prep"},
+            "delivery": {"mode": "none"},
+            "sessionTarget": "isolated",
+        }
+        with patch("apps.orchestrator.fuel_cron._desired_fuel_crons", return_value=[prep]):
+            first = {j["name"]: j for j in _desired_jobs(self.t)}
+            edited = [{**prep, "payload": {"kind": "agentTurn", "message": "edited"}}]
+        with patch("apps.orchestrator.fuel_cron._desired_fuel_crons", return_value=edited):
+            second = {j["name"]: j for j in _desired_jobs(self.t)}
+        self.assertNotIn("_fuel:Old Plan", first)
+        key = first["_fuel:Soccer Engine"]["declarationKey"]
+        self.assertTrue(key.startswith("nbhd:fuel:"))
+        self.assertEqual(second["_fuel:Soccer Engine"]["declarationKey"], key)
+        self.assertNotIn("declarationKey", prep)
 
     def test_each_job_carries_stable_nbhd_declaration_key(self):
         row = _mk(self.t, "R", kind="cron")

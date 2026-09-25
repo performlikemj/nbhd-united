@@ -1367,7 +1367,9 @@ class RegenerateFuelCronsTest(TestCase):
         self.tenant = create_tenant(display_name="Regen Test", telegram_chat_id=999333444)
         self.tenant.fuel_enabled = True
         self.tenant.container_fqdn = "oc-regen.example.com"
-        self.tenant.save(update_fields=["fuel_enabled", "container_fqdn"])
+        # The gateway cron.* path; 9.4 tenants use the signed file instead.
+        self.tenant.openclaw_version = "2026.5.28"
+        self.tenant.save(update_fields=["fuel_enabled", "container_fqdn", "openclaw_version"])
         FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=True)
 
     def _make_workout(self, **kw):
@@ -2020,7 +2022,9 @@ class FuelEndToEndTest(TestCase):
         self.tenant = create_tenant(display_name="E2E Test", telegram_chat_id=999666777)
         self.tenant.fuel_enabled = True
         self.tenant.container_fqdn = "oc-e2e.example.com"
-        self.tenant.save(update_fields=["fuel_enabled", "container_fqdn"])
+        # The gateway cron.* path; 9.4 tenants use the signed file instead.
+        self.tenant.openclaw_version = "2026.5.28"
+        self.tenant.save(update_fields=["fuel_enabled", "container_fqdn", "openclaw_version"])
         FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=True)
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
