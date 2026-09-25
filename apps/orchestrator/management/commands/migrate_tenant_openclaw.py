@@ -19,9 +19,10 @@ class Command(BaseCommand):
         scope.add_argument("--tenants", help="Comma-separated explicit UUID list; stops on first failure")
         parser.add_argument("--tag", default=None)
         parser.add_argument(
-            "--recover-dead-owner",
+            "--takeover",
             help="Exact owner token; attests this process/replica is confirmed terminated (see runbook)",
         )
+        parser.add_argument("--confirm-owner-dead", action="store_true")
         mode = parser.add_mutually_exclusive_group()
         mode.add_argument("--dry-run", action="store_true")
         mode.add_argument("--verify-only", action="store_true")
@@ -35,9 +36,9 @@ class Command(BaseCommand):
             raise CommandError("Every tenant must be an explicit valid UUID") from None
         if Tenant.objects.filter(pk__in=ids).count() != len(ids):
             raise CommandError("Unknown tenant in batch; nothing changed")
-        if options["recover_dead_owner"] and (
-            len(ids) != 1 or options["dry_run"] or options["verify_only"] or options["report"]
-        ):
+        if bool(options["takeover"]) != options["confirm_owner_dead"]:
+            raise CommandError("Takeover requires --takeover <exact owner token> --confirm-owner-dead")
+        if options["takeover"] and (len(ids) != 1 or options["dry_run"] or options["verify_only"] or options["report"]):
             raise CommandError("Dead-owner recovery requires one tenant and execution mode")
         tag = options["tag"] or settings.OPENCLAW_IMAGE_TAG
         for tenant_id in ids:
@@ -47,6 +48,11 @@ class Command(BaseCommand):
                 self.stdout.write(
                     f"{tenant_id}: {result['status']} {counts} quarantined_cache={result.get('quarantined_cache', 0)}".rstrip()
                 )
+                if result["status"] == "RUNNING":
+                    self.stdout.write(
+                        f"owner_token={result['owner_token']} lease_age_seconds={result['lease_age_seconds']} "
+                        f"lease_expired={result['lease_expired']} (hard death leaves RUNNING; confirm owner termination)"
+                    )
                 continue
             if options["verify_only"]:
                 tenant = Tenant.objects.get(pk=tenant_id)
@@ -71,7 +77,7 @@ class Command(BaseCommand):
                     tenant_id,
                     tag,
                     dry_run=options["dry_run"],
-                    **({"recover_dead_owner": options["recover_dead_owner"]} if options["recover_dead_owner"] else {}),
+                    **({"takeover": options["takeover"], "confirm_owner_dead": True} if options["takeover"] else {}),
                 )
             except MigrationError as exc:
                 raise CommandError(f"{tenant_id}: {exc}") from None

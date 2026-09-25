@@ -16,7 +16,8 @@ the current panel instruction. No image rebuild is required by this rescope.
 - Choose an immutable `2026.9.4-<sha>` built with #1623, #1626, #1627 and #1635
   (including the 26,000-character USER.md patch). A green CI run can have skipped
   its image build: confirm the actual ACR push and manifest digest.
-- Management environment prerequisites: deployed Django migrations, Django
+- Management environment prerequisites: all Django web/task workers on this
+  revision, deployed Django migrations, Django
   system-assigned managed identity with ACR data-plane pull access, provisioner identity allowed to read/update
   Container Apps and obtain console tokens, console WebSocket connectivity,
   share access and working per-tenant signing keys. `AZURE_MOCK` must be false.
@@ -50,7 +51,8 @@ python manage.py migrate_tenant_openclaw --tenants "$ID1,$ID2,$ID3" --report
 
 `--report` performs no checkpoint, import, canonical flip, image, config or cron
 writes. It prints `READY`, `BLOCKED_UNSUPPORTED` plus reason counts, `DEFER`
-plus fixed reason counts, or `ALREADY_94`. It continues across the complete scope.
+plus fixed reason counts, `ALREADY_94`, or `RUNNING` with owner/lease metadata.
+It continues across the complete scope.
 `READY` establishes declaration compatibility at observation time, not registry,
 health or release approval. Source failures and unavailable/hibernated tenants
 report `DEFER`. Use `--verify-only` to inspect preservation on already-9.4 tenants.
@@ -81,8 +83,9 @@ The durable checkpoints are:
 1. `preflight`: registry digests, original template and a fresh revision suffix.
 2. `capture`: complete live cron export; canonical additive import or noncanonical
    cache reconciliation/quarantine, then promotion and equivalent timestamp preparation.
-3. `image`: fresh recapture/import/preparation, then **before image submission**,
-   write and read back `nbhd-crons.json` from the unchanged canonical selector.
+3. `image`: fresh recapture/import/preparation, then persist the tenant's cron
+   edit fence **before pre-staging or image submission**. Fence activation drains
+   previously admitted writers. Write and read back `nbhd-crons.json` from the unchanged canonical selector.
    Persist `signed_prestaged` with the file SHA256, exact canonical content digests,
    row revision and count; persist recovery instructions and owner identity.
    5.28 ignores this file; the 9.4 entrypoint installs these jobs even if the
@@ -92,13 +95,15 @@ The durable checkpoints are:
    options, plugin-runtime-deps and index-cache. Wait for that latest revision,
    `/proxy-health` and `/healthz` (bounded to five minutes). After health, rebuild
    the expected signed bytes from current canonical truth, compare with the share
-   and rewrite if changed; record `signed_after_health`. Config regeneration
+   and atomically replace only if the digest changed; record `signed_after_health`. Config regeneration
    remains after the image is live. Failed readback or changing canonical truth
-   stops image submission; automatic reconciliation remains unchanged.
-4. `version`: write image tag and `openclaw_version=2026.9.4` together.
+   stops image submission. Immediately before submission, rebuild the signed
+   digest from current canonical truth and re-read the share; re-stage if needed.
+4. `version`: commit image tag, `openclaw_version=2026.9.4` and fence release in
+   the same row update. Reconciliation now selects the file transport.
 5. `config`: strict config/workspace refresh, version stamp, then wait for the
    gateway's resolved/applied config revision tokens to match and health to pass.
-6. `crons`: write signed Postgres truth, wait for CLI reconciliation, remove a
+6. `crons`: compare the signed-file digest, atomically publish only changed Postgres truth, wait for CLI reconciliation, remove a
    legacy duplicate only after a matching signed job exists. Matching happens
    inside the replica, including payload and scheduling parameters.
 7. `verify`: compare private normalized content digests per declaration key
@@ -156,30 +161,32 @@ selected metadata, never the full JSON (cron payloads are private):
 ```python
 from apps.tenants.models import Tenant
 r = Tenant.objects.get(pk=TENANT_ID).openclaw_migration
-print({k: r.get(k) for k in ("tag", "status", "step", "completed", "updated_at", "failure")})
+print({k: r.get(k) for k in ("tag", "status", "step", "completed", "updated_at", "owner", "owner_token", "lease_until", "failure")})
 print("Captured jobs:", len(r.get("cron_export", [])))
 ```
 
-`RUNNING` claims have a renewable **10-minute lease** and a unique `owner_token`.
-The private record contains owner host/PID, the saved target revision and recovery
-instructions before the image boundary. All checkpoint writes compare the token;
-mutation boundaries recheck ownership. A stale owner cannot publish a checkpoint
-or start a subsequent mutation after takeover. Lease expiry alone does not prove
-process death: confirm the old process has exited before any recovery, including
-an expired-lease retry. Do not take over a slow or unreachable-but-running owner.
+`RUNNING` claims have a renewable **10-minute diagnostic lease** and a unique
+`owner_token`. **Expiry never authorizes automatic takeover.** Hard death (SIGKILL,
+host loss, killed container exec) leaves the record RUNNING, not FAILED, and leaves
+an active cutover fence in place. `--report` returns RUNNING, owner token, seconds
+since the last lease renewal, and lease-expired status without runtime/Azure calls.
 
-For immediate recovery of a **confirmed terminated** process/replica, an authorized
-operator can bypass the remaining lease with its exact recorded token:
+All checkpoints compare ownership, including the stale-connection retry. A stale
+owner cannot save or start a later mutation; the atomic publisher rechecks ownership
+before rename. External writes cannot be revoked by a DB token alone, so takeover
+requires the exact token **and** an explicit attestation that the owner is dead:
 
 ```bash
 python manage.py migrate_tenant_openclaw --tenant "$TENANT_ID" --tag "$TAG" \
-  --recover-dead-owner "$CONFIRMED_DEAD_OWNER_TOKEN"
+  --takeover "$CONFIRMED_DEAD_OWNER_TOKEN" --confirm-owner-dead
 ```
 
-This flag is an explicit operator attestation of termination, not a remote liveness
-probe. Identify the recorded host/PID (or its containing replica), confirm termination
-through that host/replica's process state, and let any already-submitted Azure update
-settle. Never infer termination from health failure or console timeout. The claim
+Both flags are required, even when the lease expired or is missing. Identify the
+recorded host/PID and verify the process is gone on that host (including its start
+time, to avoid PID reuse). For container exec, verify that exact exec session and
+its process are gone, or that its containing replica is terminated. If that cannot
+be established, do not take over. Let already-submitted Azure image/storage requests
+settle before proceeding; a closed local terminal alone is not termination evidence. Never infer termination from health failure or console timeout. The claim
 compares the token again under a row lock, installs a new fencing token and records
 the attested takeover. A mismatched token is refused. Recovery accepts one tenant,
 reuses the saved revision and verifies afresh; it performs no image-only rollback.
@@ -374,10 +381,12 @@ wake, suspension/resume, runtime capture and delayed restore retain main behavio
 Keep the image rollout allowlist empty during migration. The storage retrofit
 is explicitly enabled only by the migration, never ordinary image updates.
 
-Hibernation, cron reconciliation, signed selection, image tasks, router image
-updates, suspension and all runtime image files match main. No lifecycle
-exception remains. Concurrent canonical edits/reconciliation are detected by
-verification; migration never suppresses automatic reconciliation.
+Hibernation, reconciliation logic, signed selection, image tasks, router image
+updates, suspension and runtime image files match main. The Round 8 shared write
+guard refuses cron edits and reconciliation writes for the migrating tenant from
+pre-staging through version commit. Absent/PASS records follow main behavior.
+After version commit, concurrent canonical edits are allowed and verification
+checks current truth; active-record signed publication remains crash-safe.
 
 Manual tools require an explicit non-empty UUID scope. Both image-bump and
 version-bump commands take `--tenant UUID` or `--tenants UUID,UUID`.
@@ -488,3 +497,40 @@ Retain failed exports while recovery remains unresolved. After successful canary
 soak and 7 days, an authorized operator should remove `cron_export` and
 `cron_export_history`, `canonical_one_shots`, and `quarantined_cache` while retaining metadata,
 dispositions and audit timestamps; apply the retention policy to backups too.
+
+
+## Round 8 cron edit fence and signed-file publication
+
+Apply schema migration `tenants.0170_openclaw_migration_cron_fence` before running
+this command. It also fences older non-PASS pre-staged records whose version has
+not committed; recovery reasserts the fence on an already-submitted revision. The central `nbhd_migration_cron_guard` reads the indexed tenant key
+and indexed `openclaw_migration_cron_fenced` field; it refuses only when the private
+record exists, is non-PASS, and its cutover fence is set. The CronJob database trigger
+covers insert/update/delete, ORM saves, bulk operations and raw SQL. The same guard
+surrounds gateway mutations, signed-file reconciliation and queued cron proposals.
+It holds the tenant row lock through admitted transport writes, so pre-staging
+cannot race a writer that passed the check earlier. No owner bypass permits cron
+edits under the fence. Failed and hard-dead migrations retain it until version commit.
+
+Dashboard/API callers receive HTTP 409 with `{"error":"assistant_updating","retry_after":60}`.
+Assistant runtime callers also receive a friendly `detail` asking them to retry in
+one minute. The HTTP adapter retains this result even if a legacy handler catches
+the underlying refusal. Read-only cron tools remain available; a read path which
+also updates canonical cache rows is refused at its write boundary. Absent/PASS
+migration records retain main's database and transport behavior, tested explicitly.
+Unrelated tenants remain editable. The deployed runtime and automatic image/wake
+paths remain unchanged.
+
+For active migrations, signed publication compares SHA256 first and skips identical
+bytes. Changed bytes go to a unique sibling `nbhd-crons.json.migration-<uuid>.tmp`,
+are read back, then published with Azure Files `rename_file(..., overwrite=True)`.
+See the [Azure SDK rename contract](https://learn.microsoft.com/en-us/python/api/azure-storage-file-share/azure.storage.fileshare.sharefileclient?view=azure-python#azure-storage-fileshare-sharefileclient-rename-file).
+There is no in-place fallback: upload/readback failure preserves the previous valid
+file; successful rename exposes the completed replacement. Hard death may leave an
+inert unique temp file. After confirming the owner is dead and stopping concurrent
+reconciliation writers, an operator may remove abandoned temp files by exact name;
+never delete the live signed file.
+This applies to migration steps and reconciliation while the migration is active.
+After PASS, ordinary publication follows main. Python declaration integers now
+require JavaScript safe-integer bounds before shape matching; unproven values
+remain DEFAULT-DENY.

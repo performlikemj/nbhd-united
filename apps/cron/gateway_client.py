@@ -11,6 +11,7 @@ import requests
 from django.conf import settings
 
 from apps.orchestrator.azure_client import read_key_vault_secret
+from apps.orchestrator.migration_cron_fence import guard_transport
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,7 @@ def _get_gateway_token(tenant: Tenant, *, metadata_only: bool = False) -> str:
     return token
 
 
+@guard_transport
 def invoke_gateway_tool(
     tenant: Tenant,
     tool: str,

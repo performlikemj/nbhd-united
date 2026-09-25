@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest import skipUnless
 from unittest.mock import patch
 
+from django.db import DatabaseError, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
@@ -177,6 +178,13 @@ class PrestagingTests(TestCase):
         self.tenant = tenant_fixture(949407)
         self.files = {}
         for target, kwargs in (
+            # Full-suite environment probes can unset AZURE_MOCK. Pin this
+            # synthetic storage fixture and forbid credential acquisition.
+            ("apps.orchestrator.azure_client.is_mock", {"return_value": True}),
+            (
+                "apps.orchestrator.storage_credentials.acquire_account_key",
+                {"side_effect": AssertionError("unexpected live storage access")},
+            ),
             ("apps.cron.gateway_client.get_gateway_token_for_tenant", {"return_value": "local-contract-token"}),
             (
                 "apps.orchestrator.azure_client._put_share_file",
@@ -211,6 +219,9 @@ class PrestagingTests(TestCase):
                 __import__("hashlib").sha256(self.files["nbhd-crons.json"]).hexdigest(),
             )
             self.assertEqual(self.tenant.openclaw_version, "2026.5.28")
+            self.assertTrue(self.tenant.openclaw_migration_cron_fenced)
+            with self.assertRaises(DatabaseError), transaction.atomic():
+                CronJob.objects.filter(tenant=self.tenant).delete()
             app.template.containers[0].image = target
             app.template.revision_suffix = "m94-saved"
             raise SystemExit("simulated process death after Azure apply")
@@ -240,9 +251,10 @@ class PrestagingTests(TestCase):
             with self.assertRaisesRegex(m.MigrationError, "already running"):
                 m.migrate_tenant(self.tenant.pk, TAG)
             with self.assertRaisesRegex(m.MigrationError, "dead_owner_token_mismatch"):
-                m.migrate_tenant(self.tenant.pk, TAG, recover_dead_owner="wrong")
+                m.migrate_tenant(self.tenant.pk, TAG, takeover="wrong", confirm_owner_dead=True)
             self.assertEqual(
-                m.migrate_tenant(self.tenant.pk, TAG, recover_dead_owner=stale["owner_token"])["status"], "PASS"
+                m.migrate_tenant(self.tenant.pk, TAG, takeover=stale["owner_token"], confirm_owner_dead=True)["status"],
+                "PASS",
             )
             update.assert_called_once()
         with self.assertRaisesRegex(m.MigrationError, "migration_owner_fenced"):

@@ -23,7 +23,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from apps.cron.models import CronJob
-from apps.cron.share_cron_sync import _desired_jobs, write_tenant_crons_file
+from apps.cron.share_cron_sync import _desired_jobs
 from apps.cron.signals import suppress_cronjob_reconcile
 from apps.tenants.models import Tenant
 
@@ -80,14 +80,15 @@ def _save(tenant, record):
     tenant.openclaw_migration = copy.deepcopy(record)
 
 
-def _check_lease(record, recover_dead_owner):
-    if recover_dead_owner:
-        if record.get("owner_token") != recover_dead_owner or record.get("status") != "RUNNING":
+def _check_lease(record, takeover, confirm_owner_dead=False):
+    if bool(takeover) != bool(confirm_owner_dead):
+        raise MigrationError("Takeover requires --takeover <exact owner token> --confirm-owner-dead")
+    if takeover:
+        if record.get("owner_token") != takeover or record.get("status") != "RUNNING":
             raise MigrationError("dead_owner_token_mismatch")
         return  # Explicit operator attestation of termination; compare again under row lock.
-    lease = parse_datetime(record.get("lease_until", ""))
-    if record.get("status") == "RUNNING" and lease and lease > timezone.now():
-        raise MigrationError("Migration already running; wait for its 10-minute lease or confirm dead-owner recovery")
+    if record.get("status") == "RUNNING":
+        raise MigrationError("Migration already running; use --takeover <exact owner token> --confirm-owner-dead")
 
 
 def registry_digest(image: str) -> str:
@@ -261,6 +262,17 @@ def live_source_jobs(tenant):
 
 def report_tenant(tenant):
     """Inventory only: no checkpoint, canonical flip, import or Azure write."""
+    record = tenant.openclaw_migration or {}
+    if record.get("status") == "RUNNING":
+        lease = parse_datetime(record.get("lease_until") or "")
+        updated = parse_datetime(record.get("updated_at") or "")
+        return {
+            "status": "RUNNING",
+            "reasons": {},
+            "owner_token": record.get("owner_token", "missing"),
+            "lease_age_seconds": int((timezone.now() - updated).total_seconds()) if updated else "unknown",
+            "lease_expired": lease is None or lease <= timezone.now(),
+        }
     if tenant.openclaw_version == VERSION:
         return {"status": "ALREADY_94", "reasons": {}}
     if (
@@ -535,7 +547,13 @@ def image_step(tenant, record):
     if _image(app) != image or app.template.revision_suffix != suffix:
         if VERSION in _image(app):
             raise MigrationError("unexpected_target_revision")
-        record["evidence"]["capture"] = capture(tenant, record)
+        if not tenant.openclaw_migration_cron_fenced:
+            record["evidence"]["capture"] = capture(tenant, record)
+        # This row update waits for previously admitted DB/transport writers.
+        # Persist BEFORE publishing, and retain across ordinary/hard failures.
+        if _owned_query(tenant, record).update(openclaw_migration_cron_fenced=True) != 1:
+            raise MigrationError("migration_owner_fenced")
+        tenant.openclaw_migration_cron_fenced = True
         preservation_precheck(tenant, record["cron_export"])
         stage_signed_crons(tenant, record, checkpoint="signed_prestaged")
         record["recovery"] = {
@@ -548,14 +566,21 @@ def image_step(tenant, record):
         record["image_submitted"] = True
         _save(tenant, record)
         _assert_owner(tenant, record)
-        if canonical_revision(tenant) != record["signed_prestaged"]["canonical_revision"]:
-            raise MigrationError("canonical_changed_before_image")
+        # Rebuild current truth and verify actual share bytes immediately before
+        # submission. Repair changed/missing bytes with atomic publication.
+        stage_signed_crons(tenant, record, checkpoint="signed_prestaged")
         assert_cutover_safe([j for j, _ in canonical_inventory(tenant)] + record.get("cron_export", []))
         azure_client.update_container_image(
             tenant.container_id, image, revision_suffix=suffix, operation_timeout=300, retrofit_storage=True
         )
     # If a process died after the Azure write, re-use that revision instead of
     # creating another revision and losing the just-restored ephemeral state.
+    # Records created before the fence field existed can already point at the
+    # submitted revision. Recovery must fence this path before health/staging too.
+    if not tenant.openclaw_migration_cron_fenced:
+        if _owned_query(tenant, record).update(openclaw_migration_cron_fenced=True) != 1:
+            raise MigrationError("migration_owner_fenced")
+        tenant.openclaw_migration_cron_fenced = True
     health = wait_healthy(tenant, image=image, suffix=suffix)
     stage_signed_crons(tenant, record, checkpoint="signed_after_health")
     return health
@@ -570,6 +595,7 @@ def stage_signed_crons(tenant, record, *, checkpoint):
     from apps.cron.share_cron_sync import build_signed_crons_doc
 
     from .migration_preservation import canonical_digests, reason_counts
+    from .migration_signed_file import publish_signed_file
 
     _assert_owner(tenant, record)
     for _ in range(2):
@@ -586,10 +612,7 @@ def stage_signed_crons(tenant, record, *, checkpoint):
         if expected != canonical_digests(_desired_jobs(tenant)) or revision != canonical_revision(tenant):
             continue
         _assert_owner(tenant, record)
-        current = azure_client.download_workspace_file_binary(str(tenant.pk), "nbhd-crons.json")
-        rewritten = current != data
-        if rewritten:
-            azure_client._put_share_file(str(tenant.pk), "nbhd-crons.json", data=data, ensure_dirs=False)
+        rewritten = publish_signed_file(tenant, data, before_publish=lambda: _assert_owner(tenant, record))
         observed = azure_client.download_workspace_file_binary(str(tenant.pk), "nbhd-crons.json")
         if observed != data:
             raise MigrationError("signed_file_readback_mismatch")
@@ -610,7 +633,12 @@ def stage_signed_crons(tenant, record, *, checkpoint):
 
 def version_step(tenant, record):
     _assert_owner(tenant, record)
-    if _owned_query(tenant, record).update(container_image_tag=record["tag"], openclaw_version=VERSION) != 1:
+    if (
+        _owned_query(tenant, record).update(
+            container_image_tag=record["tag"], openclaw_version=VERSION, openclaw_migration_cron_fenced=False
+        )
+        != 1
+    ):
         raise MigrationError("migration_owner_fenced")
     tenant.container_image_tag, tenant.openclaw_version = record["tag"], VERSION
     return {"tag": record["tag"], "version": VERSION}
@@ -682,7 +710,7 @@ def crons_step(tenant, record):
         raise PreservationError(reasons)
     prepare_writer_declarations(tenant)
     _assert_owner(tenant, record)
-    count = write_tenant_crons_file(tenant)
+    count = stage_signed_crons(tenant, record, checkpoint="signed_crons")["count"]
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
         _assert_owner(tenant, record)
@@ -806,15 +834,15 @@ def verify_existing(tenant, record):
         raise VerificationError(code) from None
 
 
-def migrate_tenant(tenant_id, tag: str, *, dry_run=False, recover_dead_owner=None) -> dict:
+def migrate_tenant(tenant_id, tag: str, *, dry_run=False, takeover=None, confirm_owner_dead=False) -> dict:
     if not re.fullmatch(r"2026\.9\.4-[0-9a-f]{7,40}", tag or ""):
         raise MigrationError("Target must be an immutable 2026.9.4-<sha> tag")
     candidate = Tenant.objects.get(pk=tenant_id)
     prior = candidate.openclaw_migration or {}
     if not dry_run:
-        _check_lease(prior, recover_dead_owner)
+        _check_lease(prior, takeover, confirm_owner_dead)
     if not dry_run and candidate.openclaw_version != VERSION and not prior.get("image_submitted"):
-        readiness = report_tenant(candidate)
+        readiness = report_tenant(candidate) if not takeover else {"status": "READY"}
         if readiness["status"] != "READY":
             return {**readiness, "steps": []}
     with transaction.atomic():
@@ -847,16 +875,16 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False, recover_dead_owner=Non
                 "note": "No writes or external calls; ACR, live provenance and health checked on execution",
             }
         if not already_current:
-            _check_lease(record, recover_dead_owner)
+            _check_lease(record, takeover, confirm_owner_dead)
             if not record:
                 record = {"tag": tag, "started_at": timezone.now().isoformat(), "completed": [], "evidence": {}}
             # Verification is a current observation, never a resumable mutation
             # checkpoint. A crash after verifying must not certify stale state.
             record["completed"] = [s for s in record.get("completed", []) if s != "verify"]
-            if recover_dead_owner:
+            if takeover:
                 record.setdefault("takeovers", []).append(
                     {
-                        "dead_owner": recover_dead_owner,
+                        "dead_owner": takeover,
                         "at": timezone.now().isoformat(),
                         "termination_confirmed_by_operator": True,
                     }

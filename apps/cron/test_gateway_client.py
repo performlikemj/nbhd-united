@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest import mock
@@ -25,6 +26,9 @@ _OMIT = object()  # sentinel: build a job with NO delivery block
 
 class InvokeGatewayToolRetryTests(SimpleTestCase):
     def setUp(self):
+        self.enterContext(
+            mock.patch("apps.orchestrator.migration_cron_fence.cron_mutation", return_value=nullcontext(False))
+        )
         self.tenant = SimpleNamespace(
             id="11111111-1111-1111-1111-111111111111",
             container_fqdn="oc-test.example.com",
@@ -208,6 +212,11 @@ class InvokeGatewayToolDeliveryNormalizationTests(TestCase):
         id = "t-1"
         container_fqdn = "oc-test.example.com"
         internal_api_key = "k"
+
+    def setUp(self):
+        self.enterContext(
+            mock.patch("apps.orchestrator.migration_cron_fence.cron_mutation", return_value=nullcontext(False))
+        )
 
     def _invoke_capture(self, tool, args):
         """Call invoke_gateway_tool with the gateway POST stubbed; return the body

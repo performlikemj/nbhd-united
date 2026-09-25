@@ -63,8 +63,11 @@ def scalar_types_valid(job):
         if not isinstance(target, dict):
             return False
         for field, kind in fields.items():
-            if field in target and type(target[field]) is not types[kind]:
-                return False
+            if field in target:
+                if type(target[field]) is not types[kind]:
+                    return False
+                if kind == "integer" and abs(target[field]) > 2**53 - 1:
+                    return False
     return True
 
 

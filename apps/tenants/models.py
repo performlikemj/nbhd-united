@@ -690,6 +690,8 @@ class Tenant(models.Model):
         help_text='Last-known cron job list from gateway. Format: {"jobs": [...], "snapshot_at": "ISO8601"}',
     )
 
+    openclaw_migration_cron_fenced = models.BooleanField(default=False, db_index=True, editable=False)
+
     openclaw_migration = models.JSONField(
         default=dict,
         blank=True,

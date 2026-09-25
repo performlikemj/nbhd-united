@@ -10,6 +10,7 @@ from __future__ import annotations
 import hmac
 import json
 import time
+from contextlib import nullcontext
 from hashlib import sha256
 from unittest import mock
 
@@ -29,6 +30,11 @@ _KEY = "test-internal-key-xyz"
 
 class SignedParameterCarryTest(SimpleTestCase):
     """Exercise the real derivation, row renderer, signer and writer without a DB."""
+
+    def setUp(self):
+        self.enterContext(
+            mock.patch("apps.orchestrator.migration_cron_fence.cron_mutation", return_value=nullcontext(False))
+        )
 
     def test_typed_and_fallback_stamped_rows_keep_parameters_and_contract(self):
         from apps.cron.share_cron_sync import write_tenant_crons_file

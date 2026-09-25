@@ -83,6 +83,7 @@ class MigrationOrderingTests(TestCase):
                         openclaw_migration={
                             "tag": TAG,
                             "status": status,
+                            "owner_token": "prior-owner",
                             "completed": list(migration.STEPS),
                             "evidence": {"verify": {"result": "PASS"}},
                             "image_submitted": True,
@@ -92,9 +93,28 @@ class MigrationOrderingTests(TestCase):
                     with patch.dict(migration.HANDLERS, handlers):
                         if failure:
                             with self.assertRaises(migration.MigrationError):
-                                migration.migrate_tenant(self.tenant.pk, TAG)
+                                migration.migrate_tenant(
+                                    self.tenant.pk,
+                                    TAG,
+                                    **(
+                                        {"takeover": "prior-owner", "confirm_owner_dead": True}
+                                        if status == "RUNNING"
+                                        else {}
+                                    ),
+                                )
                         else:
-                            self.assertEqual(migration.migrate_tenant(self.tenant.pk, TAG)["status"], "PASS")
+                            self.assertEqual(
+                                migration.migrate_tenant(
+                                    self.tenant.pk,
+                                    TAG,
+                                    **(
+                                        {"takeover": "prior-owner", "confirm_owner_dead": True}
+                                        if status == "RUNNING"
+                                        else {}
+                                    ),
+                                )["status"],
+                                "PASS",
+                            )
                     self.assertEqual(calls, ["verify"])
                     self.tenant.refresh_from_db()
                     self.assertEqual(self.tenant.openclaw_migration["status"], "FAILED" if failure else "PASS")
@@ -207,16 +227,22 @@ class MigrationOrderingTests(TestCase):
             migration.migrate_tenant(self.tenant.pk, TAG)
         self.assertEqual(calls, ["config", "crons", "verify"])
 
-    def test_active_lease_rejected_and_expired_lease_resumed(self):
-        rec = record() | {"status": "RUNNING", "lease_until": (timezone.now() + timedelta(minutes=10)).isoformat()}
+    def test_active_and_expired_leases_require_confirmed_takeover(self):
+        rec = record() | {
+            "status": "RUNNING",
+            "owner_token": "prior-owner",
+            "lease_until": (timezone.now() + timedelta(minutes=10)).isoformat(),
+        }
         Tenant.objects.filter(pk=self.tenant.pk).update(openclaw_migration=rec)
         with self.assertRaisesRegex(migration.MigrationError, "already running"):
             migration.migrate_tenant(self.tenant.pk, TAG)
         rec["lease_until"] = (timezone.now() - timedelta(seconds=1)).isoformat()
         Tenant.objects.filter(pk=self.tenant.pk).update(openclaw_migration=rec)
+        with self.assertRaisesRegex(migration.MigrationError, "already running"):
+            migration.migrate_tenant(self.tenant.pk, TAG)
         handlers, calls = self.handlers()
         with patch.dict(migration.HANDLERS, handlers):
-            migration.migrate_tenant(self.tenant.pk, TAG)
+            migration.migrate_tenant(self.tenant.pk, TAG, takeover="prior-owner", confirm_owner_dead=True)
         self.assertEqual(calls, list(migration.STEPS))
 
     def test_batch_stops_on_first_failure(self):
@@ -262,6 +288,13 @@ class MigrationStepTests(TestCase):
 
         self.files = {}
         for target, kwargs in (
+            # Full-suite environment probes can unset AZURE_MOCK. Pin this
+            # synthetic storage fixture and forbid credential acquisition.
+            ("apps.orchestrator.azure_client.is_mock", {"return_value": True}),
+            (
+                "apps.orchestrator.storage_credentials.acquire_account_key",
+                {"side_effect": AssertionError("unexpected live storage access")},
+            ),
             ("apps.cron.gateway_client.get_gateway_token_for_tenant", {"return_value": "local-contract-token"}),
             (
                 "apps.orchestrator.azure_client._put_share_file",
