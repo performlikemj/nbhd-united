@@ -45,9 +45,11 @@ function LoginPageInner() {
     }
 
     let needsOnboarding = true;
+    let webRedesign = false;
     try {
       const me = await fetchMe();
       needsOnboarding = !me.tenant || me.tenant.status !== "active";
+      webRedesign = !!me.tenant?.web_redesign;
     } catch {
       // Preserve the existing safe fallback to onboarding.
     }
@@ -63,7 +65,8 @@ function LoginPageInner() {
       window.location.assign(inviteReturn);
       return;
     }
-    router.push(destination === "journal" ? "/journal" : "/onboarding");
+    // Web redesign tenants land on the Overview; everyone else on Journal.
+    router.push(destination === "journal" ? (webRedesign ? "/overview" : "/journal") : "/onboarding");
   };
 
   const finishAuthentication = async (

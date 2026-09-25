@@ -90,7 +90,8 @@ export default function LandingPage() {
 
   useEffect(() => {
     if (isLoggedIn()) {
-      router.replace("/journal");
+      // /overview sends tenants without the web redesign on to /journal.
+      router.replace("/overview");
     }
   }, [router]);
 

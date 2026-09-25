@@ -39,7 +39,8 @@ const instrumentSerif = Instrument_Serif({
   variable: "--font-serif",
   display: "swap",
   weight: "400",
-  style: "italic",
+  // Open Sky page titles use the upright face; legacy pull-quotes the italic.
+  style: ["normal", "italic"],
 });
 
 // THE MEASURE onboarding screens (building / paused → subscribe).

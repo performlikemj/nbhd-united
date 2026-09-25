@@ -20,6 +20,11 @@ export function getAuthenticationEpoch(): number {
 
 export function getAccessToken(): string | null {
   if (typeof window === "undefined") return null;
+  // DEV-ONLY fixture mode (lib/dev-fixtures.ts): act signed in so logged-in
+  // screens render without a backend. Inlined away in production builds.
+  if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_WEB_FIXTURES === "1") {
+    return localStorage.getItem(ACCESS_TOKEN_KEY) ?? "fixture-token";
+  }
   return localStorage.getItem(ACCESS_TOKEN_KEY);
 }
 

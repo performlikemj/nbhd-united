@@ -199,6 +199,14 @@ async function apiFetch<T>(
   options: ApiFetchOptions = {},
 ): Promise<T> {
   const { anonymous = false, timeoutMs } = options;
+  // DEV-ONLY fixture API for local screenshots (see lib/dev-fixtures.ts). Both
+  // conditions are inlined at build time, so production drops this branch and
+  // never bundles the fixture module.
+  if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_WEB_FIXTURES === "1") {
+    const { fixtureResponse } = await import("./dev-fixtures");
+    const hit = fixtureResponse(path, init);
+    if (hit !== undefined) return hit as T;
+  }
   const timeoutController = timeoutMs === undefined
     ? undefined
     : new AbortController();
@@ -538,6 +546,56 @@ export function fetchHorizons(): Promise<import("@/lib/types").HorizonsData> {
 // wire shape changes or a field is absent.
 export function fetchChatMessagesFirstPage(): Promise<unknown> {
   return apiFetch<unknown>("/api/v1/chat/messages/");
+}
+
+// Assistant cards for the web Overview (read-only). The since-feed is
+// ascending from an opaque (created_at, id) keyset cursor; to read only the
+// recent window we start from a watermark `days` ago (same encoding the server
+// emits: base64url(JSON [iso, ""])) and page forward a bounded number of
+// times, keeping assistant rows that carry live panel references.
+export interface AssistantPanelRef {
+  kind: string;
+  params?: Record<string, unknown>;
+  title?: string;
+}
+
+export interface AssistantCardRow {
+  id: string;
+  text: string;
+  created_at: string;
+  source: string;
+  panels: AssistantPanelRef[];
+}
+
+function sinceCursor(daysAgo: number): string {
+  const at = new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+  const raw = JSON.stringify([at, ""]);
+  return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+export async function fetchRecentAssistantCards(days = 7, maxPages = 5): Promise<AssistantCardRow[]> {
+  let cursor: string | null = sinceCursor(days);
+  const cards: AssistantCardRow[] = [];
+  for (let page = 0; page < maxPages && cursor; page += 1) {
+    const qs: string = `?since=${encodeURIComponent(cursor)}&limit=100`;
+    const res: { messages?: unknown[]; cursor?: string | null } = await apiFetch(`/api/v1/chat/messages/${qs}`);
+    const rows = Array.isArray(res?.messages) ? res.messages : [];
+    for (const r of rows) {
+      const row = r as Partial<AssistantCardRow> & { role?: string };
+      if (row.role !== "assistant" || !Array.isArray(row.panels) || row.panels.length === 0) continue;
+      cards.push({
+        id: String(row.id ?? ""),
+        text: typeof row.text === "string" ? row.text : "",
+        created_at: String(row.created_at ?? ""),
+        source: String(row.source ?? ""),
+        panels: row.panels.filter((p): p is AssistantPanelRef => !!p && typeof (p as AssistantPanelRef).kind === "string"),
+      });
+    }
+    if (rows.length === 0 || !res?.cursor || res.cursor === cursor) break;
+    cursor = res.cursor;
+  }
+  // Newest first for display.
+  return cards.sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
 // Journal current-status projection — live state derived from typed models

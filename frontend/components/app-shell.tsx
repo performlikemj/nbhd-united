@@ -13,6 +13,7 @@ import { BrandLogo, BrandIcon } from "@/components/brand-logo";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { SiteFooter } from "@/components/site-footer";
 import { SynapseNetwork } from "@/components/landing/synapse-network";
+import { OpenSkyShell } from "@/components/open-sky/shell";
 import {
   IconJournal,
   IconConstellation,
@@ -274,6 +275,16 @@ export function AppShell({ children }: { children: ReactNode }) {
   const isPublicPage = isInvitePage || publicPages.includes(pathname) || pathname.startsWith("/legal/");
   const { data: tenant } = useTenantQuery(!isInvitePage);
   const navItems = useNavItems(tenant);
+  // Web redesign (Open Sky) — per-tenant gate; everyone else keeps this shell.
+  const openSky = !!tenant?.web_redesign && !isPublicPage;
+
+  // Scope the Open Sky token overrides (globals.css `html.open-sky`) to the
+  // logged-in app of gated tenants; public/marketing pages never get them.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle("open-sky", openSky);
+    return () => root.classList.remove("open-sky");
+  }, [openSky]);
 
   // Scroll listener for header blur/border transition (main is the scroll container)
   useEffect(() => {
@@ -326,6 +337,14 @@ export function AppShell({ children }: { children: ReactNode }) {
         <a href="#main-content" className="skip-link">Skip to main content</a>
         <main id="main-content">{children}</main>
       </ErrorBoundary>
+    );
+  }
+
+  if (openSky) {
+    return (
+      <OpenSkyShell tenant={tenant} onLogout={handleLogout}>
+        {children}
+      </OpenSkyShell>
     );
   }
 
