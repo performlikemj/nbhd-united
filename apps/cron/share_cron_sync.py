@@ -63,8 +63,24 @@ def _desired_jobs(tenant) -> list[dict]:
             if not getattr(row, "managed", False) or _is_unmanaged_cron(row.name):
                 continue  # leave agent-owned and system self-cleaning crons alone
         job["declarationKey"] = f"nbhd:{row.id}"
-        jobs.append(job)
+        jobs.append(_payload_model(job))
     return jobs
+
+
+def _payload_model(job: dict) -> dict:
+    """Carry a top-level ``model`` pin as ``payload.model``.
+
+    System crons stamp their tier/user-preference model at the top level
+    (``config_generator``); 5.28's gateway ``cron.add`` folded it into
+    ``payload.model``. The 9.4 writer only emits ``--model`` from
+    ``payload.model``, so without this the pin is silently dropped and the
+    job runs on the chat primary. An explicit ``payload.model`` wins.
+    """
+    model = job.pop("model", None)
+    payload = job.get("payload")
+    if model and isinstance(payload, dict) and payload.get("kind") == "agentTurn" and not payload.get("model"):
+        job["payload"] = {**payload, "model": model}
+    return job
 
 
 def build_signed_crons_doc(tenant) -> tuple[bytes, int]:

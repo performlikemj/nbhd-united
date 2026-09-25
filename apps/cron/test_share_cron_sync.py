@@ -133,6 +133,23 @@ class DesiredJobsTest(TestCase):
         self.assertIn("Future Reminder", names)
         self.assertNotIn("Past Reminder", names)
 
+    def test_top_level_model_pin_travels_as_payload_model(self):
+        row = _mk(self.t, "Morning Briefing", kind="cron")
+        row.data["model"] = "openrouter/tier/model"
+        row.save()
+        [job] = _desired_jobs(self.t)
+        self.assertNotIn("model", job)
+        self.assertEqual(job["payload"]["model"], "openrouter/tier/model")
+
+    def test_explicit_payload_model_wins_over_top_level(self):
+        row = _mk(self.t, "Typed", kind="cron")
+        row.data["model"] = "openrouter/top/level"
+        row.data["payload"]["model"] = "openrouter/payload/pin"
+        row.save()
+        [job] = _desired_jobs(self.t)
+        self.assertNotIn("model", job)
+        self.assertEqual(job["payload"]["model"], "openrouter/payload/pin")
+
     def test_each_job_carries_stable_nbhd_declaration_key(self):
         row = _mk(self.t, "R", kind="cron")
         jobs = _desired_jobs(self.t)
