@@ -301,7 +301,7 @@ class DrainAndRecoveryTests(TestCase):
                 row.save()
             events.append("drain")
 
-        def source(tenant):
+        def source(tenant, **kwargs):
             self.assertEqual(events, ["drain"])
             events.append("capture")
             return [changed]

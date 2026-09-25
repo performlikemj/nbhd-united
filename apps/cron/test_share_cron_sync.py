@@ -150,6 +150,21 @@ class DesiredJobsTest(TestCase):
         self.assertNotIn("model", job)
         self.assertEqual(job["payload"]["model"], "openrouter/payload/pin")
 
+    def test_conflicting_or_non_string_pins_are_dropped_loudly(self):
+        conflict = _mk(self.t, "Conflict", kind="cron")
+        conflict.data["model"] = "openrouter/top/level"
+        conflict.data["payload"]["model"] = "openrouter/payload/pin"
+        conflict.save()
+        odd = _mk(self.t, "Odd", kind="cron")
+        odd.data["model"] = {"provider": "x"}
+        odd.save()
+        with self.assertLogs("apps.cron.share_cron_sync", "WARNING") as logs:
+            jobs = {j["name"]: j for j in _desired_jobs(self.t)}
+        self.assertEqual(len(logs.output), 2)
+        self.assertEqual(jobs["Conflict"]["payload"]["model"], "openrouter/payload/pin")
+        self.assertNotIn("model", jobs["Odd"]["payload"])
+        self.assertNotIn("model", jobs["Odd"])
+
     def test_each_job_carries_stable_nbhd_declaration_key(self):
         row = _mk(self.t, "R", kind="cron")
         jobs = _desired_jobs(self.t)

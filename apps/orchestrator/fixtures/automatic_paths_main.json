@@ -6,7 +6,7 @@
     "apps/orchestrator/tasks.py": "4a6fe8b6e0a354438ce3cd066e13bcb583ae13498a884632c2369bb657c19d1f",
     "apps/router/container_updates.py": "57f9ad2edf42673d41e134e07f0acff87b6e9932b001aed2db838e20954e1701",
     "apps/cron/suspension.py": "9fef2ed3f2e5ec0c8dec0289e1ebeb5f7bb36e1beb46d739d7925431b9008e90",
-    "apps/cron/share_cron_sync.py": "e4a27e99b14ab89d3513907da9c334dece369bd9bb61072b37437f827cd451f2",
+    "apps/cron/share_cron_sync.py": "87e5ec98b346bbd3a3da623c70aa1c09fdbc44c9154fc924c44309c662948582",
     "runtime/openclaw/chmod-audit-baseline.txt": "0a60a19c4764b8505d1be2a0f0d479463597200a67e2e1ea43600f2c3dc22ed1",
     "runtime/openclaw/claude-settings.json": "614e293f08fb4da96c49ef51b2e7eb9fcd2ee59e0af36c234128445797100a9f",
     "runtime/openclaw/claude-with-token.sh": "50406b15276f3c17ae11c6b543f70bd98ce302d3c6a714c867df4e56cbb4ab08",

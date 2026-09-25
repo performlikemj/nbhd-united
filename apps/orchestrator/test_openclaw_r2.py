@@ -131,8 +131,9 @@ class RoundTwoTests(TestCase):
                 row.enabled = False
                 row.data["payload"]["message"] = "newer dashboard edit"
                 row.save()
-            with self.assertRaisesRegex(m.MigrationError, "disabled_not_projected"):
-                m.capture(self.tenant, rec)
+            # A disabled canonical row stays in Postgres and no longer blocks
+            # (round ten); the retry must still not overwrite the edit.
+            m.capture(self.tenant, rec)
             row.refresh_from_db()
             self.assertFalse(row.enabled)
             self.assertEqual(row.data["payload"]["message"], "newer dashboard edit")

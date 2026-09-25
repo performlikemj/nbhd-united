@@ -77,9 +77,19 @@ def _payload_model(job: dict) -> dict:
     job runs on the chat primary. An explicit ``payload.model`` wins.
     """
     model = job.pop("model", None)
+    if model is None:
+        return job
     payload = job.get("payload")
-    if model and isinstance(payload, dict) and payload.get("kind") == "agentTurn" and not payload.get("model"):
+    if (
+        isinstance(model, str)
+        and model
+        and isinstance(payload, dict)
+        and payload.get("kind") == "agentTurn"
+        and payload.get("model") in (None, model)
+    ):
         job["payload"] = {**payload, "model": model}
+    else:
+        logger.warning("signed crons: dropped unmappable top-level model pin on %r", job.get("name"))
     return job
 
 

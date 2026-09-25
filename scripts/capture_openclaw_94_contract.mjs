@@ -33,7 +33,7 @@ for(const entry of inputs) {
      stability.push({reconciliation,list:after});
    }
  }
- const fixture={...entry,signedJobs,stability,writerArgv:argv,add,list:{...list,json:listJSON},writerSameCron:row?sameCron(row,entry.declaration):null};
+ const fixture={...entry,signedJobs,stability,writerArgv:argv,add,list:{...list,json:listJSON},writerSameCron:row?sameCron(row,entry.selected?signedJobs[0]:entry.declaration):null};
  fs.writeFileSync(`/tmp/contract/${entry.case}.json`,JSON.stringify(fixture,null,2)+'\n');
  console.log(JSON.stringify({case:entry.case,status:add.exitCode,reason:row?'captured':'cli_rejected'}));
  if(row) {const latest=JSON.parse(cli(['cron','list','--all','--json']).stdout).jobs.find(j=>j.declarationKey===row.declarationKey); const removed=cli(['cron','rm',latest.id]);if(removed.exitCode!==0) throw Error('cleanup');}
