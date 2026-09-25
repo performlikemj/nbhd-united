@@ -17,34 +17,95 @@ from django.test import SimpleTestCase, override_settings
 from apps.orchestrator import runtime_operator as operator
 
 
+class FakeConsole:
+    """Minimal model of the ACA exec console: `?command=sh`, TTY stdin frames, stdout frames.
+
+    ``execute(script, command_line)`` produces the replica's stdout for the streamed
+    script; by default it returns ``result`` verbatim.
+    """
+
+    def __init__(self, result=b'NBHD_RESULT:{"ok":true}\r\n', execute=None, split=False):
+        self.result, self.execute, self.split = result, execute, split
+        self.sent, self.url, self.pending, self.lines = [], None, [b"\x01Successfully connected to container"], []
+        self.run_line, self.expected = None, None
+
+    def connect(self, url, **kwargs):
+        # Each connection is a fresh `sh` session.
+        self.sent, self.lines, self.run_line, self.expected = [], [], None, None
+        self.pending = self.pending if getattr(self, "_primed", False) else [b"\x01Successfully connected to container"]
+        self._primed = False
+        self.url, self.kwargs = url, kwargs
+        sock = Mock()
+        sock.recv.side_effect = self._recv
+        sock.send_binary.side_effect = self._send
+        self.sock = sock
+        return sock
+
+    def _send(self, frame):
+        self.sent.append(frame)
+        if frame[:2] != b"\x00\x00":
+            return
+        line = frame[2:].decode().rstrip("\n")
+        if "NBHD_RE''ADY" in line:
+            self.pending.append(b"\x00\x01NBHD_READY\r\n")
+        elif line.startswith("head -n "):
+            self.run_line, self.expected = line, int(line.split()[2])
+        elif self.run_line is not None and self.expected:
+            self.lines.append(line)
+            if len(self.lines) == self.expected:
+                import base64 as b64
+
+                script = b64.b64decode("".join(self.lines)).decode()
+                out = self.execute(script, self.run_line) if self.execute else self.result
+                if self.split and len(out) > 8:
+                    self.pending += [b"\x00\x01" + out[:8], b"\x00\x01" + out[8:]]
+                else:
+                    self.pending.append(b"\x00\x01" + out)
+
+    def _recv(self):
+        return self.pending.pop(0) if self.pending else b""
+
+
 class OperatorConsoleTests(SimpleTestCase):
-    def test_console_handles_split_frames_and_returns_only_explicit_result(self):
-        socket = Mock()
-        socket.recv.side_effect = [b"\x01connected", b"\x00\x01NBHD_RES", b'\x00\x01ULT:{"ok":true}\r\n']
+    def run_console(self, console, body="return {ok:true};"):
         container = SimpleNamespace(exec_endpoint="wss://console.invalid/exec")
         with (
             patch.object(operator, "_connection", return_value=(container, "private-token")),
-            patch.object(operator.websocket, "create_connection", return_value=socket) as connect,
+            patch.object(operator.websocket, "create_connection", side_effect=console.connect),
         ):
-            self.assertEqual(operator.run_node(Mock(), "return {ok:true};"), {"ok": True})
-        self.assertNotIn("private-token", connect.call_args.args[0])
-        socket.close.assert_called_once()
+            return operator.run_node(Mock(), body)
+
+    def test_console_handles_split_frames_and_returns_only_explicit_result(self):
+        console = FakeConsole(split=True)
+        self.assertEqual(self.run_console(console), {"ok": True})
+        self.assertTrue(console.url.endswith("?command=sh"))
+        self.assertNotIn("private-token", console.url)
+        self.assertEqual(console.kwargs["header"], ["Authorization: Bearer private-token"])
+        self.assertEqual(console.sent[0][:2], b"\x00\x04")  # resize before any stdin
+        console.sock.close.assert_called_once()
+
+    def test_script_travels_over_stdin_in_short_lines_never_in_the_url(self):
+        console = FakeConsole()
+        body = operator._comparison_adapter() + "return {ok:true};"
+        self.assertEqual(self.run_console(console, body), {"ok": True})
+        self.assertLess(len(console.url), 300)
+        self.assertNotIn("sameCron", console.url)
+        self.assertGreater(len(console.lines), 10)
+        self.assertTrue(all(len(line) < 1024 for line in console.lines))
+        self.assertIn("env NODE_OPTIONS= node", console.run_line)
 
     def test_console_failure_does_not_expose_output(self):
-        socket = Mock()
-        socket.recv.return_value = b'\x00\x01private-payload\nNBHD_RESULT:{"operatorError":true}\n'
-        with (
-            patch.object(
-                operator,
-                "_connection",
-                return_value=(SimpleNamespace(exec_endpoint="wss://console.invalid/exec"), "secret"),
-            ),
-            patch.object(operator.websocket, "create_connection", return_value=socket),
-            self.assertRaises(operator.OperatorError) as error,
-        ):
-            operator.run_node(Mock(), "return false;")
+        console = FakeConsole(result=b'private-payload\nNBHD_RESULT:{"operatorError":true}\n')
+        with self.assertRaises(operator.OperatorError) as error:
+            self.run_console(console, "return false;")
         self.assertNotIn("private-payload", str(error.exception))
-        socket.close.assert_called_once()
+        console.sock.close.assert_called_once()
+
+    def test_proxy_error_frame_fails_closed(self):
+        console = FakeConsole()
+        console.pending, console._primed = [b"\x02denied"], True
+        with self.assertRaises(operator.OperatorError):
+            self.run_console(console)
 
     def test_console_log_scan_returns_counts_only(self):
         from django.utils import timezone

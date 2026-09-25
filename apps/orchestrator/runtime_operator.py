@@ -4,12 +4,12 @@ Uses the same authenticated console protocol as Azure CLI's containerapp exec.
 No command output, credential, config or reminder payload is logged on errors.
 """
 
+import base64
 import json
 import re
-import shlex
+import textwrap
 import time
 from pathlib import Path
-from urllib.parse import quote_plus
 
 import requests
 import websocket
@@ -20,6 +20,12 @@ from .azure_client import get_container_client, is_mock
 
 class OperatorError(RuntimeError):
     pass
+
+
+# Azure Container Apps console framing (same as `az containerapp exec`).
+_STDIN = b"\x00\x00"
+_RESIZE = b"\x00\x04"
+_STDIN_LINE = 700
 
 
 def _connection(tenant):
@@ -83,18 +89,29 @@ def run_node(tenant, body: str, *, timeout: int = 90):
         "(async()=>{" + body + "})().then(result=>console.log('NBHD_RESULT:'+JSON.stringify(result)))"
         ".catch(()=>console.log('NBHD_RESULT:'+JSON.stringify({operatorError:true})));"
     )
-    command = "env NODE_OPTIONS= node -e " + shlex.quote(script)
     endpoint = container.exec_endpoint
     if not endpoint or not endpoint.startswith("wss://"):
         raise OperatorError("Missing secure console endpoint")
+    # The console splits `?command=` on whitespace (no shell quoting) and the proxy
+    # rejects long URLs, so the adapter can't travel in the URL. Open a plain `sh`
+    # and stream the script over stdin as short base64 lines (the console is a TTY
+    # in canonical mode: lines must stay well under 4 KiB). Echo is disabled before
+    # the script is sent, so only the NBHD_RESULT line leaves the replica.
+    lines = textwrap.wrap(base64.b64encode(script.encode()).decode(), _STDIN_LINE)
     sock = websocket.create_connection(
-        endpoint + "?command=" + quote_plus(command),
+        endpoint + "?command=sh",
         header=[f"Authorization: Bearer {token}"],
         timeout=timeout,
     )
     output = b""
+    stage = "connecting"
     deadline = time.monotonic() + timeout
+
+    def send(line: str) -> None:
+        sock.send_binary(_STDIN + line.encode() + b"\n")
+
     try:
+        sock.send_binary(_RESIZE + b'{"Width": 200, "Height": 50}')
         while time.monotonic() < deadline:
             sock.settimeout(max(0.1, deadline - time.monotonic()))
             chunk = sock.recv()
@@ -102,12 +119,26 @@ def run_node(tenant, body: str, *, timeout: int = 90):
                 break
             if not isinstance(chunk, bytes) or chunk[0] == 2:
                 raise OperatorError("Console protocol failure")
+            if chunk[:1] == b"\x01":
+                # Proxy info frame; the session accepts stdin once connected.
+                if stage == "connecting" and b"uccessfully connected" in chunk:
+                    send("PS1=''; stty -echo 2>/dev/null; f=$(mktemp); echo NBHD_RE''ADY")
+                    stage = "handshake"
+                continue
             if chunk[:2] not in (b"\x00\x01", b"\x00\x02"):
                 continue
             output += chunk[2:]
             if len(output) > 2 * 1024 * 1024:
                 raise OperatorError("Operator response exceeded metadata limit")
-            match = re.search(rb"(?:^|[\r\n])NBHD_RESULT:([^\r\n]+)[\r\n]", output)
+            if stage == "handshake" and re.search(rb"(?:^|[\r\n])NBHD_READY[\r\n]", output):
+                send(f'head -n {len(lines)} | base64 -d > "$f" && env NODE_OPTIONS= node "$f"; rm -f "$f"; exit')
+                for line in lines:
+                    send(line)
+                stage = "running"
+                continue
+            if stage != "running":
+                continue
+            match = re.search(rb"(?:^|[\r\n])(?:\$ )?NBHD_RESULT:([^\r\n]+)[\r\n]", output)
             if match:
                 result = json.loads(match[1])
                 if isinstance(result, dict) and result.get("operatorError"):
