@@ -2457,6 +2457,15 @@ def _migrate_config_to_openclaw_9_4(config: dict[str, Any]) -> None:
         {"enabled": True, "provider": "brave"}
     )
 
+    # env.<NAME> -> env.vars.<NAME>. 9.4's env block is strict: flat keys are
+    # "Unrecognized keys" (openclaw config validate, 2026.9.4-8ceb89f), which
+    # made every Google-connected 9.4 tenant's config invalid (MJ, 2026-09-25).
+    env = config.get("env")
+    if isinstance(env, dict):
+        flat = {k: env.pop(k) for k in [k for k in env if k not in ("vars", "shellEnv")]}
+        if flat:
+            env.setdefault("vars", {}).update(flat)
+
 
 def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     """Generate a complete openclaw.json for a tenant's container.
