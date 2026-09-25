@@ -27,6 +27,19 @@ def normalized_optionals(job):
             for field in fields:
                 if target.get(field) is None:
                     target.pop(field, None)
+    # Mirror the signer (share_cron_sync._payload_model): an agentTurn's
+    # top-level model pin travels as payload.model. A conflicting pair stays
+    # unfolded, so the unknown root field refuses it.
+    payload = result.get("payload")
+    model = result.get("model")
+    if (
+        isinstance(model, str)
+        and model
+        and isinstance(payload, dict)
+        and payload.get("kind") == "agentTurn"
+        and payload.get("model") in (None, model)
+    ):
+        payload["model"] = result.pop("model")
     return result
 
 

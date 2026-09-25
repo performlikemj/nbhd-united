@@ -2022,6 +2022,92 @@
       "fixtures": [
         "fixtures/openclaw_94_cron_contract/round_six/wake-heartbeat.json"
       ]
+    },
+    {
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/system_model/system-model-flash-0731.json"
+      ],
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      }
+    },
+    {
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/system_model/system-model-flash.json"
+      ],
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash",
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      }
     }
   ]
 }

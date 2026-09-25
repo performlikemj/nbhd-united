@@ -7,6 +7,11 @@ export function normalizedOptionals(job) {
     const target=part==='root'?result:result[part];
     if(target && typeof target==='object') for(const key of fields) if(target[key]===null) delete target[key];
   }
+  // Mirror of the Python signer/normalizer: agentTurn top-level model pin travels as payload.model.
+  const p=result.payload, model=result.model;
+  if(typeof model==='string' && model && p && typeof p==='object' && p.kind==='agentTurn' && (p.model==null || p.model===model)) {
+    p.model=model; delete result.model;
+  }
   return result;
 }
 export function authoredAtMs(job) {

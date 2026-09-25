@@ -104,3 +104,14 @@ uses `--network none`, no ports/mounts, and a synthetic token. Scheduled firing 
 plugins are disabled. Only its uniquely named container is removed. Do not run
 concurrent copies; do not point this script at a tenant. The fixture establishes
 installation, not external delivery.
+
+## System-cron model pins (`system_model/`, 2026-09-25)
+
+Captured with the same isolated procedure for
+`--cases system-model-flash-0731,system-model-flash`. These are the real
+`config_generator` row form: the tier/user model pinned at the TOP level,
+explicit `delivery.mode: none`, `sessionTarget: isolated`. The signer carries
+the pin as `payload.model`; the image writer emits `--model`, the CLI stores
+it verbatim, and two writer passes apply/remove zero jobs with a stable ID.
+`writerSameCron` compares the stored row with the signed job, which is what
+the writer itself compares on every pass.

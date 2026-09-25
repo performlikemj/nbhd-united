@@ -160,6 +160,17 @@ cases.update(
         "tools-string": {"payload": {**base_payload, "toolsAllow": "nbhd_send_to_user"}},
     }
 )
+# Real system-cron rows (config_generator): tier/user model pinned at the top
+# level, explicit delivery none, isolated. Fleet census 2026-09-25.
+for suffix, model in {
+    "flash-0731": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "flash": "openrouter/deepseek/deepseek-v4-flash",
+}.items():
+    cases["system-model-" + suffix] = {
+        "model": model,
+        "delivery": {"mode": "none"},
+        "sessionTarget": "isolated",
+    }
 import argparse
 
 parser = argparse.ArgumentParser(description=__doc__)
