@@ -304,3 +304,59 @@ class ImageStorageRevisionTests(SimpleTestCase):
         env = {e.name: e.value for e in app.template.containers[0].env}
         self.assertEqual({name: env[name] for name in _OC_STATE_ENV}, _OC_STATE_ENV)
         self.assertEqual(app.template.containers[0].env[0].secret_ref, "kv-secret")
+
+
+@override_settings(AZURE_RESOURCE_GROUP="test-rg")
+class OperatorReplicaSelectionTests(SimpleTestCase):
+    def connect(self, replicas):
+        from types import SimpleNamespace
+
+        client = Mock()
+        client.container_apps.get.return_value = SimpleNamespace(
+            latest_ready_revision_name="rev", latest_revision_name="rev"
+        )
+        client.container_apps_revision_replicas.list_replicas.return_value = SimpleNamespace(value=replicas)
+        client.container_apps.get_auth_token.return_value = SimpleNamespace(token="t")
+        with (
+            patch.object(operator, "is_mock", return_value=False),
+            patch.object(operator, "get_container_client", return_value=client),
+        ):
+            return operator._connection(Mock(container_id="oc-test"))
+
+    def replica(self, state, container_state="Running", ready=True):
+        from types import SimpleNamespace
+
+        container = SimpleNamespace(name="openclaw", ready=ready, running_state=container_state, exec_endpoint=state)
+        return SimpleNamespace(running_state=state, containers=[container])
+
+    def test_stopped_replica_left_by_a_restart_is_ignored(self):
+        container, _ = self.connect([self.replica("Running"), self.replica("NotRunning")])
+        self.assertEqual(container.exec_endpoint, "Running")
+
+    def test_two_running_replicas_still_refuse(self):
+        with self.assertRaisesRegex(operator.OperatorError, "exactly one"):
+            self.connect([self.replica("Running"), self.replica("Running")])
+
+    def test_no_running_replica_refuses(self):
+        with self.assertRaisesRegex(operator.OperatorError, "exactly one"):
+            self.connect([self.replica("NotRunning")])
+
+
+class ConsoleLogWindowTests(SimpleTestCase):
+    def test_offset_less_utc_stamps_compare_with_an_aware_window(self):
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime(2026, 9, 25, 19, 30, tzinfo=UTC)
+        lines = [
+            json.dumps({"TimeStamp": "2026-09-25T19:28:00.1234567", "Log": "[gateway] ready"}),
+            json.dumps({"TimeStamp": "2026-09-25T19:29:00", "Log": "SQLite error: database is locked"}),
+            json.dumps({"TimeStamp": "2026-09-25T19:00:00", "Log": "SQLite error: older than window"}),
+        ]
+        response = Mock(text="\n".join(lines))
+        with (
+            patch.object(operator, "_connection", return_value=(Mock(log_stream_endpoint="https://logs"), "t")),
+            patch.object(operator.requests, "get", return_value=response),
+        ):
+            result = operator.console_error_counts(Mock(), since=now - timedelta(minutes=5))
+        self.assertEqual(result["lines"], 2)
+        self.assertEqual(result["errors"]["sqlite"], 1)

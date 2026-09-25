@@ -9,6 +9,7 @@ import json
 import re
 import textwrap
 import time
+from datetime import UTC
 from pathlib import Path
 
 import requests
@@ -38,7 +39,15 @@ def _connection(tenant):
     replicas = client.container_apps_revision_replicas.list_replicas(
         settings.AZURE_RESOURCE_GROUP, tenant.container_id, app.latest_ready_revision_name
     )
-    containers = [c for r in replicas.value for c in (r.containers or []) if c.name == "openclaw" and c.ready]
+    # A replica stopped by a restart can linger in the list, still "ready";
+    # only a running replica on a running container can serve the console.
+    containers = [
+        c
+        for r in replicas.value
+        if str(getattr(r, "running_state", "Running")) == "Running"
+        for c in (r.containers or [])
+        if c.name == "openclaw" and c.ready and str(getattr(c, "running_state", "Running")) == "Running"
+    ]
     if len(containers) != 1:
         raise OperatorError("Expected exactly one ready OpenClaw replica")
     token = client.container_apps.get_auth_token(settings.AZURE_RESOURCE_GROUP, tenant.container_id).token
@@ -256,7 +265,10 @@ def console_error_counts(tenant, *, since) -> dict:
     )
     response.raise_for_status()
     rows = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    # The console log API stamps records in UTC without an offset; make them
+    # comparable with the aware verification window (E2E canary 2026-09-25).
     timestamps = [parse_datetime(row.get("TimeStamp", "")) for row in rows]
+    timestamps = [t if t is None or t.tzinfo else t.replace(tzinfo=UTC) for t in timestamps]
     if not rows or any(t is None for t in timestamps):
         raise OperatorError("Console log window unavailable")
     if len(rows) >= 300 and min(timestamps) > since:
