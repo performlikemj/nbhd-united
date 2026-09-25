@@ -66,8 +66,14 @@ class CanaryTenantImageReadbackTest(SimpleTestCase):
         tenants = patch("apps.orchestrator.management.commands.canary_tenant_image.Tenant.objects.filter")
         self.tenants = tenants.start()
         self.addCleanup(tenants.stop)
+        azure = patch("apps.orchestrator.azure_client.get_container_client")
+        self.live_client = azure.start()
+        self.addCleanup(azure.stop)
+        self.live_client.return_value.container_apps.get.return_value = SimpleNamespace(
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image=_TARGET_IMAGE)])
+        )
         self.tenants.return_value.__getitem__.return_value = [
-            SimpleNamespace(container_image_tag=_TAG, openclaw_version="2026.9.4")
+            SimpleNamespace(container_id=_CONTAINER, container_image_tag=_TAG, openclaw_version="2026.9.4")
         ]
 
     @patch("apps.orchestrator.management.commands.canary_tenant_image.is_mock", return_value=False)
@@ -107,8 +113,7 @@ class CanaryTenantImageReadbackTest(SimpleTestCase):
             call_command("canary_tenant_image", container=_CONTAINER, tag=_TAG, stdout=out)
 
         message = str(ctx.exception)
-        self.assertIn(_TARGET_IMAGE, message)
-        self.assertIn("old-sha", message)
+        self.assertEqual("canary_image_identity_mismatch", message)
         self.assertNotIn("Canary image deployed", out.getvalue())
         mock_update.assert_called_once_with(_CONTAINER, _TARGET_IMAGE)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.cache import cache
@@ -15,6 +16,14 @@ from apps.tenants.services import create_tenant
 @override_settings(DEPLOY_SECRET="test-deploy-secret", OPENCLAW_IMAGE_TAG="testsha")
 class RolloutAtomicBumpEndpointTest(TestCase):
     def setUp(self):
+        azure = patch("apps.orchestrator.azure_client.get_container_client")
+        client = azure.start()
+        self.addCleanup(azure.stop)
+        client.return_value.container_apps.get.return_value = SimpleNamespace(
+            template=SimpleNamespace(
+                containers=[SimpleNamespace(name="openclaw", image="registry/nbhd-openclaw:2026.5.7-old")]
+            )
+        )
         self.client = Client()
         self.tenant = create_tenant(display_name="Atomic Test", telegram_chat_id=999111222)
         self.tenant.status = Tenant.Status.ACTIVE

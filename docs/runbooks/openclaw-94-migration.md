@@ -28,7 +28,11 @@ the current panel instruction. No image rebuild is required by this rescope.
 - Avoid concurrent tenant config/image/lifecycle operations and user cron edits
   during the maintenance window. Do not run overlapping commands for a tenant.
 - Check DB cron provenance. Already-canonical rows remain authoritative; live
-  exports only add missing names. Legacy imports never delete absent rows.
+  exports only add missing names. For noncanonical tenants the complete live
+  export is the only authority: cache-only rows are moved into the private
+  `openclaw_migration.quarantined_cache` field and removed from `CronJob` in the
+  same transaction as promotion. Quarantine is never signed or replayed.
+  Reports preview `quarantined_cache=N`; execution reports the retained count.
   Incomplete/paginated/malformed HTTP lists, duplicate names, and noncanonical
   tenants with typed rows are refused. Resolve provenance before continuing.
 - Preview the explicit scope (no DB writes, Azure, ACR, HTTP or console calls):
@@ -75,7 +79,8 @@ python manage.py migrate_tenant_openclaw --tenant "$TENANT_ID" --tag "$TAG"
 The durable checkpoints are:
 
 1. `preflight`: registry digests, original template and a fresh revision suffix.
-2. `capture`: complete live cron export plus additive Postgres import.
+2. `capture`: complete live cron export; canonical additive import or noncanonical
+   cache reconciliation/quarantine, then promotion and equivalent timestamp preparation.
 3. `image`: one revision containing the digest-pinned image, oc-state EmptyDir,
    four state/config/workspace/cache variables, node-owned 0700/0600 share mount
    options, plugin-runtime-deps and index-cache. Wait for that latest revision,
@@ -110,13 +115,21 @@ Every non-PASS resume runs verification again, even when the historical
 
 Before any initial checkpoint/import, and again immediately before image
 submission, the migration checks **all** runtime and canonical declarations
-against the unchanged `share_cron_sync` selector and `nbhd-cron-sync.mjs` writer.
+under **DEFAULT-DENY** against the unchanged `share_cron_sync` selector and `nbhd-cron-sync.mjs` writer.
 Unsupported delivery destinations/accounts/threads, authored anchors, six-field cron,
 authored stagger, systemEvent declarations (the unchanged writer emits the CLI-rejected
 `--no-deliver` combination), thinking/pacing/session/retention controls, disabled declarations,
 unmanaged recurrences and unknown fields block the tenant. Source cancellations
 that would require creating an unprojectable disabled declaration also block.
 No migration-only selector exemptions or agent re-sync waiver remain.
+`cron-normalization.json` is the shared Python/JavaScript normalization contract.
+`cron-proven-shapes.json` admits only exact normalized control combinations with
+committed golden evidence of equal semantic digests, unchanged-writer acceptance,
+and two mutation-free reconciliation passes with stable IDs. Message text,
+description text and validated schedule values occupy typed data slots; model,
+tool-list values/order, fallback values, timeout, flags and enums remain literal.
+Unrecorded combinations return `BLOCKED_UNSUPPORTED` / `unproven_shape` even when
+individual controls have separate evidence. Never infer a cross-product of support.
 
 Initial `BLOCKED_UNSUPPORTED` and `DEFER` results are non-mutating. A retry can
 also stop on a newly incompatible declaration; already-completed work remains
@@ -209,7 +222,10 @@ The image writer's SHA256 matched the unchanged repository writer.
 - ISO offset and UTC one-shots both become UTC with millisecond precision;
   `tz` disappears. The migration compares instants and prepares canonical
   one-shots in this representation during capture **before image submission**,
-  then again before signing. The selector and runtime writer remain unchanged.
+  then again before signing. Preparation derives the instant only from authored
+  `schedule.at`, `atMs`, or `expr`; conflicting instants are refused. Runtime
+  `state.nextRunAtMs` cannot supply or replace it. A rendered declaration digest
+  assertion aborts/rolls back preparation if semantics change. The selector and runtime writer remain unchanged.
   Both prepared forms passed two real writer reconciliation passes with zero
   mutations and stable IDs. Empty optional delivery values equal absence.
 - Explicit destinations/accounts/threads and interval anchors are silently
@@ -222,6 +238,21 @@ The image writer's SHA256 matched the unchanged repository writer.
   namespaces and removing those rows. The 9.4 operator inventory excludes
   those exact namespace/agent pairs from migration ownership; unknown legacy
   declarations remain visible and block. No monitor is deleted or recreated.
+
+Round six adds [75 captures and the final shape matrix](../../apps/orchestrator/fixtures/openclaw_94_cron_contract/round_six/README.md):
+
+| Shape family | Result |
+|---|---|
+| Ordinary five-field cron, unpinned every, authored ISO/numeric/atMs/expr at | ACCEPT; one-shots prepared before signing |
+| All six typed patterns × cron/every/at × with/without recorded fallbacks | ACCEPT for the exact recorded control combinations |
+| Recorded model, restricted tools, lightContext, timeout, wakeMode, description, main agent and text alias | ACCEPT for recorded combinations/values |
+| Destination-free announce (default/Telegram channel), empty delivery defaults, nullable optionals | ACCEPT with the shared evidenced normalization |
+| Disabled, systemEvent, authored anchor/stagger, explicit destinations/accounts/threads | BLOCKED_UNSUPPORTED |
+| Unknown fields/policies, unsupported controls, unrecorded values or combinations | BLOCKED_UNSUPPORTED (`unproven_shape` for an otherwise valid unrecorded shape) |
+
+The 70 accepted cases map to 43 normalized shapes; five captured cases are blocked.
+Null `model`, `toolsAllow`, `lightContext`, `timeoutSeconds`, `fallbacks` and the
+recorded optional fields equal absence. Literal null timing pins remain unpinned.
 
 These fixtures test CLI acceptance, projection and comparison. They do not
 establish production delivery or lifecycle behavior; the release canary checks
@@ -270,6 +301,17 @@ configured fleet target. Use this for the MJ and `1c77c8c1` health checks.
   `one_shot_pending_missing` or `one_shot_expired_undelivered`. Never infer delivery
   from absence or silently mark a missing canonical reminder delivered.
 
+## Operational logging
+
+Migration source/report/capture calls opt into `invoke_gateway_tool(...,
+metadata_only=True)`. HTTP/tool/transport/Key Vault failures use reason codes and
+status metadata; response bodies and raw exceptions are withheld. Other gateway
+callers retain their prior logging behavior. Strict config refresh also requests
+metadata-only envelope-render errors. Manual canary failures and image/version
+command summaries contain fixed reason codes. Local capture progress prints
+case/status/reason only; its committed raw CLI recordings contain synthetic data.
+The unchanged runtime poller's separate logging limitation below still applies.
+
 ## Scope and lifecycle limitations
 
 This PR changes no OpenClaw image files. Automatic image tasks, message updates,
@@ -287,6 +329,11 @@ version-bump commands take `--tenant UUID` or `--tenants UUID,UUID`.
 `bump_openclaw_version --all` filters only within that supplied scope; `--all`
 alone is refused. Every selected tenant, including single-tenant mode and
 same-tag partial upgrades, must pass the runtime-family guard before mutation.
+A non-PASS migration with `image_submitted=True` refuses ordinary manual updates,
+even if both DB version fields still say 5.28. The guard reads the live Azure
+OpenClaw image and requires an unambiguous same-family tag; unreadable identities,
+digest-only references and mismatches refuse. Resolve partial migrations using
+the controlled migration recovery procedure.
 `canary_tenant_image --container ...` resolves that container to exactly one
 tenant and applies the same family/ambiguity guard. Unversioned canary tags,
 unknown/duplicate container mappings and alternate repositories are refused.
@@ -383,5 +430,5 @@ Raw migration JSON is excluded from Django admin forms and public serializers.
 No private lifecycle declarations or temporary cron transfer files are created.
 Retain failed exports while recovery remains unresolved. After successful canary
 soak and 7 days, an authorized operator should remove `cron_export` and
-`cron_export_history` and `canonical_one_shots` while retaining metadata,
+`cron_export_history`, `canonical_one_shots`, and `quarantined_cache` while retaining metadata,
 dispositions and audit timestamps; apply the retention policy to backups too.

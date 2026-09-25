@@ -241,7 +241,17 @@ class RoundFourTests(TestCase):
 
     def test_scoped_same_family_does_not_select_other_tenants(self):
         other = tenant_fixture(949405)
-        with patch("apps.orchestrator.management.commands.bump_all_tenant_images.update_container_image") as image:
+        with (
+            patch("apps.orchestrator.management.commands.bump_all_tenant_images.update_container_image") as image,
+            patch("apps.orchestrator.azure_client.get_container_client") as azure,
+        ):
+            from types import SimpleNamespace
+
+            azure.return_value.container_apps.get.return_value = SimpleNamespace(
+                template=SimpleNamespace(
+                    containers=[SimpleNamespace(name="openclaw", image="registry/nbhd-openclaw:2026.5.28-old")]
+                )
+            )
             call_command("bump_all_tenant_images", tenant=str(self.tenant.pk), tag="2026.5.28-new", stdout=StringIO())
         image.assert_called_once()
         other.refresh_from_db()

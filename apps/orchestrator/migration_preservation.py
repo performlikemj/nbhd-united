@@ -9,12 +9,52 @@ import hashlib
 import json
 import re
 from collections import Counter
+from functools import lru_cache
+from pathlib import Path
 
 from .cron_declarations import declaration_fields, supported_declaration
 
+NORMALIZATION = json.loads(Path(__file__).with_name("cron-normalization.json").read_text())
+
+
+def normalized_optionals(job):
+    result = copy.deepcopy(job)
+    if not isinstance(result, dict):
+        return result
+    for part, fields in NORMALIZATION["nullAbsent"].items():
+        target = result if part == "root" else result.get(part)
+        if isinstance(target, dict):
+            for field in fields:
+                if target.get(field) is None:
+                    target.pop(field, None)
+    return result
+
+
+def authored_at_ms(job):
+    """An instant comes only from authored fields; conflicts fail closed."""
+    from datetime import datetime
+
+    schedule = job.get("schedule") or {}
+    instants = []
+    for field in NORMALIZATION["instantFields"]:
+        value = schedule.get(field)
+        if value is None:
+            continue
+        if type(value) is int and 0 <= value <= 8640000000000000:
+            instant = value
+        elif isinstance(value, str) and re.fullmatch(NORMALIZATION["instantPattern"], value):
+            try:
+                instant = int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
+            except ValueError:
+                return None
+        else:
+            return None
+        instants.append(instant)
+    return instants[0] if instants and len(set(instants)) == 1 else None
+
 
 def preservation_reasons(job, *, managed=True):
-    job = declaration_fields(job)
+    job = normalized_optionals(declaration_fields(job))
     reasons = set()
     try:
         supported = supported_declaration(job)
@@ -24,6 +64,10 @@ def preservation_reasons(job, *, managed=True):
         reasons.add("unsupported_declaration")
         return reasons
     schedule, payload, delivery = (job.get(k) or {} for k in ("schedule", "payload", "delivery"))
+    aliases = NORMALIZATION["aliases"].get(payload.get("kind"), {}).get("sources", [])
+    authored_texts = [payload[k] for k in aliases if payload.get(k) is not None]
+    if authored_texts and any(value != authored_texts[0] for value in authored_texts):
+        reasons.add("conflicting_text_aliases")
     from .cron_reconcile import _is_unmanaged_cron
 
     if payload.get("kind") == "systemEvent":
@@ -91,7 +135,44 @@ def preservation_reasons(job, *, managed=True):
         r'"(?:command|commandArgv|command_argv|commandInput|commandCwd|commandEnv|script)"\s*:', json.dumps(job), re.I
     ):
         reasons.add("writer_safety_refusal")
+    if not reasons:
+        if declaration_shape(job) not in proven_shapes():
+            reasons.add("unproven_shape")
     return reasons
+
+
+def declaration_shape(job, *, pins=None):
+    """Exact normalized control combination; only data slots vary by type.
+
+    Models, tools, list order, timeout, flags and enum values remain literal.
+    A fixture for one combination never admits a Cartesian product of controls.
+    """
+    result = normalized_declaration(job, pins=pins)
+    for path in NORMALIZATION["shapeVariables"]:
+        parts = path.split(".")
+        target = result
+        for part in parts[:-1]:
+            target = target.get(part, {})
+        key = parts[-1]
+        if key in target and target[key] != "":
+            value = target[key]
+            if isinstance(value, str):
+                target[key] = {"valueType": "string"}
+            elif type(value) is int:
+                target[key] = {"valueType": "integer"}
+            else:
+                target[key] = {"valueType": "unsupported"}
+    return result
+
+
+def proven_shapes():
+    return _proven_shapes()
+
+
+@lru_cache(maxsize=1)
+def _proven_shapes():
+    evidence = json.loads(Path(__file__).with_name("cron-proven-shapes.json").read_text())
+    return [entry["shape"] for entry in evidence["shapes"]]
 
 
 def reason_counts(declarations):
@@ -107,55 +188,43 @@ def normalized_declaration(job, *, pins=None):
     Runtime-generated anchors/staggers are ignored only when canonical truth
     does not pin them. Payload and destination fields always participate.
     """
+    job = normalized_optionals(job)
     s, p, d = (copy.deepcopy(job.get(k) or {}) for k in ("schedule", "payload", "delivery"))
-    pins = {k: k in s for k in ("anchorMs", "staggerMs")} if pins is None else pins
-    for k in ("anchorMs", "staggerMs"):
+    pins = {k: k in s for k in NORMALIZATION["timingPins"]} if pins is None else pins
+    for k in NORMALIZATION["timingPins"]:
         if not pins.get(k):
             s.pop(k, None)
     if s.get("kind") == "at":
-        from apps.cron.pending_at_views import _at_fires_at_ms
-
-        due = _at_fires_at_ms(job)
-        s.pop("at", None)
+        due = authored_at_ms(job)
+        for field in NORMALIZATION["instantFields"]:
+            s.pop(field, None)
         s["atMs"] = due
-        s.pop("tz", None)  # An ISO one-shot is an instant, independent of display zone.
+        s.pop("tz", None)
     if s.get("kind") == "cron":
         s["tz"] = s.get("tz") or "UTC"
-    if p.get("kind") == "agentTurn":
-        p["message"] = p.get("message", p.get("text", ""))
-        p.pop("text", None)
-    else:
-        p["text"] = p.get("text", p.get("message", p.get("event", "heartbeat")))
-        p.pop("message", None)
-        p.pop("event", None)
-    p.pop("toolsAllowIsDefault", None)
-    p.setdefault("toolsAllow", ["*"])
-    for k in ("toolsAllow", "fallbacks"):
+    alias = NORMALIZATION["aliases"].get(p.get("kind"))
+    if alias:
+        value = next((p[k] for k in alias["sources"] if p.get(k) is not None), alias["default"])
+        for k in alias["sources"]:
+            p.pop(k, None)
+        p[alias["target"]] = value
+    for k in NORMALIZATION["payloadObservations"]:
+        p.pop(k, None)
+    for part, target in (("payload", p), ("delivery", d)):
+        for key, default in NORMALIZATION["defaults"][part].items():
+            target.setdefault(key, copy.deepcopy(default))
+    for k in NORMALIZATION["lists"]:
         if isinstance(p.get(k), str):
             p[k] = [v for v in re.split(r"[,\s]+", p[k]) if v]
-    p.setdefault("lightContext", False)
-    for k, default in {
-        "mode": "none",
-        "channel": "last",
-        "to": "",
-        "accountId": "",
-        "threadId": "",
-        "bestEffort": False,
-    }.items():
-        d[k] = d.get(k) if d.get(k) is not None else default
     d["channel"] = d.get("channel") or "last"
+    result = {k: copy.deepcopy(job.get(k, v)) for k, v in NORMALIZATION["defaults"]["root"].items()}
     return {
+        **result,
         "schedule": s,
         "payload": p,
         "delivery": d,
-        "enabled": job.get("enabled", True),
         "sessionTarget": job.get("sessionTarget") or ("isolated" if p.get("kind") == "agentTurn" else "main"),
-        "sessionKey": job.get("sessionKey") or "",
-        "wakeMode": job.get("wakeMode") or "now",
         "deleteAfterRun": job.get("deleteAfterRun", s.get("kind") == "at"),
-        "agentId": job.get("agentId") or "",
-        "description": job.get("description") or "",
-        "pacing": job.get("pacing") or {},
     }
 
 
@@ -170,7 +239,7 @@ def canonical_digests(jobs):
     return {
         j["declarationKey"]: {
             "digest": declaration_digest(j),
-            "pins": {k: k in (j.get("schedule") or {}) for k in ("anchorMs", "staggerMs")},
+            "pins": {k: (j.get("schedule") or {}).get(k) is not None for k in NORMALIZATION["timingPins"]},
         }
         for j in jobs
     }
@@ -188,7 +257,7 @@ def observed_declaration(job, canonical):
         authored = canonical.get("schedule") or {}
         if schedule.get("kind") == authored.get("kind"):
             for field in ("anchorMs", "staggerMs"):
-                if field not in authored:
+                if authored.get(field) is None:
                     schedule.pop(field, None)
     return result
 
@@ -197,16 +266,15 @@ def writer_stable_declaration(job):
     """Equivalent ISO form echoed by the real CLI and stable in the writer."""
     from datetime import UTC, datetime
 
-    from apps.cron.pending_at_views import _at_fires_at_ms
-
     result = copy.deepcopy(job)
     schedule = result.get("schedule") or {}
     if schedule.get("kind") == "at":
-        due = _at_fires_at_ms(result)
+        due = authored_at_ms(result)
         if due is not None:
             schedule["at"] = (
                 datetime.fromtimestamp(due / 1000, tz=UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
             )
             schedule.pop("atMs", None)
+            schedule.pop("expr", None)
             schedule.pop("tz", None)
     return result

@@ -1,5 +1,6 @@
 """Tests for bump_openclaw_version management command."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.management import call_command
@@ -17,6 +18,14 @@ _BUMP_IMAGE = "openclaw-2026.9.99"
 
 class BumpOpenclawVersionTest(TestCase):
     def setUp(self):
+        azure = patch("apps.orchestrator.azure_client.get_container_client")
+        client = azure.start()
+        self.addCleanup(azure.stop)
+        client.return_value.container_apps.get.return_value = SimpleNamespace(
+            template=SimpleNamespace(
+                containers=[SimpleNamespace(name="openclaw", image="registry/nbhd-openclaw:2026.9.4-old")]
+            )
+        )
         self.tenant = create_tenant(
             display_name="Bump Test",
             telegram_chat_id=111222333,

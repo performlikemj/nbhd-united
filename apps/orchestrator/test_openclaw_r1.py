@@ -53,7 +53,7 @@ class PrivateChannelTests(SimpleTestCase):
             body = (
                 operator._comparison_adapter()
                 + """
-const d={name:'test',declarationKey:'nbhd:test',schedule:{kind:'cron',expr:'0 9 * * *'},payload:{kind:'agentTurn',message:'private'},delivery:{mode:'announce',to:'a'}};
+const d={name:'test',declarationKey:'nbhd:test',schedule:{kind:'cron',expr:'0 9 * * *'},payload:{kind:'agentTurn',message:'private'},delivery:{mode:'none'}};
 return {same:sameCron({...d,status:'idle',schedule:{...d.schedule,staggerMs:0}},d),different:sameCron({...d,delivery:{mode:'announce',to:'b'}},d)};
 """
             )
@@ -271,5 +271,5 @@ console.log(JSON.stringify({flags,checks}));"""
             "--pacing-min",
         ]:
             self.assertIn(flag, output["flags"])
-        # Omitted staggering and recurring retention retain runtime defaults.
-        self.assertEqual(output["checks"].count(True), 2)
+        # No unproven control combination can pass, even against itself.
+        self.assertEqual(output["checks"].count(True), 0)

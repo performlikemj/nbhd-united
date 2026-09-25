@@ -25,7 +25,9 @@ def supported_declaration(job):
     if not isinstance(job, dict) or set(job) - set(FIELDS["job"]):
         return False
     for part in ("payload", "delivery", "schedule", "pacing"):
-        value = job.get(part) or {}
+        value = job.get(part)
+        if value is None:
+            value = {}
         if not isinstance(value, dict) or set(value) - set(FIELDS[part]):
             return False
     payload, schedule, delivery = (job.get(k) or {} for k in ("payload", "schedule", "delivery"))
@@ -81,8 +83,8 @@ def supported_declaration(job):
         if not isinstance(ms, (int, float)) or ms < 0 or ms % 1000:
             return False
     else:
-        from apps.cron.pending_at_views import _at_fires_at_ms
+        from .migration_preservation import authored_at_ms
 
-        if _at_fires_at_ms(job) is None or set(schedule) - {"kind", "at", "atMs", "tz"}:
+        if authored_at_ms(job) is None or set(schedule) - {"kind", "at", "atMs", "expr", "tz"}:
             return False
     return True

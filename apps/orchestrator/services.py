@@ -964,7 +964,9 @@ def update_tenant_config(tenant_id: str, *, strict: bool = False, refresh_crons:
     try:
         from .workspace_envelope import TRIGGER_CONFIG_UPDATE, push_user_md
 
-        pushed = push_user_md(tenant, force=True, trigger=TRIGGER_CONFIG_UPDATE)
+        pushed = push_user_md(
+            tenant, force=True, trigger=TRIGGER_CONFIG_UPDATE, **({"metadata_only": True} if strict else {})
+        )
         if strict and not pushed:
             raise RuntimeError("USER.md refresh did not complete")
     except Exception:

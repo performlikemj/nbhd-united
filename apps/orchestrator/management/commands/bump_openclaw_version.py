@@ -91,9 +91,11 @@ class Command(BaseCommand):
                 self.stdout.write(
                     self.style.SUCCESS(f"  {tenant.container_id} ({tid}): {old_version} -> {target_version}")
                 )
-            except Exception as e:
+            except Exception:
                 failed += 1
-                self.stderr.write(self.style.ERROR(f"  {tenant.container_id} ({tid}): FAILED - {e}"))
+                self.stderr.write(
+                    self.style.ERROR(f"  {tenant.container_id} ({tid}): FAILED reason=version_update_failed")
+                )
 
         if not dry_run:
             self.stdout.write(f"Done: {succeeded} succeeded, {failed} failed")

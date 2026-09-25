@@ -363,7 +363,7 @@ def store_tenant_internal_key_in_key_vault(tenant_id: str, plaintext_key: str) -
     return secret_name
 
 
-def read_key_vault_secret(secret_name: str) -> str | None:
+def read_key_vault_secret(secret_name: str, *, metadata_only: bool = False) -> str | None:
     """Read a secret value from Azure Key Vault.
 
     Returns the secret value or None if not found / not configured.
@@ -385,7 +385,10 @@ def read_key_vault_secret(secret_name: str) -> str | None:
         secret = client.get_secret(secret_name)
         return secret.value
     except Exception as exc:
-        logger.warning("Failed to read KV secret %s: %s", secret_name, exc)
+        if metadata_only:
+            logger.warning("Key Vault failure reason=secret_read_failed")
+        else:
+            logger.warning("Failed to read KV secret %s: %s", secret_name, exc)
         return None
 
 

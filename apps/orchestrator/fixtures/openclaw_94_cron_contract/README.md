@@ -64,3 +64,29 @@ policies. Unknown definition fields and policy variations are negative tests.
 Offline operator tests pin the clock to each captured row's `createdAtMs`, so
 the golden one-shots do not expire in CI. When re-recording after January 2027,
 choose new future instants consistently in the input generator and assertions.
+
+## Round six: default-deny shape evidence
+
+[Complete 75-case accepted/blocked matrix](round_six/README.md) and
+[image/source provenance](round_six/runtime-metadata.json) extend the earlier
+captures. Run the input generator without `--cases` for the full matrix, or use
+`--cases name,name` for a subset (declaration IDs retain their matrix positions).
+The six typed models use their real pre-save derivation, including model,
+restricted tools, light context, timeout, wake mode and enforcement description.
+Every selected successful case now records two real writer passes.
+
+Copy only case JSON and runtime metadata into `round_six/`, then regenerate the
+reviewable allowlist with:
+
+```sh
+PYTHONPATH=. <project-python> scripts/build_openclaw_94_shape_evidence.py
+```
+
+The builder accepts only selected cases with equal semantic digests and two
+zero-mutation passes retaining the original ID. The contract suite independently
+validates every manifest reference, both normalization interpreters and actual
+operator execution for every accepted capture. The database tests exercise the
+complete noncanonical import → preparation → unchanged signed-selection path.
+Do not hand-add shapes or infer combinations from separately passing controls.
+Capture progress and exceptions contain metadata only; raw synthetic CLI bodies
+are retained solely in the fixture artifacts.

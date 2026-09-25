@@ -1,5 +1,5 @@
 // Migration-only declaration comparison; never shipped in the OpenClaw image.
-import { normalizedDeclaration, stableJSON } from './migration_cron_digest.mjs';
+import { normalizedDeclaration, stableJSON, provenShape, normalizedOptionals } from './migration_cron_digest.mjs';
 const ALLOWED_PAYLOAD_KINDS = new Set(["agentTurn", "systemEvent"]);
 const DECL_PREFIX = "nbhd:";
 const FIELDS = {
@@ -213,7 +213,7 @@ function cliList(value) {
 // Semantic comparison against real CLI rows: instants, empty defaults and
 // canonical timing pins, not serialization of CLI argument strings.
 export function sameCron(current, desired) {
-  if (!buildAddArgs(current) || !buildAddArgs(desired)) return false;
+  if (!buildAddArgs(current) || !buildAddArgs(desired) || !provenShape(desired)) return false;
   if (String(current.name || current.declarationKey) !== String(desired.name || desired.declarationKey)) return false;
   if ((current.displayName || current.name) !== (desired.displayName || desired.name)) return false;
   const pins = Object.fromEntries(['anchorMs','staggerMs'].map(k=>[k, desired.schedule?.[k] != null]));

@@ -189,7 +189,7 @@ def canonical_inventory(tenant):
 def preservation_precheck(tenant, jobs, *, record=None):
     from .migration_preservation import reason_counts
 
-    canonical = canonical_inventory(tenant)
+    canonical = canonical_inventory(tenant) if tenant.postgres_cron_canonical else []
     # Imminent obligations take priority and cannot disappear through filtering.
     assert_cutover_safe(jobs + [j for j, _ in canonical])
     reasons = reason_counts([(j, True) for j in jobs] + canonical)
@@ -212,7 +212,7 @@ def live_source_jobs(tenant):
 
     from .cron_reconcile import _complete_cron_observation
 
-    response = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+    response = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True}, metadata_only=True)
     jobs = _complete_cron_observation(response)
     if jobs is None or not isinstance(jobs, list):
         raise MigrationError("source_observation_incomplete")
@@ -237,8 +237,17 @@ def report_tenant(tenant):
     try:
         if not tenant.postgres_cron_canonical and CronJob.objects.filter(tenant=tenant, creation_path="typed").exists():
             raise MigrationError("canonical_ownership_uncertain")
-        preservation_precheck(tenant, live_source_jobs(tenant))
-        return {"status": "READY", "reasons": {}}
+        jobs = live_source_jobs(tenant)
+        preservation_precheck(tenant, jobs)
+        return {
+            "status": "READY",
+            "reasons": {},
+            "quarantined_cache": (
+                CronJob.objects.filter(tenant=tenant).exclude(name__in=[j["name"] for j in jobs]).count()
+                if not tenant.postgres_cron_canonical
+                else 0
+            ),
+        }
     except PreservationError as exc:
         return {"status": "BLOCKED_UNSUPPORTED", "reasons": exc.reasons}
     except Exception as exc:
@@ -266,7 +275,7 @@ def capture(tenant, record):
         fresh_ids = {j.get("id") or j.get("jobId") for j in jobs}
         fresh_names = {j["name"] for j in jobs}
         now_ms = int(timezone.now().timestamp() * 1000)
-        from apps.cron.pending_at_views import _at_fires_at_ms
+        from .migration_preservation import authored_at_ms as _at_fires_at_ms
 
         for old in previous:
             old_id = old.get("id") or old.get("jobId")
@@ -299,6 +308,39 @@ def capture(tenant, record):
         raise MigrationError("Cron provenance uncertain: noncanonical tenant has typed Postgres rows")
     with suppress_cronjob_reconcile(), transaction.atomic():
         existing_rows = {r.name: r for r in CronJob.objects.select_for_update().filter(tenant=tenant)}
+        quarantined = list(record.get("quarantined_cache", []))
+        if not tenant.postgres_cron_canonical:
+            names = {j["name"] for j in jobs}
+            for name, row in list(existing_rows.items()):
+                if name not in names:
+                    quarantined.append(
+                        {
+                            "id": row.pk,
+                            "name": row.name,
+                            "data": row.data,
+                            "enabled": row.enabled,
+                            "managed": row.managed,
+                            "source": row.source,
+                            "gateway_job_id": row.gateway_job_id,
+                            "creation_path": row.creation_path,
+                            "pattern": row.pattern,
+                            "typed_payload": row.typed_payload,
+                            **{
+                                field: getattr(row, field).isoformat() if getattr(row, field) else None
+                                for field in (
+                                    "created_at",
+                                    "updated_at",
+                                    "user_confirmed_at",
+                                    "last_synced_at",
+                                    "last_pushed_to_container_at",
+                                )
+                            },
+                            "reason": "absent_from_complete_live_export",
+                        }
+                    )
+                    row.delete()
+                    del existing_rows[name]
+        # Quarantine and promotion commit together; the signed selector never reads this field.
         versions = dict(record.get("imported_versions", {}))
         # Once imported, missing rows are dashboard tombstones, not invitations
         # to resurrect stale runtime truth. Updated rows belong to the user.
@@ -320,9 +362,10 @@ def capture(tenant, record):
         # Commit ownership versions with the rows, so a crash cannot lose the
         # compare-and-swap baseline while leaving a completed import behind.
         Tenant.objects.filter(pk=tenant.pk).update(postgres_cron_canonical=True)
-        _save(tenant, {**record, "imported_versions": versions})
+        _save(tenant, {**record, "imported_versions": versions, "quarantined_cache": quarantined})
     # Do not leak rolled-back ownership into the caller's failure checkpoint.
     record["imported_versions"] = versions
+    record["quarantined_cache"] = quarantined
     tenant.postgres_cron_canonical = True
     # Automatic signed selection is unchanged. Unsupported exclusions were
     # refused before import; no migration-specific exemptions or resync waiver.
@@ -331,6 +374,7 @@ def capture(tenant, record):
     return {
         **result,
         "captured": len(jobs),
+        "quarantined_cache": len(quarantined),
         "needs_agent_resync": [],
         "disabled_retained": CronJob.objects.filter(tenant=tenant, enabled=False).count(),
     }
@@ -338,7 +382,7 @@ def capture(tenant, record):
 
 def assert_cutover_safe(jobs):
     """Defer imminent one-shots without mutating jobs; recurrences may be missed."""
-    from apps.cron.pending_at_views import _at_fires_at_ms
+    from .migration_preservation import authored_at_ms as _at_fires_at_ms
 
     now = int(timezone.now().timestamp() * 1000)
     for job in jobs:
@@ -354,8 +398,7 @@ def assert_cutover_safe(jobs):
 
 
 def one_shot_dispositions(tenant, record):
-    from apps.cron.pending_at_views import _at_fires_at_ms
-
+    from .migration_preservation import authored_at_ms as _at_fires_at_ms
     from .migration_preservation import declaration_digest
 
     exports = [h["jobs"] for h in record.get("cron_export_history", [])] + [record.get("cron_export", [])]
@@ -510,12 +553,18 @@ def _signed_match(inspection):
 
 def prepare_writer_declarations(tenant):
     """Keep the unchanged signed writer stable after CLI timestamp normalization."""
-    from .migration_preservation import writer_stable_declaration
+    from .cron_reconcile import _row_to_cron_dict
+    from .migration_preservation import declaration_digest, writer_stable_declaration
 
     with suppress_cronjob_reconcile(), transaction.atomic():
         for row in CronJob.objects.select_for_update().filter(tenant=tenant, enabled=True):
+            before = declaration_digest(_row_to_cron_dict(row))
             stable = writer_stable_declaration(row.data)
-            if stable != row.data:
+            original = row.data
+            row.data = stable
+            if declaration_digest(_row_to_cron_dict(row)) != before:
+                raise MigrationError("preparation_semantic_change")
+            if stable != original:
                 CronJob.objects.filter(pk=row.pk).update(data=stable, updated_at=timezone.now())
 
 
@@ -731,6 +780,7 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False) -> dict:
             "status": "PASS",
             "steps": record["completed"],
             "needs_agent_resync": len(record.get("needs_agent_resync", [])),
+            "quarantined_cache": len(record.get("quarantined_cache", [])),
         }
     except Exception as exc:
         record["status"] = "BLOCKED_UNSUPPORTED" if isinstance(exc, PreservationError) else "FAILED"

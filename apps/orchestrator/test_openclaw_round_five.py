@@ -128,7 +128,7 @@ console.log(JSON.stringify(cases.map(c=>{{
  return {{same:sameCron(current,desired),changed:sameCron(altered,desired),
  unknown:sameCron({{...current,futureDefinitionControl:true}},desired),
  supported:supportedDeclaration(current),
- digest:createHash('sha256').update(stableJSON(normalizedDeclaration(current))).digest('hex')}};
+ digest:createHash('sha256').update(stableJSON(normalizedDeclaration(current,{{}}))).digest('hex')}};
 }})));
 """
         process = subprocess.run(

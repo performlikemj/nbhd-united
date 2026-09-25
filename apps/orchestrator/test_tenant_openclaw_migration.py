@@ -448,9 +448,21 @@ class MigrationStepTests(TestCase):
 
 
 class RuntimeGuardTests(SimpleTestCase):
+    def setUp(self):
+        azure = patch("apps.orchestrator.azure_client.get_container_client")
+        self.azure = azure.start()
+        self.addCleanup(azure.stop)
+        self.live = SimpleNamespace(name="openclaw", image="registry/nbhd-openclaw:2026.5.28-a")
+        self.azure.return_value.container_apps.get.return_value = SimpleNamespace(
+            template=SimpleNamespace(containers=[self.live])
+        )
+
     def test_refuse_cross_family_and_unknown_target(self):
         tenant = SimpleNamespace(
-            openclaw_version="2026.5.28", container_image_tag="2026.5.28-abc1234", openclaw_migration={}
+            container_id="synthetic",
+            openclaw_version="2026.5.28",
+            container_image_tag="2026.5.28-abc1234",
+            openclaw_migration={},
         )
         self.assertFalse(image_only_update_allowed(tenant, TAG))
         self.assertFalse(image_only_update_allowed(tenant, "abcdef0"))
@@ -458,6 +470,7 @@ class RuntimeGuardTests(SimpleTestCase):
         tenant.openclaw_version = migration.VERSION
         self.assertFalse(image_only_update_allowed(tenant, "2026.5.28-abcdef0"))
         tenant.container_image_tag = TAG
+        self.live.image = "registry/nbhd-openclaw:" + TAG
         self.assertTrue(image_only_update_allowed(tenant, TAG))
         tenant.container_image_tag = "abcdef0"
         self.assertFalse(image_only_update_allowed(tenant, TAG))

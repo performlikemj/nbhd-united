@@ -36,7 +36,9 @@ class Command(BaseCommand):
             if options["report"]:
                 result = openclaw_migration.report_tenant(Tenant.objects.get(pk=tenant_id))
                 counts = ",".join(f"{k}={v}" for k, v in result["reasons"].items())
-                self.stdout.write(f"{tenant_id}: {result['status']} {counts}".rstrip())
+                self.stdout.write(
+                    f"{tenant_id}: {result['status']} {counts} quarantined_cache={result.get('quarantined_cache', 0)}".rstrip()
+                )
                 continue
             if options["verify_only"]:
                 tenant = Tenant.objects.get(pk=tenant_id)
@@ -61,6 +63,8 @@ class Command(BaseCommand):
             except MigrationError as exc:
                 raise CommandError(f"{tenant_id}: {exc}") from None
             self.stdout.write(f"{tenant_id}: {result['status']} steps={','.join(result['steps'])}")
+            if result.get("quarantined_cache"):
+                self.stdout.write(f"quarantined_cache={result['quarantined_cache']}")
             if result.get("reasons"):
                 self.stdout.write(",".join(f"{k}={v}" for k, v in result["reasons"].items()))
             if result["status"] in {"BLOCKED_UNSUPPORTED", "DEFER"}:

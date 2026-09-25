@@ -84,16 +84,15 @@ class Command(BaseCommand):
 
         try:
             update_container_image(container, image)
-        except Exception as exc:
-            raise CommandError(f"update_container_image failed: {exc}") from exc
+        except Exception:
+            raise CommandError("canary_image_update_failed") from None
 
-        actual_image = self._read_deployed_image(container)
+        try:
+            actual_image = self._read_deployed_image(container)
+        except Exception:
+            raise CommandError("canary_image_read_failed") from None
         if actual_image != image:
-            raise CommandError(
-                f"Deploy did not take: requested {image!r}, but {container}'s openclaw "
-                f"container reads back as {actual_image!r} on Azure. Do not assume this "
-                "canary is live — check the Container App revision directly."
-            )
+            raise CommandError("canary_image_identity_mismatch")
 
         self.stdout.write(self.style.SUCCESS(f"Canary image deployed to {container}"))
         self.stdout.write(

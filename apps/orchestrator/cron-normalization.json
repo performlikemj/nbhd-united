@@ -1,0 +1,23 @@
+{
+  "nullAbsent": {
+    "payload": ["model", "fallbacks", "thinking", "timeoutSeconds", "toolsAllow", "lightContext", "toolsAllowIsDefault"],
+    "delivery": ["mode", "channel", "to", "accountId", "threadId", "bestEffort"],
+    "schedule": ["tz", "anchorMs", "staggerMs"],
+    "root": ["description", "agentId", "wakeMode", "sessionTarget", "sessionKey", "deleteAfterRun", "displayName", "pacing", "delivery"]
+  },
+  "defaults": {
+    "payload": {"toolsAllow": ["*"], "lightContext": false},
+    "delivery": {"mode": "none", "channel": "last", "to": "", "accountId": "", "threadId": "", "bestEffort": false},
+    "root": {"enabled": true, "sessionKey": "", "wakeMode": "now", "agentId": "", "description": "", "pacing": {}}
+  },
+  "aliases": {
+    "agentTurn": {"target": "message", "sources": ["message", "text"], "default": ""},
+    "systemEvent": {"target": "text", "sources": ["text", "message", "event"], "default": "heartbeat"}
+  },
+  "lists": ["toolsAllow", "fallbacks"],
+  "payloadObservations": ["toolsAllowIsDefault"],
+  "timingPins": ["anchorMs", "staggerMs"],
+  "instantFields": ["at", "atMs", "expr"],
+  "instantPattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$",
+  "shapeVariables": ["schedule.expr", "schedule.tz", "schedule.everyMs", "schedule.atMs", "payload.message", "payload.text", "description"]
+}

@@ -144,9 +144,11 @@ class Command(BaseCommand):
                 tid = str(tenant.id)[:8]
                 try:
                     future.result()
-                except Exception as exc:
+                except Exception:
                     failed += 1
-                    self.stderr.write(self.style.ERROR(f"  {tenant.container_id} ({tid}): FAILED — {exc}"))
+                    self.stderr.write(
+                        self.style.ERROR(f"  {tenant.container_id} ({tid}): FAILED reason=image_update_failed")
+                    )
                     continue
                 # DB write happens on the main thread so the row update
                 # honors the caller's transaction context (important for

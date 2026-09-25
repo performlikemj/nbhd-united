@@ -20,6 +20,7 @@ These tests pin the contract:
 from __future__ import annotations
 
 from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.core.management import call_command
@@ -53,6 +54,16 @@ def _make_tenant(*, suffix: int, status=Tenant.Status.ACTIVE, image_tag: str = _
     AZURE_MOCK="true",
 )
 class BumpAllTenantImagesTest(TestCase):
+    def setUp(self):
+        azure = patch("apps.orchestrator.azure_client.get_container_client")
+        client = azure.start()
+        self.addCleanup(azure.stop)
+        client.return_value.container_apps.get.return_value = SimpleNamespace(
+            template=SimpleNamespace(
+                containers=[SimpleNamespace(name="openclaw", image="registry/nbhd-openclaw:2026.9.4-old")]
+            )
+        )
+
     @patch("apps.orchestrator.management.commands.bump_all_tenant_images.update_container_image")
     def test_bumps_all_active_tenants_with_stale_image(self, mock_update):
         """Each active, non-hibernated tenant on a stale image gets one Azure call."""

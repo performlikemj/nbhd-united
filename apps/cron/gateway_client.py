@@ -153,7 +153,7 @@ def get_gateway_token_for_tenant(tenant: Tenant) -> str:
     return (getattr(settings, "NBHD_INTERNAL_API_KEY", "") or "").strip()
 
 
-def _get_gateway_token(tenant: Tenant) -> str:
+def _get_gateway_token(tenant: Tenant, *, metadata_only: bool = False) -> str:
     """Variant of `get_gateway_token_for_tenant` that raises on miss.
 
     Used by `invoke_gateway_tool` where a missing token always indicates
@@ -166,7 +166,11 @@ def _get_gateway_token(tenant: Tenant) -> str:
         # Last-resort KV read — keeps the historical behaviour where a
         # Django pod without `settings.NBHD_INTERNAL_API_KEY` in its env
         # could still reach the gateway via KV.
-        token = read_key_vault_secret("nbhd-internal-api-key") or ""
+        token = (
+            read_key_vault_secret("nbhd-internal-api-key", metadata_only=True)
+            if metadata_only
+            else read_key_vault_secret("nbhd-internal-api-key")
+        ) or ""
     if not token:
         raise GatewayError(f"Could not read gateway token for tenant {tenant.id}")
     return token
@@ -178,6 +182,7 @@ def invoke_gateway_tool(
     args: dict[str, Any],
     *,
     error_log_level: int = logging.ERROR,
+    metadata_only: bool = False,
 ) -> dict[str, Any]:
     """Call a tool on a tenant's OpenClaw Gateway.
 
@@ -210,7 +215,12 @@ def invoke_gateway_tool(
             patch["delivery"] = dict(_IOS_SAFE_DELIVERY)
             args = {**args, "patch": patch}
 
-    token = _get_gateway_token(tenant)
+    try:
+        token = _get_gateway_token(tenant, metadata_only=True) if metadata_only else _get_gateway_token(tenant)
+    except Exception:
+        if metadata_only:
+            raise GatewayError("gateway_token_unavailable") from None
+        raise
     url = f"https://{tenant.container_fqdn}/tools/invoke"
 
     # OpenClaw /tools/invoke expects {"tool": "<name>", "action": "<action>", "args": {}}
@@ -249,8 +259,12 @@ def invoke_gateway_tool(
                     tenant.id,
                 )
                 continue
+            if metadata_only:
+                raise GatewayError("gateway_request_failed") from None
             raise GatewayError(f"Gateway request failed: {exc}") from exc
         except requests.RequestException as exc:
+            if metadata_only:
+                raise GatewayError("gateway_request_failed") from None
             raise GatewayError(f"Gateway request failed: {exc}") from exc
 
         if (
@@ -291,6 +305,9 @@ def invoke_gateway_tool(
                 status_code=resp.status_code,
                 unavailable=True,
             )
+        if metadata_only:
+            logger.log(error_log_level, "Gateway failure status=%s reason=gateway_http_error", resp.status_code)
+            raise GatewayError("gateway_http_error", status_code=resp.status_code) from None
         logger.log(
             error_log_level,
             "Gateway %s.%s returned %s for tenant %s: %s",
@@ -308,10 +325,14 @@ def invoke_gateway_tool(
     try:
         data = resp.json()
     except ValueError as exc:
+        if metadata_only:
+            raise GatewayError("gateway_invalid_json", status_code=resp.status_code) from None
         raise GatewayError("Gateway returned invalid JSON", status_code=resp.status_code) from exc
     if not isinstance(data, dict):
         raise GatewayError("Gateway returned a non-object JSON envelope", status_code=resp.status_code)
     if not data.get("ok"):
+        if metadata_only:
+            raise GatewayError("gateway_tool_failed", status_code=resp.status_code) from None
         raise GatewayError(data.get("error", "Unknown gateway error"))
 
     return data.get("result", {})

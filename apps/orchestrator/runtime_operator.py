@@ -42,11 +42,23 @@ def _connection(tenant):
 def _comparison_adapter():
     """Bundle the same semantic comparator used by offline fixture tests."""
     digest = Path(__file__).with_name("migration_cron_digest.mjs").read_text()
+    digest = digest.replace("import fs from 'node:fs';", "")
+    digest = digest.replace(
+        "JSON.parse(fs.readFileSync(new URL('./cron-normalization.json', import.meta.url)))",
+        Path(__file__).with_name("cron-normalization.json").read_text().strip(),
+    )
+    digest = digest.replace(
+        "JSON.parse(fs.readFileSync(new URL('./cron-proven-shapes.json', import.meta.url)))",
+        Path(__file__).with_name("cron-proven-shapes.json").read_text().strip(),
+    )
     comparator = (
         Path(__file__)
         .with_name("migration_cron_compare.mjs")
         .read_text()
-        .replace("import { normalizedDeclaration, stableJSON } from './migration_cron_digest.mjs';", "")
+        .replace(
+            "import { normalizedDeclaration, stableJSON, provenShape, normalizedOptionals } from './migration_cron_digest.mjs';",
+            "",
+        )
     )
     return (digest + comparator).replace("export ", "")
 
