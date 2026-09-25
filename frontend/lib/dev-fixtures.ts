@@ -196,6 +196,48 @@ let people = [
   has_unread_thread: false,
   thread_id: null as string | null,
 }));
+// `?fixture=crowded` (12 sky + 80 others) and `?fixture=medium` (6 sky + 25
+// others) exercise the map at scale. Names are deterministic, some long.
+const FIRST = ["Aiko", "Ren", "Mika", "Daniel", "Sora", "Hana", "Kenji", "Tomo", "Mei", "Yuto", "Akari", "Haruto", "Lucia", "Omar", "Priya", "Chidi", "Ingrid", "Mateo", "Noor", "Kwame", "Sakura", "Takumi", "Elena", "Rahul", "Fatima", "Jonas", "Amara", "Diego", "Leilani", "Magnus", "Anneliese", "Bartholomew", "Guadalupe", "Maximilian", "Oluwaseun", "Wilhelmina", "Seo-yeon", "Nguyen", "Zanele", "Isabella"];
+const LAST = ["Tanaka", "Sato", "Kowalski", "Okafor", "García", "Nakamura-Whitfield", "Lindqvist", "Haddad", "Fernández de la Cruz", "Mbeki", "Ito", "O'Sullivan", "Park", "Rossi", "Van der Berg", "Abernathy-Montgomery", "Chen", "Dubois", "Yamamoto", "Singh"];
+function crowd(sky: number, others: number) {
+  const bonds = ["light", "light", "steady", "light", "strong", "steady"];
+  return Array.from({ length: sky + others }, (_, i) => {
+    const first = FIRST[(i * 7) % FIRST.length];
+    const last = LAST[(i * 11) % LAST.length];
+    const name = i % 3 === 0 ? `${first} ${last}` : first;
+    return {
+      friendship_id: `c-${i}`,
+      display_name: name,
+      handle: `${first.toLowerCase().replace(/[^a-z]/g, "")}${i}`,
+      avatar_hue: (i * 47) % 360,
+      bio: "",
+      spark_count: 0,
+      in_my_sky: i < sky,
+      bond: bonds[(i * 5) % bonds.length],
+      friends_since: `${2019 + (i % 8)}-${String(1 + (i % 12)).padStart(2, "0")}-10`,
+      has_unread_thread: false,
+      thread_id: null as string | null,
+    };
+  });
+}
+let crowdState: { mode: string; list: ReturnType<typeof crowd> } | null = null;
+function crowdFor(mode: string | null) {
+  if (mode !== "crowded" && mode !== "medium") return null;
+  if (!crowdState || crowdState.mode !== mode) crowdState = { mode, list: mode === "crowded" ? crowd(12, 80) : crowd(6, 25) };
+  return crowdState;
+}
+/** Same shape apiFetch throws for a non-2xx response: body text in .message, plus .status. */
+function httpError(status: number, body: Json): Error {
+  const err = new Error(JSON.stringify(body));
+  (err as Error & { status: number }).status = status;
+  return err;
+}
+
+function fixtureMode(): string | null {
+  return typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("fixture");
+}
+
 let wavesIn = [
   { friendship_id: "w-1", direction: "incoming", display_name: "Tomo", handle: "tomo", avatar_hue: 170, note: "We met at the running club!", created_at: "" },
 ];
@@ -460,7 +502,7 @@ export function fixtureResponse(path: string, init?: RequestInit): Json | undefi
     wavesIn = wavesIn.map((w) => ({ ...w, created_at: w.created_at || isoAt(-1, 18) }));
     return json({
       profile: { handle: "yuki", display_name: "Yuki", avatar_hue: 260 },
-      neighbors: isEmpty ? [] : people,
+      neighbors: isEmpty ? [] : (crowdFor(fixtureMode())?.list ?? people),
       pending_in: isEmpty ? [] : wavesIn,
       pending_out: isEmpty ? [] : [{ friendship_id: "w-2", direction: "outgoing", display_name: "Mei", handle: "mei", avatar_hue: 330, note: "", created_at: isoAt(-3, 9) }],
       moments: [],
@@ -474,7 +516,13 @@ export function fixtureResponse(path: string, init?: RequestInit): Json | undefi
   const skyEdge = p.match(/^\/api\/v1\/friends\/([^/]+)\/sky\/$/);
   if (skyEdge) {
     const inSky = method === "POST";
-    if (inSky && people.filter((x) => x.in_my_sky).length >= 12) return json({ error: "sky_full", cap: 12 });
+    if (inSky && people.filter((x) => x.in_my_sky).length >= 12) throw httpError(409, { error: "sky_full", cap: 12 });
+    const crowded = crowdFor(fixtureMode());
+    if (crowded) {
+      if (inSky && crowded.list.filter((x) => x.in_my_sky).length >= 12) throw httpError(409, { error: "sky_full", cap: 12 });
+      crowded.list = crowded.list.map((x) => (x.friendship_id === skyEdge[1] ? { ...x, in_my_sky: inSky } : x));
+      return json({ friendship_id: skyEdge[1], in_my_sky: inSky });
+    }
     people = people.map((x) => (x.friendship_id === skyEdge[1] ? { ...x, in_my_sky: inSky } : x));
     return json({ friendship_id: skyEdge[1], in_my_sky: inSky });
   }
