@@ -842,7 +842,11 @@ def config_step(tenant, record):
         != 1
     ):
         raise MigrationError("migration_owner_fenced")
-    time.sleep(25)  # Allow the runtime file watcher and any config-triggered restart to settle.
+    # 9.4 does not see edits to its config on the SMB share (no file events),
+    # so the regenerated file only takes effect on a restart.
+    azure_client.restart_revision(tenant.container_id, get_app(tenant).latest_ready_revision_name)
+    time.sleep(25)
+    wait_healthy(tenant, timeout=300)
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
         try:
