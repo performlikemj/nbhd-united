@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date
 from typing import Annotated, Any, Literal
 
@@ -87,12 +88,64 @@ def validate_panels(value: Any) -> list[dict]:
     return valid
 
 
-def extract_panels(text: str) -> tuple[str, list[dict]]:
-    """Strip every nbhd-panels fence, including malformed/unclosed fences.
+_BRACKET_PANEL = re.compile(r"\[\[panel:([^\[\]\r\n]*)\]\]")
+_BRACKET_PARTIAL = re.compile(r"\[\[panel:[^\[\]\r\n]*\]?$")
 
-    The first list with valid references (or an explicit empty list) wins.
-    Scan fence delimiters only; Pydantic parses and validates the JSON payload.
-    Text without a panel fence is returned byte-for-byte unchanged.
+
+def _strip_bracket_panels(text: str) -> tuple[str, list[str]]:
+    """Strip markers anywhere; only whole marker lines are panel candidates.
+
+    No nested brackets, alternate prefixes, or multiline payloads are accepted.
+    Keep this scanner validation-free so streaming incomplete text stays quiet.
+    """
+    kept, candidates = [], []
+    found = False
+    for line in text.splitlines(keepends=True):
+        matches = list(_BRACKET_PANEL.finditer(line))
+        clean = _BRACKET_PANEL.sub("", line)
+        if matches:
+            found = True
+            if not clean.strip():
+                candidates.extend(match[1] for match in matches)
+                continue
+        kept.append(clean)
+    clean = "".join(kept).strip() if found else text
+    partial = _BRACKET_PARTIAL.search(clean)
+    if partial:
+        clean = clean[: partial.start()].rstrip()
+    return clean, candidates
+
+
+def _bracket_candidates(payloads: list[str]) -> list[dict]:
+    candidates = []
+    for payload in payloads:
+        kind, *fields = payload.split("|")
+        candidate = {"kind": kind.strip(), "params": {}}
+        seen = set()
+        for field in fields:
+            key, separator, value = field.partition("=")
+            key, value = key.strip(), value.strip()
+            if not separator or key in seen:
+                logger.warning("panel_dropped reason=malformed_marker")
+                break
+            seen.add(key)
+            if key == "title":
+                candidate["title"] = value
+            else:
+                # The wire format is text; only the integer model field needs decoding.
+                if key == "duration_seconds" and re.fullmatch(r"[0-9]{1,5}", value):
+                    value = int(value)
+                candidate["params"][key] = value
+        else:
+            candidates.append(candidate)
+    return candidates
+
+
+def extract_panels(text: str) -> tuple[str, list[dict]]:
+    """Strip panel fences and bracket markers; validate both with the same models.
+
+    The first valid fenced list (including an empty list) wins; otherwise use
+    whole-line bracket references. Text without either syntax is unchanged.
     """
     kept, payload = [], []
     inside = found = False
@@ -118,11 +171,13 @@ def extract_panels(text: str) -> tuple[str, list[dict]]:
             kept.append(line)
     if inside:
         logger.warning("panels_dropped reason=unclosed_block")
-    return ("".join(kept).strip() if found else text), winner or []
+    clean, payloads = _strip_bracket_panels("".join(kept).strip() if found else text)
+    brackets = validate_panels(_bracket_candidates(payloads))
+    return clean, winner if winner is not None else brackets
 
 
 def strip_streaming_panels(text: str) -> str:
-    """Hide fences and trailing opener prefixes until cumulative text disambiguates."""
+    """Hide fences, markers and trailing openers until cumulative text disambiguates."""
     kept = []
     inside = found = False
     ordinary_fence = False
@@ -143,7 +198,13 @@ def strip_streaming_panels(text: str) -> str:
                 ordinary_fence = not ordinary_fence
             elif marker.startswith("```") and not ordinary_fence:
                 ordinary_fence = True
-    return "".join(kept).rstrip() if found else text
+    clean, _payloads = _strip_bracket_panels("".join(kept).rstrip() if found else text)
+    # Withhold split prefixes, releasing them when they become ordinary text.
+    opener = "[[panel:"
+    for size in range(len(opener) - 1, 0, -1):
+        if clean.rstrip().endswith(opener[:size]):
+            return clean.rstrip()[:-size].rstrip()
+    return clean
 
 
 def prepare_panels(tenant, value, *, tool: bool = False) -> list[dict]:
@@ -187,7 +248,8 @@ PANEL_VOCABULARY = (
 )
 CHAT_PANEL_INSTRUCTION = (
     "For useful live cards, end the reply with ONE fenced `nbhd-panels` JSON list of "
-    "{kind,params,title?} references (max 6; title <=60 chars; no snapshots); " + PANEL_VOCABULARY + ".\n"
+    "{kind,params,title?} references (max 6; title <=60 chars; no snapshots); " + PANEL_VOCABULARY + ". "
+    "Put panels ONLY in the panels argument (or the fenced block for chat), never in message text.\n"
 )
 MORNING_PANEL_INSTRUCTION = (
     "In that same single nbhd_send_to_user call, attach panels only where fresh tool results show relevant data: "
@@ -196,6 +258,7 @@ MORNING_PANEL_INSTRUCTION = (
     'log_table {"metric":"body_weight","range":"this_month"}. '
     "Read nbhd_fuel_summary for sleep, workouts and weight; use current task/calendar results. "
     "Omit cards without evidence. Keep prose short; live editable cards carry detail. "
+    "Put panels ONLY in the panels argument, never in message text. "
     "Panels are references, never snapshots (max 6; optional title <=60 chars); " + PANEL_VOCABULARY + "."
 )
 

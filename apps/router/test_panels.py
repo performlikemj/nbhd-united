@@ -29,6 +29,18 @@ PANELS = [
 ]
 
 
+MORNING_MARKERS = """[[panel:sleep|range=last_night]]
+[[panel:workout|day=2026-09-25]]
+[[panel:schedule|range=today]]
+[[panel:log_table|metric=body_weight|range=this_month]]"""
+MORNING_PANELS = [
+    {"kind": "sleep", "params": {"range": "last_night"}},
+    {"kind": "workout", "params": {"day": "2026-09-25"}},
+    {"kind": "schedule", "params": {"range": "today"}},
+    {"kind": "log_table", "params": {"metric": "body_weight", "range": "this_month"}},
+]
+
+
 def block(panels=PANELS):
     return "```nbhd-panels\n" + json.dumps(panels) + "\n```"
 
@@ -98,6 +110,64 @@ class PanelSchemaTests(SimpleTestCase):
         for source in ("  Ordinary text\n", '```json\n{"a":1}\n```', "", "Use `nbhd-panels`."):
             self.assertEqual(extract_panels(source), (source, []))
 
+    def test_bracket_markers_whole_lines_inline_prose_and_conservative_prefix(self):
+        for markers in (MORNING_MARKERS, "  " + MORNING_MARKERS.replace("\n", "  ") + "  "):
+            self.assertEqual(extract_panels("Before\n" + markers + "\nAfter"), ("Before\nAfter", MORNING_PANELS))
+            self.assertEqual(extract_panels("Before\n\n" + markers + "\n\n"), ("Before", MORNING_PANELS))
+        self.assertEqual(extract_panels("Before [[panel:sleep|range=today]] after"), ("Before  after", []))
+        for ordinary in ("[[panels:sleep]]", "[panel:sleep]", "[[panel:sleep|title=[nested]]]", "[[Panel:sleep]]"):
+            self.assertEqual(extract_panels(ordinary), (ordinary, []))
+
+    def test_unclosed_bracket_tail_is_also_stripped_on_final_text(self):
+        for fragment in ("[[panel:", "[[panel:sleep|range=today", "[[panel:sleep|range=today]"):
+            self.assertEqual(extract_panels("Before\n" + fragment), ("Before", []))
+
+    def test_bracket_validation_titles_integer_limit_and_content_free_logs(self):
+        bad = (
+            "[[panel:private-sentinel]]\n"
+            "[[panel:sleep|range=private-sentinel]]\n"
+            "[[panel:sleep|unknown=private-sentinel]]\n"
+            "[[panel:sleep|metric=sleep]]\n"
+            "[[panel:timer|duration_seconds=1.5]]\n"
+            "[[panel:workout|day=2026-02-29]]\n"
+            "[[panel:tasks|title=private-sentinel|title=duplicate]]\n"
+            "[[panel:tasks|private-sentinel]]\n"
+        )
+        valid = "[[panel:timer|duration_seconds=60|title=Rest]]\n" + MORNING_MARKERS
+        with self.assertLogs("apps.router.panels", level="WARNING") as logs:
+            text, panels = extract_panels(bad + valid)
+        self.assertEqual(text, "")
+        self.assertEqual(
+            panels, [{"kind": "timer", "params": {"duration_seconds": 60}, "title": "Rest"}, *MORNING_PANELS]
+        )
+        self.assertNotIn("private-sentinel", str([vars(record) for record in logs.records]))
+        with self.assertLogs("apps.router.panels", level="WARNING"):
+            self.assertEqual(len(extract_panels(valid + "\n" + valid)[1]), 6)
+
+    def test_fenced_list_keeps_precedence_over_brackets(self):
+        for fenced in (block(), block([])):
+            expected = PANELS if fenced == block() else []
+            for source in (fenced + "\n" + MORNING_MARKERS, MORNING_MARKERS + "\n" + fenced):
+                self.assertEqual(extract_panels(source), ("", expected))
+        with self.assertLogs("apps.router.panels", level="WARNING"):
+            self.assertEqual(extract_panels(block([{}]) + "\n" + MORNING_MARKERS), ("", MORNING_PANELS))
+
+    def test_streaming_unclosed_brackets_and_split_prefixes_are_withheld(self):
+        from apps.router.chat_views import _MAX_PARTIAL_TEXT_CHARS, _parse_partial
+
+        for fragment in (
+            *("[[panel:"[:n] for n in range(1, 9)),
+            "[[panel:sleep|range=last_night",
+            "[[panel:sleep|range=last_night]",
+            MORNING_MARKERS,
+        ):
+            with self.subTest(fragment=fragment), self.assertNoLogs("apps.router.panels", level="WARNING"):
+                self.assertEqual(_parse_partial({"text": "Hello\n" + fragment, "seq": 1}), ("Hello", 1))
+        ordinary = "Hello [[panorama: mountains]]"
+        self.assertEqual(_parse_partial({"text": ordinary, "seq": 2}), (ordinary, 2))
+        lead = "x" * (_MAX_PARTIAL_TEXT_CHARS - len("[[pan") - 1)
+        self.assertEqual(_parse_partial({"text": lead + "\n" + MORNING_MARKERS, "seq": 3}), (lead, 3))
+
     def test_bad_and_unclosed_fences_are_removed_without_logging_payload(self):
         for source in ("```nbhd-panels\nprivate-sentinel\n```", "```nbhd-panels\nprivate-sentinel", block({})):
             with self.subTest(source=source), self.assertLogs("apps.router.panels", level="WARNING") as logs:
@@ -154,7 +224,8 @@ class PanelSchemaTests(SimpleTestCase):
         for value, expected in (([], []), (None, []), ([{}], []), (PANELS[1:], PANELS[1:])):
             with override_settings(CHAT_PANELS_TOOL_TENANT_IDS=str(tenant.id)):
                 serializer = SendToUserSerializer(
-                    data={"message": "Hello\n" + block(PANELS[:1]), "panels": value}, context={"tenant": tenant}
+                    data={"message": "Hello\n" + block(PANELS[:1]) + "\n" + MORNING_MARKERS, "panels": value},
+                    context={"tenant": tenant},
                 )
                 self.assertTrue(serializer.is_valid(), serializer.errors)
             self.assertEqual(serializer.validated_data["message"], "Hello")
@@ -265,6 +336,56 @@ class PanelPersistenceTests(TestCase):
                     self.assertIn("Good morning", transport.call_args.kwargs.values())
                     self.assertNotIn("panels", transport.call_args.kwargs)
 
+    def test_exact_morning_markers_persist_with_tool_gate_and_explicit_wins(self):
+        from apps.router.cron_delivery import CronDeliveryView, _rate_counts
+        from apps.router.models import ProactiveOutbound
+
+        for enabled, explicit in ((True, None), (False, None), (True, PANELS[:1]), (True, [])):
+            with (
+                self.subTest(enabled=enabled, explicit=explicit),
+                override_settings(CHAT_PANELS_TOOL_TENANT_IDS=str(self.tenant.id) if enabled else ""),
+                patch.object(CronDeliveryView, "_resolve_channel", return_value="app"),
+                patch("apps.router.proactive_context._dispatch_ios_push"),
+            ):
+                _rate_counts.clear()
+                body = {"message": "Good morning\n\n" + MORNING_MARKERS + "\n"}
+                if explicit is not None:
+                    body["panels"] = explicit
+                response = self._post_proactive(body)
+                self.assertEqual(response.status_code, 200, response.data)
+            row = ProactiveOutbound.objects.filter(tenant=self.tenant).latest("created_at")
+            self.assertEqual(row.message_text, "Good morning")
+            expected = (MORNING_PANELS if explicit is None else explicit) if enabled else []
+            self.assertEqual(row.panels or [], expected)
+
+    def test_bracket_ordinary_reply_uses_shape_gate_and_last_batch_row(self):
+        from apps.router.models import AppChatMessage
+        from apps.router.pending_queue import _store_ios_turn_reply
+
+        for enabled in (True, False):
+            rows = [
+                AppChatMessage.objects.create(
+                    tenant=self.tenant,
+                    user=self.user,
+                    thread=self.thread,
+                    client_msg_id=str(uuid4()),
+                    user_text="Hello",
+                )
+                for _ in range(2)
+            ]
+            batch = [SimpleNamespace(payload={"client_msg_id": row.client_msg_id}) for row in rows]
+            with (
+                override_settings(CHAT_SHAPE_TENANT_IDS=str(self.tenant.id) if enabled else ""),
+                patch("apps.router.pending_queue._dispatch_push"),
+            ):
+                _store_ios_turn_reply(self.tenant, batch, "Before\n" + MORNING_MARKERS + "\nAfter")
+            for row in rows:
+                row.refresh_from_db()
+            self.assertEqual(rows[0].reply_text, "")
+            self.assertIsNone(rows[0].panels)
+            self.assertEqual(rows[1].reply_text, "Before\nAfter")
+            self.assertEqual(rows[1].panels or [], MORNING_PANELS if enabled else [])
+
     def test_panel_only_proactive_send(self):
         from apps.router.chat_history import _proactive_rows
         from apps.router.cron_delivery import CronDeliveryView
@@ -327,6 +448,9 @@ class PanelPersistenceTests(TestCase):
         with override_settings(CHAT_SHAPE_TENANT_IDS=str(self.tenant.id)):
             content, _, _ = _build_batch_chat_content(batch, "t", channel="ios", tenant=self.tenant)
         self.assertEqual(content.count("nbhd-panels"), 1)
+        self.assertIn(
+            "Put panels ONLY in the panels argument (or the fenced block for chat), never in message text", content
+        )
 
     def test_panels_never_reach_telegram_drain_poller_or_line_delivery(self):
         from unittest.mock import MagicMock
@@ -336,7 +460,7 @@ class PanelPersistenceTests(TestCase):
         from apps.router.pending_queue import relay_ai_response_to_telegram
         from apps.router.poller import TelegramPoller
 
-        for fence in (block(), "```nbhd-panels\nprivate-sentinel\n```"):
+        for fence in (block(), "```nbhd-panels\nprivate-sentinel\n```", MORNING_MARKERS, "[[panel:private-sentinel]]"):
             source = "Before\n" + fence + "\nAfter"
             with patch("apps.router.pending_queue.httpx.post") as send:
                 send.return_value.is_success = True
@@ -346,6 +470,7 @@ class PanelPersistenceTests(TestCase):
                 self.assertIn("Before", bodies)
                 self.assertIn("After", bodies)
                 self.assertNotIn("nbhd-panels", bodies)
+                self.assertNotIn("[[panel:", bodies)
                 self.assertNotIn("last_night", bodies)
                 self.assertNotIn("private-sentinel", bodies)
             poller = object.__new__(TelegramPoller)
@@ -358,11 +483,13 @@ class PanelPersistenceTests(TestCase):
             calls = str(poller._send_markdown.call_args_list) + str(poller._send_message.call_args_list)
             self.assertIn("Before", calls)
             self.assertNotIn("nbhd-panels", calls)
+            self.assertNotIn("[[panel:", calls)
             self.assertNotIn("private-sentinel", calls)
             with patch("apps.router.line_webhook._send_line_messages", return_value=True) as send:
                 self.assertTrue(relay_ai_response_to_line(self.tenant, "U-panels", source))
                 self.assertIn("Before", str(send.call_args))
                 self.assertNotIn("nbhd-panels", str(send.call_args))
+                self.assertNotIn("[[panel:", str(send.call_args))
                 self.assertNotIn("private-sentinel", str(send.call_args))
             self.assertEqual(clean_reply_for_capture(self.tenant, source), "Before\nAfter")
 
@@ -418,7 +545,12 @@ class PanelPersistenceTests(TestCase):
 
         for channel in ("app", "telegram", "line"):
             for enabled in (False, True):
-                for fence, expected_panels in ((block(), PANELS), ("```nbhd-panels\nprivate-sentinel\n```", [])):
+                for fence, expected_panels in (
+                    (block(), PANELS),
+                    ("```nbhd-panels\nprivate-sentinel\n```", []),
+                    (MORNING_MARKERS, MORNING_PANELS),
+                    ("[[panel:private-sentinel]]\n" + MORNING_MARKERS, MORNING_PANELS),
+                ):
                     with (
                         self.subTest(channel=channel, enabled=enabled, malformed=not expected_panels),
                         override_settings(CHAT_PANELS_TOOL_TENANT_IDS=str(self.tenant.id) if enabled else ""),
