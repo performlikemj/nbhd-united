@@ -503,3 +503,29 @@ class CommandResultView(DatebookAPIView):
                 "idempotent": idempotent,
             }
         )
+
+
+class OwnerAgendaView(DatebookAPIView):
+    """Owner JWT, read-only agenda + honest coverage for the web "This week" card.
+
+    Disabled / unconsented Datebook is a normal state for the web (200 with
+    ``state``), not an error — the card then shows "Not synced".
+    """
+
+    throttle_classes = [DatebookReadThrottle]
+
+    def get(self, request):
+        from .owner_agenda import MAX_DAYS, owner_agenda
+
+        tenant = self.authenticated_tenant(request)
+        if not tenant.datebook_enabled:
+            return Response({"state": "datebook_disabled"})
+        if not (tenant.datebook_events_consent_at or tenant.datebook_reminders_consent_at):
+            return Response({"state": "consent_required"})
+        try:
+            days = int(request.query_params.get("days", 7))
+        except (TypeError, ValueError):
+            return Response({"error": "days_invalid"}, status=status.HTTP_400_BAD_REQUEST)
+        if not 1 <= days <= MAX_DAYS:
+            return Response({"error": "days_invalid"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(owner_agenda(tenant, days=days))
