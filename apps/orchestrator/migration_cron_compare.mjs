@@ -65,7 +65,17 @@ const FIELDS = {
   ],
   "observation": [
     "configRevision",
-    "effectiveAgentId"
+    "effectiveAgentId",
+    "lastDelivered",
+    "lastDeliveryStatus",
+    "lastFailureNotificationDeliveryStatus",
+    "lastRunAtMs",
+    "lastRunStatus",
+    "lastStatus",
+    "lastError",
+    "lastDurationMs",
+    "consecutiveErrors",
+    "consecutiveSkipped"
   ]
 };
 export function supportedDeclaration(job) {
