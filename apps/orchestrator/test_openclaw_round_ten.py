@@ -63,7 +63,10 @@ def sync_notice(name, *, age_ms):
         "schedule": {"kind": "cron", "expr": "7 21 24 9 *", "tz": "UTC"},
         "sessionTarget": "main",
         "wakeMode": "now",
-        "payload": {"kind": "systemEvent", "text": "Synthetic sync"},
+        "payload": {
+            "kind": "systemEvent",
+            "text": f"[Sync — {name[6:]}] Synthetic. After noting this, run: cron remove {name}",
+        },
     }
 
 
@@ -141,6 +144,32 @@ class CanonicalPrecedenceTests(TestCase):
         self.row(system_row("Old Paused", delivery={"mode": "announce", "to": "private"}), enabled=False)
         m.preservation_precheck(self.tenant, [live_copy()])
 
+    def test_recaptured_import_owned_row_still_needs_proof(self):
+        row = self.row(system_row("Imported Earlier"))
+        versions = {"Imported Earlier": row.updated_at.isoformat()}
+        changed = {**live_copy("Imported Earlier"), "delivery": {"mode": "announce", "to": "private"}}
+        with self.assertRaises(m.PreservationError) as raised:
+            m.preservation_precheck(self.tenant, [changed], record={"imported_versions": versions})
+        self.assertIn("delivery_to", raised.exception.reasons)
+
+    def test_verify_ignores_disabled_canonical_rows(self):
+        row = self.row(system_row())
+        self.row(system_row("Old Paused", delivery={"mode": "announce", "to": "private"}), enabled=False)
+        inspection = {
+            "expected": 1,
+            "matches": [{"key": f"nbhd:{row.pk}", "id": "runtime-id", "match": True}],
+            "extras": [],
+            "legacy": [],
+        }
+        with (
+            patch.object(m.runtime_operator, "inspect_signed_crons", return_value=inspection),
+            patch.object(m, "wait_healthy", return_value={}),
+            patch.object(m.runtime_operator, "console_error_counts", return_value={"errors": {}}),
+            patch.object(m.time, "sleep"),
+        ):
+            rec = {"evidence": {"preflight": {"target_image": "image"}}}
+            self.assertEqual(m.verify(self.tenant, rec)["result"], "PASS")
+
     def test_enabled_unsupported_canonical_row_still_blocks(self):
         self.row(system_row("Pinned Destination", delivery={"mode": "announce", "to": "private"}))
         with self.assertRaises(m.PreservationError):
@@ -176,36 +205,55 @@ class SpentSyncNoticeTests(TestCase):
         with self.listing(notice), self.assertRaisesRegex(m.MigrationError, "cron_imminent"):
             m.live_source_jobs(self.tenant)
 
-    def test_report_is_ready_despite_spent_duplicates(self):
+    def test_other_sync_prefixed_jobs_are_not_notices(self):
+        recurring = sync_notice("_sync:Morning Briefing", age_ms=30 * HOUR)
+        recurring["schedule"] = {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"}
+        agent_text = sync_notice("_sync:Heartbeat Check-in", age_ms=30 * HOUR)
+        agent_text["payload"] = {"kind": "systemEvent", "text": "agent authored"}
+        isolated = {**sync_notice("_sync:Other", age_ms=30 * HOUR), "sessionTarget": "isolated"}
+        for job in (recurring, agent_text, isolated):
+            with self.subTest(name=job["name"]), self.listing(job):
+                self.assertEqual(m.live_source_jobs(self.tenant), [job])
+                self.assertEqual(m.report_tenant(self.tenant)["status"], "BLOCKED_UNSUPPORTED")
+
+    def test_report_is_ready_despite_spent_duplicates_and_never_deletes(self):
         with self.listing(
             sync_notice("_sync:Morning Briefing", age_ms=3 * HOUR),
             sync_notice("_sync:Morning Briefing", age_ms=27 * HOUR),
-        ):
-            self.assertEqual(m.report_tenant(self.tenant)["status"], "READY")
-
-    def test_capture_listing_deletes_only_spent_notices_and_verifies(self):
-        normal = live_copy()
-        spent = [sync_notice("_sync:A", age_ms=3 * HOUR), sync_notice("_sync:B", age_ms=30 * HOUR)]
-        calls = []
-
-        def gateway(tenant, tool, args, **kwargs):
-            calls.append((tool, args))
-            removed = {a["jobId"] for t, a in calls if t == "cron.remove"}
-            return {"jobs": [j for j in [normal, *spent] if j["id"] not in removed]}
-
-        with patch("apps.cron.gateway_client.invoke_gateway_tool", side_effect=gateway):
-            self.assertEqual(m.live_source_jobs(self.tenant, remove_spent=True), [normal])
-        self.assertEqual(sorted(a["jobId"] for t, a in calls if t == "cron.remove"), sorted(j["id"] for j in spent))
-
-    def test_report_listing_never_deletes(self):
-        with patch(
-            "apps.cron.gateway_client.invoke_gateway_tool",
-            return_value={"jobs": [sync_notice("_sync:A", age_ms=3 * HOUR)]},
         ) as gateway:
             self.assertEqual(m.report_tenant(self.tenant)["status"], "READY")
         self.assertEqual({c.args[1] for c in gateway.call_args_list}, {"cron.list"})
 
+    def gateway(self, jobs, calls):
+        def invoke(tenant, tool, args, **kwargs):
+            calls.append((tool, args))
+            removed = {a["jobId"] for t, a in calls if t == "cron.remove"}
+            return {"jobs": [j for j in jobs if j["id"] not in removed]}
+
+        return patch("apps.cron.gateway_client.invoke_gateway_tool", side_effect=invoke)
+
+    def test_capture_deletes_only_spent_notices_after_precheck(self):
+        self.tenant.postgres_cron_canonical = True
+        self.tenant.save(update_fields=["postgres_cron_canonical"])
+        with suppress_cronjob_reconcile():
+            CronJob.objects.create(tenant=self.tenant, name="Morning Briefing", data=system_row(), managed=True)
+        spent = [sync_notice("_sync:A", age_ms=3 * HOUR), sync_notice("_sync:B", age_ms=30 * HOUR)]
+        calls = []
+        with self.gateway([live_copy(), *spent], calls):
+            m.capture(self.tenant, {"completed": [], "evidence": {}})
+        self.assertEqual(sorted(a["jobId"] for t, a in calls if t == "cron.remove"), sorted(j["id"] for j in spent))
+
+    def test_blocked_capture_deletes_nothing(self):
+        blocked = {**live_copy("Agent Made"), "delivery": {"mode": "announce", "to": "private"}}
+        calls = []
+        with (
+            self.gateway([blocked, sync_notice("_sync:A", age_ms=3 * HOUR)], calls),
+            self.assertRaises(m.PreservationError),
+        ):
+            m.capture(self.tenant, {"completed": [], "evidence": {}})
+        self.assertNotIn("cron.remove", {t for t, _ in calls})
+
     def test_removal_that_does_not_stick_fails_closed(self):
         spent = sync_notice("_sync:A", age_ms=3 * HOUR)
         with self.listing(spent), self.assertRaisesRegex(m.MigrationError, "sync_notice_cleanup_failed"):
-            m.live_source_jobs(self.tenant, remove_spent=True)
+            m.remove_spent_sync_notices(self.tenant, [spent])

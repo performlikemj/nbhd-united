@@ -239,12 +239,19 @@ def preservation_precheck(tenant, jobs, *, record=None):
     canonical = canonical_inventory(tenant) if tenant.postgres_cron_canonical else []
     # Imminent obligations take priority and cannot disappear through filtering.
     assert_cutover_safe(jobs + [j for j, _ in canonical])
-    # Canonical rows win conflicts (capture imports with preserve_existing), so
-    # a live copy of a canonical name is never written; only imports need proof.
-    canonical_names = {j["name"] for j, _ in canonical}
-    imported = [j for j in jobs if j["name"] not in canonical_names]
-    reasons = reason_counts([(j, True) for j in imported] + projected_canonical(canonical))
     versions = (record if record is not None else tenant.openclaw_migration or {}).get("imported_versions", {})
+    # Canonical rows win conflicts (capture imports with preserve_existing), so
+    # a live copy of a canonical name is never written, EXCEPT rows this
+    # migration imported and nobody edited since: capture re-captures those
+    # from live. Every live job that capture can write needs proof.
+    recaptured = {
+        row.name
+        for row in CronJob.objects.filter(tenant=tenant, name__in=list(versions))
+        if versions.get(row.name) == row.updated_at.isoformat()
+    }
+    protected = {j["name"] for j, _ in canonical} - recaptured
+    written = [j for j in jobs if j["name"] not in protected]
+    reasons = reason_counts([(j, True) for j in written] + projected_canonical(canonical))
     names = {j["name"] for j in jobs}
     missing_owned = sum(
         1
@@ -272,14 +279,13 @@ def _live_jobs(tenant):
     return jobs
 
 
-def live_source_jobs(tenant, *, remove_spent=False):
+def live_source_jobs(tenant, *, spent=None):
+    """Complete live export without spent sync notices (collected into ``spent``)."""
     jobs = _live_jobs(tenant)
-    if remove_spent and _spent_sync_notices(jobs):
-        remove_spent_sync_notices(tenant, jobs)
-        jobs = _live_jobs(tenant)
-        if _spent_sync_notices(jobs):
-            raise MigrationError("sync_notice_cleanup_failed")
-    jobs = _without_spent_sync_notices(jobs)
+    notices = _spent_sync_notices(jobs)
+    if spent is not None:
+        spent.extend(notices)
+    jobs = [job for job in jobs if not any(job is notice for notice in notices)]
     if len({j["name"] for j in jobs}) != len(jobs):
         raise MigrationError("source_names_duplicated")
     return jobs
@@ -288,16 +294,29 @@ def live_source_jobs(tenant, *, remove_spent=False):
 # Phase 2 sync notices (apps/integrations/runtime_views.py) are date-pinned
 # ``_sync:<job>`` systemEvent crons created two minutes before they fire.
 # Once past that window they are spent leftovers, never imported or written;
-# a fresh one is an imminent obligation, so the tenant waits.
+# a fresh one is an imminent obligation, so the tenant waits. Only the exact
+# notice form qualifies: any other ``_sync:`` job goes through the precheck.
 _SYNC_NOTICE_SPENT_MS = 60 * 60 * 1000
+_SYNC_NOTICE_EXPR = re.compile(r"\d{1,2} \d{1,2} \d{1,2} \d{1,2} \*")
+
+
+def _is_sync_notice(job):
+    schedule, payload = job.get("schedule") or {}, job.get("payload") or {}
+    return (
+        str(job["name"]).startswith("_sync:")
+        and schedule.get("kind") == "cron"
+        and isinstance(schedule.get("expr"), str)
+        and bool(_SYNC_NOTICE_EXPR.fullmatch(schedule["expr"]))
+        and payload.get("kind") == "systemEvent"
+        and str(payload.get("text", "")).startswith("[Sync — ")
+        and job.get("sessionTarget") == "main"
+    )
 
 
 def _spent_sync_notices(jobs):
     now = int(timezone.now().timestamp() * 1000)
     spent = []
-    for job in jobs:
-        if not str(job["name"]).startswith("_sync:"):
-            continue
+    for job in filter(_is_sync_notice, jobs):
         created = job.get("createdAtMs")
         if type(created) is not int or created > now - _SYNC_NOTICE_SPENT_MS:
             raise MigrationError("cron_imminent")
@@ -305,23 +324,21 @@ def _spent_sync_notices(jobs):
     return spent
 
 
-def _without_spent_sync_notices(jobs):
-    spent = {id(job) for job in _spent_sync_notices(jobs)}
-    return [job for job in jobs if id(job) not in spent]
-
-
-def remove_spent_sync_notices(tenant, jobs):
-    """Delete spent notices on the SOURCE runtime before the swap.
+def remove_spent_sync_notices(tenant, spent):
+    """Delete spent notices on the SOURCE runtime, after the precheck passed.
 
     The runtime cron store survives the image swap, where an unmatched legacy
     row fails verification. Date-pinned 5-field expressions also re-fire a
     year later with stale text, so they are removed rather than carried.
-    Capture only; the caller re-lists to prove the removal stuck.
+    A re-list proves the removal stuck.
     """
     from apps.cron.gateway_client import invoke_gateway_tool
 
-    for job in _spent_sync_notices(jobs):
+    for job in spent:
         invoke_gateway_tool(tenant, "cron.remove", {"jobId": job.get("id") or job.get("jobId")}, metadata_only=True)
+    remaining = {j.get("id") or j.get("jobId") for j in _live_jobs(tenant)}
+    if remaining & {j.get("id") or j.get("jobId") for j in spent}:
+        raise MigrationError("sync_notice_cleanup_failed")
 
 
 def report_tenant(tenant):
@@ -372,8 +389,11 @@ def report_tenant(tenant):
 def capture(tenant, record):
     from apps.cron.postgres_canonical import upsert_from_gateway_jobs
 
-    jobs = live_source_jobs(tenant, remove_spent=True)
+    spent = []
+    jobs = live_source_jobs(tenant, spent=spent)
     canonical = preservation_precheck(tenant, jobs, record=record)
+    if spent:
+        remove_spent_sync_notices(tenant, spent)
     # Keep obligations from all captures; current time filtering is never an audit.
     history = record.setdefault("canonical_one_shots", {})
     for declaration, _ in canonical:
@@ -831,7 +851,7 @@ def verify(tenant, record):
         if any(logs["errors"].values()):
             record["verification_failure"] = {"console": logs}
             raise MigrationError("Recent console logs contain migration/runtime errors")
-        reasons = reason_counts(canonical_inventory(tenant))
+        reasons = reason_counts(projected_canonical(canonical_inventory(tenant)))
         current_desired = canonical_digests(_desired_jobs(tenant))
         current = canonical_revision(tenant)
         if snapshot != current or expected != current_desired:
