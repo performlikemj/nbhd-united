@@ -77,6 +77,7 @@ class TenantSerializer(serializers.ModelSerializer):
     effective_model = serializers.SerializerMethodField()
     free_model_offer = serializers.SerializerMethodField()
     friends_agent_propose_enabled = serializers.SerializerMethodField()
+    web_redesign = serializers.SerializerMethodField()
 
     class Meta:
         model = Tenant
@@ -126,8 +127,15 @@ class TenantSerializer(serializers.ModelSerializer):
             "friends_enabled",
             "friends_agent_propose_enabled",
             "byo_models_enabled",
+            "web_redesign",
         )
         read_only_fields = fields
+
+    def get_web_redesign(self, obj):
+        """Open Sky web console gate (WEB_REDESIGN_TENANT_IDS, fail-closed)."""
+        from apps.router.chat_gates import web_redesign_enabled
+
+        return web_redesign_enabled(obj)
 
     def get_friends_agent_propose_enabled(self, obj):
         """Whether the assistant may PROPOSE shares/mission-tasks (PR9). Read via
