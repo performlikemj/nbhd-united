@@ -15,7 +15,8 @@ def declaration_fields(job):
     if not isinstance(job, dict):
         return job
     job = {k: v for k, v in job.items() if k not in FIELDS["observation"]}
-    if job.get("scheduledToolPolicy") == {"version": 1, "mode": "trusted"}:
+    policy = job.get("scheduledToolPolicy")
+    if isinstance(policy, dict) and type(policy.get("version")) is int and policy == {"version": 1, "mode": "trusted"}:
         job.pop("scheduledToolPolicy")
     return job
 

@@ -53,11 +53,26 @@ def authored_at_ms(job):
     return instants[0] if instants and len(set(instants)) == 1 else None
 
 
+def scalar_types_valid(job):
+    """Reject wrong scalar types before falsy defaults/aliases can erase them."""
+    types = {"boolean": bool, "integer": int, "string": str}
+    if not isinstance(job, dict):
+        return False
+    for part, fields in NORMALIZATION["scalarTypes"].items():
+        target = job if part == "root" else job.get(part, {})
+        if not isinstance(target, dict):
+            return False
+        for field, kind in fields.items():
+            if field in target and type(target[field]) is not types[kind]:
+                return False
+    return True
+
+
 def preservation_reasons(job, *, managed=True):
     job = normalized_optionals(declaration_fields(job))
     reasons = set()
     try:
-        supported = supported_declaration(job)
+        supported = scalar_types_valid(job) and supported_declaration(job)
     except (TypeError, ValueError, AttributeError):
         supported = False
     if not supported:
@@ -136,9 +151,18 @@ def preservation_reasons(job, *, managed=True):
     ):
         reasons.add("writer_safety_refusal")
     if not reasons:
-        if declaration_shape(job) not in proven_shapes():
+        if json_type_key(declaration_shape(job)) not in {json_type_key(shape) for shape in proven_shapes()}:
             reasons.add("unproven_shape")
     return reasons
+
+
+def json_type_key(value):
+    """Type-tagged JSON tree: Python's bool/int/float equality is unsafe here."""
+    if isinstance(value, dict):
+        return ("object", tuple((k, json_type_key(v)) for k, v in sorted(value.items())))
+    if isinstance(value, list):
+        return ("array", tuple(json_type_key(v) for v in value))
+    return (type(value).__name__, value)
 
 
 def declaration_shape(job, *, pins=None):

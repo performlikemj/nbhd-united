@@ -242,21 +242,42 @@ def console_error_counts(tenant, *, since) -> dict:
     return {"since": since.isoformat(), "lines": len(recent), "errors": counts}
 
 
-def preservation_inventory(tenant):
-    """Read declaration structure; redact prose/destinations inside the replica."""
+def preservation_inventory(tenant, *, canonical_pins=None):
+    """Evaluate literal controls INSIDE the replica; return safe findings only."""
+    from .cron_reconcile import _UNMANAGED_PREFIXES
+
     return run_node(
         tenant,
-        _LIST
+        _comparison_adapter()
+        + "const canonicalPins="
+        + json.dumps(canonical_pins or {})
+        + ";"
+        + "const unmanagedPrefixes="
+        + json.dumps(_UNMANAGED_PREFIXES)
+        + ";"
+        + _LIST
         + r"""
 return jobs.map(j=>{
-    const copy=structuredClone(j);
-    const deny=/"(command|commandArgv|command_argv|commandInput|commandCwd|commandEnv|script)"\s*:/i.test(JSON.stringify(j));
-    for(const key of ['description','sessionKey','agentId']) if(copy[key]) copy[key]='present';
-    if(copy.displayName) copy.displayName=copy.displayName===j.name?copy.name:'different';
-    if(copy.payload) for(const key of ['message','text','event','model','thinking']) if(copy.payload[key]!=null) copy.payload[key]=String(copy.payload[key]).trim()?'present':'';
-    if(copy.delivery) for(const key of ['to','accountId','threadId']) if(copy.delivery[key]) copy.delivery[key]='present';
-    if(deny) copy.unsupportedWriterKey=true;
-    return copy;
-});
+    const key='runtime:'+crypto.createHash('sha256').update(String(j.declarationKey||j.id||j.jobId||'unknown')).digest('hex').slice(0,16);
+    const reasons=new Set();
+    try {
+        const copy=normalizedOptionals(j);
+        const pins=canonicalPins[j.declarationKey];
+        if(pins && pins.kind===copy.schedule?.kind) {
+            for(const field of ['anchorMs','staggerMs']) if(!pins[field]) delete copy.schedule[field];
+        }
+        if(!supportedDeclaration(copy) || !buildAddArgs({...copy,declarationKey:'nbhd:probe'})) reasons.add('unsupported_declaration');
+        if(!isSafeJob(copy)) reasons.add('writer_safety_refusal');
+        if(copy.enabled===false) reasons.add('disabled_not_projected');
+        if(copy.schedule?.kind!=='at' && (!copy.name || unmanagedPrefixes.some(p=>copy.name.startsWith(p)))) reasons.add('unmanaged_not_projected');
+        const aliases=NORMALIZATION.aliases[copy.payload?.kind]?.sources||[];
+        const texts=aliases.filter(k=>copy.payload[k]!=null).map(k=>copy.payload[k]);
+        if(texts.some(v=>v!==texts[0])) reasons.add('conflicting_text_aliases');
+        if(copy.displayName!=null && copy.displayName!=='' && copy.displayName!==copy.name) reasons.add('display_name');
+        if(copy.schedule?.kind==='cron' && (typeof copy.schedule.expr!=='string' || copy.schedule.expr.trim().split(/\s+/).length!==5)) reasons.add('cron_seconds_or_nonstandard');
+        if(!provenShape(copy)) reasons.add('unproven_shape');
+    } catch { reasons.add('unsupported_declaration'); }
+    return {key,reasons:[...reasons].sort()};
+}).filter(j=>j.reasons.length);
 """,
     )

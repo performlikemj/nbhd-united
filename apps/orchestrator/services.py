@@ -839,7 +839,9 @@ def update_tenant_config(tenant_id: str, *, strict: bool = False, refresh_crons:
         from .personas import get_persona, render_workspace_files, render_workspace_rules
 
         persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
-        workspace_files = render_workspace_files(persona_key, tenant=tenant)
+        workspace_files = render_workspace_files(
+            persona_key, tenant=tenant, **({"metadata_only": True} if strict else {})
+        )
 
         # System-controlled files — always overwrite on config refresh.
         file_map_overwrite = {

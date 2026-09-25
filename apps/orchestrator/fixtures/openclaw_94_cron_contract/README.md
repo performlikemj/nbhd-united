@@ -90,3 +90,17 @@ complete noncanonical import → preparation → unchanged signed-selection path
 Do not hand-add shapes or infer combinations from separately passing controls.
 Capture progress and exceptions contain metadata only; raw synthetic CLI bodies
 are retained solely in the fixture artifacts.
+
+## Round seven: pre-staged signed-file boot
+
+`prestaged-boot.json` records the real default entrypoint, with the signed file
+copied to the stopped local container before its first start. Two declarations
+(recurring and one-shot) install without manual add/reconcile calls and retain
+IDs/digests across two polls. Source hashes pin the unchanged entrypoint/writer.
+
+Reproduce with `PYTHONPATH=. <project-python> scripts/capture_openclaw_94_prestaged_boot.py`.
+The script requires the existing exact local image (never pulls or contacts Azure),
+uses `--network none`, no ports/mounts, and a synthetic token. Scheduled firing and
+plugins are disabled. Only its uniquely named container is removed. Do not run
+concurrent copies; do not point this script at a tenant. The fixture establishes
+installation, not external delivery.

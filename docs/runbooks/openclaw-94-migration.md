@@ -81,10 +81,20 @@ The durable checkpoints are:
 1. `preflight`: registry digests, original template and a fresh revision suffix.
 2. `capture`: complete live cron export; canonical additive import or noncanonical
    cache reconciliation/quarantine, then promotion and equivalent timestamp preparation.
-3. `image`: one revision containing the digest-pinned image, oc-state EmptyDir,
+3. `image`: fresh recapture/import/preparation, then **before image submission**,
+   write and read back `nbhd-crons.json` from the unchanged canonical selector.
+   Persist `signed_prestaged` with the file SHA256, exact canonical content digests,
+   row revision and count; persist recovery instructions and owner identity.
+   5.28 ignores this file; the 9.4 entrypoint installs these jobs even if the
+   management process dies immediately after image apply. Then submit one
+   revision containing the digest-pinned image, oc-state EmptyDir,
    four state/config/workspace/cache variables, node-owned 0700/0600 share mount
    options, plugin-runtime-deps and index-cache. Wait for that latest revision,
-   `/proxy-health` and `/healthz` (bounded to five minutes).
+   `/proxy-health` and `/healthz` (bounded to five minutes). After health, rebuild
+   the expected signed bytes from current canonical truth, compare with the share
+   and rewrite if changed; record `signed_after_health`. Config regeneration
+   remains after the image is live. Failed readback or changing canonical truth
+   stops image submission; automatic reconciliation remains unchanged.
 4. `version`: write image tag and `openclaw_version=2026.9.4` together.
 5. `config`: strict config/workspace refresh, version stamp, then wait for the
    gateway's resolved/applied config revision tokens to match and health to pass.
@@ -150,8 +160,30 @@ print({k: r.get(k) for k in ("tag", "status", "step", "completed", "updated_at",
 print("Captured jobs:", len(r.get("cron_export", [])))
 ```
 
-`RUNNING` claims have a renewable 30-minute lease. After an interrupted process,
-confirm it has exited and wait for lease expiry before retrying the same command.
+`RUNNING` claims have a renewable **10-minute lease** and a unique `owner_token`.
+The private record contains owner host/PID, the saved target revision and recovery
+instructions before the image boundary. All checkpoint writes compare the token;
+mutation boundaries recheck ownership. A stale owner cannot publish a checkpoint
+or start a subsequent mutation after takeover. Lease expiry alone does not prove
+process death: confirm the old process has exited before any recovery, including
+an expired-lease retry. Do not take over a slow or unreachable-but-running owner.
+
+For immediate recovery of a **confirmed terminated** process/replica, an authorized
+operator can bypass the remaining lease with its exact recorded token:
+
+```bash
+python manage.py migrate_tenant_openclaw --tenant "$TENANT_ID" --tag "$TAG" \
+  --recover-dead-owner "$CONFIRMED_DEAD_OWNER_TOKEN"
+```
+
+This flag is an explicit operator attestation of termination, not a remote liveness
+probe. Identify the recorded host/PID (or its containing replica), confirm termination
+through that host/replica's process state, and let any already-submitted Azure update
+settle. Never infer termination from health failure or console timeout. The claim
+compares the token again under a row lock, installs a new fencing token and records
+the attested takeover. A mismatched token is refused. Recovery accepts one tenant,
+reuses the saved revision and verifies afresh; it performs no image-only rollback.
+The already-staged signed file makes cron installation independent of this retry.
 `FAILED` resumes immediately from its failed checkpoint. A different target tag
 is refused. The first failure stops an explicit batch; later tenants are untouched.
 
@@ -254,6 +286,26 @@ The 70 accepted cases map to 43 normalized shapes; five captured cases are block
 Null `model`, `toolsAllow`, `lightContext`, `timeoutSeconds`, `fallbacks` and the
 recorded optional fields equal absence. Literal null timing pins remain unpinned.
 
+Round seven adds [the pre-staged boot capture](../../apps/orchestrator/fixtures/openclaw_94_cron_contract/prestaged-boot.json).
+The exact image above ran its unchanged default entrypoint with a signed recurring
+job and one-shot copied in **before container start**. Both appeared with matching
+canonical digests and stable IDs in two CLI polls, without any manual cron add or
+reconcile call. The entrypoint and writer hashes match `runtime/`. Reproduce using
+`scripts/capture_openclaw_94_prestaged_boot.py` locally; it enforces `--network none`,
+no ports/mounts, synthetic credentials, disabled scheduled firing/plugins, and cleans
+only its own container. The crash-after-image-apply database test separately proves
+the checkpoint survives process death and fenced resume completes on the same revision.
+This proves installation and recovery ordering, not real reminder delivery.
+
+Scalar types are checked before normalization. Python uses a type-tagged JSON tree,
+so booleans, integers and floats are distinct; generated trusted-policy version must
+be an actual Python integer. JS checks booleans strictly and uses `Number.isSafeInteger`
+for integer controls (`Number.isInteger` for policy version). JavaScript JSON parsing
+cannot distinguish the numeric spellings `1` and `1.0`; both are Numbers, but neither
+can stand in for a boolean. Python rejects float controls before submission. Runtime
+verify-only evaluates exact model/agent/flag combinations inside the replica and
+exports only fixed reason codes and hashed identifiers, never redacted stand-in controls.
+
 These fixtures test CLI acceptance, projection and comparison. They do not
 establish production delivery or lifecycle behavior; the release canary checks
 below remain required.
@@ -270,7 +322,7 @@ python manage.py migrate_tenant_openclaw --tenant <uuid> --verify-only
 This performs no tenant, image, config, cron, or migration-record writes.
 It also inspects current canonical and runtime declarations for fields the
 unchanged image cannot preserve. Unsupported declarations report
-`BLOCKED_UNSUPPORTED`, reason counts and declaration keys/runtime IDs (no names
+`BLOCKED_UNSUPPORTED`, reason counts and canonical keys/hashed runtime identifiers (no names
 or payloads), then exit nonzero. Otherwise output is `PASS verified` or
 `FAIL <reason_code>`; failure exits nonzero and stops
 the explicit batch. It checks the tenant's existing image, regardless of the
@@ -284,7 +336,7 @@ configured fleet target. Use this for the MJ and `1c77c8c1` health checks.
   import-owned rows are refreshed. Newer canonical edits and dashboard deletions
   win over stale runtime exports; retries never resurrect deleted imported rows.
 - Enabled canonical Postgres **and** runtime one-shots running, lacking a parseable due time, or due
-  within 20 minutes defer cutover (`cron_running`, `cron_next_fire_unknown`,
+  within 60 minutes defer cutover (`cron_running`, `cron_next_fire_unknown`,
   `cron_imminent`). Eligibility runs before import, enabled/time filtering or canonical changes.
 - Recurring jobs are not paused and do not trigger the imminence guard. A fire
   during the approximately five-minute cutover may be skipped; missed recurring
@@ -307,7 +359,10 @@ Migration source/report/capture calls opt into `invoke_gateway_tool(...,
 metadata_only=True)`. HTTP/tool/transport/Key Vault failures use reason codes and
 status metadata; response bodies and raw exceptions are withheld. Other gateway
 callers retain their prior logging behavior. Strict config refresh also requests
-metadata-only envelope-render errors. Manual canary failures and image/version
+metadata-only envelope-render errors and propagates the opt-in through
+`render_workspace_files`, SOUL/AGENTS loaders and nested Key Vault reads. Cold-cache
+Key Vault failures and outer loader exceptions withhold private error text;
+shared callers retain their previous defaults. Manual canary failures and image/version
 command summaries contain fixed reason codes. Local capture progress prints
 case/status/reason only; its committed raw CLI recordings contain synthetic data.
 The unchanged runtime poller's separate logging limitation below still applies.
@@ -331,7 +386,8 @@ alone is refused. Every selected tenant, including single-tenant mode and
 same-tag partial upgrades, must pass the runtime-family guard before mutation.
 A non-PASS migration with `image_submitted=True` refuses ordinary manual updates,
 even if both DB version fields still say 5.28. The guard reads the live Azure
-OpenClaw image and requires an unambiguous same-family tag; unreadable identities,
+OpenClaw image and requires an unambiguous same-family tag (optionally followed
+by a validated `@sha256:<64 lowercase hex>` digest); unreadable identities,
 digest-only references and mismatches refuse. Resolve partial migrations using
 the controlled migration recovery procedure.
 `canary_tenant_image --container ...` resolves that container to exactly one

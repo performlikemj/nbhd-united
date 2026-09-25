@@ -70,7 +70,19 @@ export function declarationShape(job,pins=null) {
   }
   return result;
 }
+export function scalarTypesValid(job) {
+  job=normalizedOptionals(job);
+  for(const [part,fields] of Object.entries(NORMALIZATION.scalarTypes)) {
+    const target=part==='root'?job:(job[part]??{});
+    if(!target || typeof target!=='object' || Array.isArray(target)) return false;
+    for(const [field,type] of Object.entries(fields)) {
+      if(field in target && (type==='integer'?!Number.isSafeInteger(target[field]):typeof target[field]!==type)) return false;
+    }
+  }
+  return true;
+}
 export function provenShape(job,pins=null) {
+  if(!scalarTypesValid(job)) return false;
   const shape=stableJSON(declarationShape(job,pins));
   return PROVEN_SHAPES.shapes.some(entry=>stableJSON(entry.shape)===shape);
 }

@@ -164,7 +164,15 @@ class RuntimeMigrationTests(TestCase):
             current = observed(case)
             current["declarationKey"] = f"nbhd:{row.pk}"
             with (
-                patch.object(m.runtime_operator, "preservation_inventory", return_value=[current]),
+                patch.object(
+                    m.runtime_operator,
+                    "preservation_inventory",
+                    side_effect=lambda tenant, *, canonical_pins, current=current: (
+                        []
+                        if current["declarationKey"] in canonical_pins
+                        else [{"key": "runtime:0123456789abcdef", "reasons": ["unproven_shape"]}]
+                    ),
+                ),
                 patch.object(m, "get_app"),
                 patch.object(m, "_image", return_value=f"registry/nbhd-openclaw:{TAG}"),
                 patch.object(m.runtime_operator, "config_observed"),

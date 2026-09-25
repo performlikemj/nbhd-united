@@ -19,5 +19,11 @@
   "timingPins": ["anchorMs", "staggerMs"],
   "instantFields": ["at", "atMs", "expr"],
   "instantPattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$",
+  "scalarTypes": {
+    "root": {"enabled": "boolean", "deleteAfterRun": "boolean", "name": "string", "displayName": "string", "description": "string", "agentId": "string", "wakeMode": "string", "sessionTarget": "string", "sessionKey": "string"},
+    "payload": {"kind": "string", "message": "string", "text": "string", "event": "string", "model": "string", "thinking": "string", "lightContext": "boolean", "toolsAllowIsDefault": "boolean", "timeoutSeconds": "integer"},
+    "delivery": {"mode": "string", "channel": "string", "to": "string", "accountId": "string", "threadId": "string", "bestEffort": "boolean"},
+    "schedule": {"kind": "string", "tz": "string", "everyMs": "integer", "anchorMs": "integer", "staggerMs": "integer"}
+  },
   "shapeVariables": ["schedule.expr", "schedule.tz", "schedule.everyMs", "schedule.atMs", "payload.message", "payload.text", "description"]
 }

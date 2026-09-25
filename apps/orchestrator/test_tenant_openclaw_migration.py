@@ -260,6 +260,22 @@ class MigrationStepTests(TestCase):
         inventory.start()
         self.addCleanup(inventory.stop)
 
+        self.files = {}
+        for target, kwargs in (
+            ("apps.cron.gateway_client.get_gateway_token_for_tenant", {"return_value": "local-contract-token"}),
+            (
+                "apps.orchestrator.azure_client._put_share_file",
+                {"side_effect": lambda tenant, path, *, data, **kw: self.files.update({path: data})},
+            ),
+            (
+                "apps.orchestrator.azure_client.download_workspace_file_binary",
+                {"side_effect": lambda tenant, path: self.files.get(path)},
+            ),
+        ):
+            mocked = patch(target, **kwargs)
+            mocked.start()
+            self.addCleanup(mocked.stop)
+
     def test_capture_all_jobs_preserves_db_only_and_canonical_values(self):
         existing = CronJob.objects.create(
             tenant=self.tenant, name="reminder", data=job(payload={"kind": "agentTurn", "message": "Postgres wins"})

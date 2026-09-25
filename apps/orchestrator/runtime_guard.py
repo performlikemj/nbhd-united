@@ -28,7 +28,7 @@ def image_only_update_allowed(tenant, target_tag: str) -> bool:
         images = [c.image for c in app.template.containers if c.name == "openclaw"]
         if len(images) != 1 or not isinstance(images[0], str):
             return False
-        live = re.fullmatch(r"[^/]+/nbhd-openclaw:([^/@]+)", images[0])
+        live = re.fullmatch(r"[^/]+/nbhd-openclaw:([^/@]+)(?:@sha256:[0-9a-f]{64})?", images[0])
         return bool(live and _family(live[1]) == target)
     except Exception:
         # Metadata-only refusal; SDK errors can contain response bodies/secrets.

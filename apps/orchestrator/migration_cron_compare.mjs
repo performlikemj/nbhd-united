@@ -72,7 +72,7 @@ export function supportedDeclaration(job) {
   if (!job || typeof job !== 'object' || Array.isArray(job)) return false;
   job = {...job};
   for (const field of FIELDS.observation) delete job[field];
-  if (stableJSON(job.scheduledToolPolicy) === stableJSON({version:1,mode:'trusted'})) delete job.scheduledToolPolicy;
+  if (Number.isInteger(job.scheduledToolPolicy?.version) && stableJSON(job.scheduledToolPolicy) === stableJSON({version:1,mode:'trusted'})) delete job.scheduledToolPolicy;
   if (Object.keys(job).some(k=>!FIELDS.job.includes(k))) return false;
   for (const part of ['payload','delivery','schedule','pacing']) {
     if (Object.keys(job[part]||{}).some(k=>!FIELDS[part].includes(k))) return false;

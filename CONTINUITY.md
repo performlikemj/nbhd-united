@@ -13,12 +13,13 @@
 - Round 4 supersedes wake exception: hibernation, reconciliation and signed selector restored to main.
 - Follow-up: 9.4 lifecycle (croner vs croniter semantics, suspend, idle guards).
 ## State
-- Done: Round 6 fixes implemented with failing-first tests; 75 exact-image captures (70 accepted cases, 5 blocked, 43 normalized shapes); 239 focused/contract tests PASS. Ruff/format and migration drift PASS; protected automatic/runtime paths equal fresh origin/main.
-- Now: Round 6 implementation 6f21bc9a committed/pushed to draft PR #1650; Docker gate PASS (9383 tests / 57 skipped, config/security and frontend lint/build). Owned local containers/volumes cleaned; no production access.
-- Next: Release orchestrator review and separately authorized canaries; no merge or production execution by this task.
+- Done: Rounds 1–6 retained; all five Round 7 findings fixed. Exact-image pre-staged boot proof, 254 focused/contract tests, ruff/format/migration drift, protected main parity and complete Docker gate PASS (9398 tests / 60 skips; frontend/config/security PASS).
+- Now: Round 7 completed for draft PR #1650 on feat/openclaw-94-tenant-migration; owned local resources cleaned, 18 GiB free. No production access.
+- Next: Reviewer/release-orchestrator handoff and separately authorized canaries; no merge or production execution by this task.
 ## Task Map
 ```
 CONTINUITY.md
+  ├─ CONTINUITY_openclaw-round-seven.md (complete; draft review)
   ├─ CONTINUITY_openclaw-round-six.md (complete; draft review)
   ├─ CONTINUITY_openclaw-round-five.md (complete; draft review)
   ├─ CONTINUITY_openclaw-round-four.md (complete; draft review)
@@ -26,6 +27,7 @@ CONTINUITY.md
   └─ CONTINUITY_openclaw_94_migration.md (prior implementation/reviews; scope superseded)
 ```
 ## Active ledgers
+- CONTINUITY_openclaw-round-seven.md
 - CONTINUITY_openclaw-round-six.md
 - Existing unrelated ledgers: CONTINUITY_journal_shaping.md; CONTINUITY_cron_feed_redactor_subagent.md (status unconfirmed).
 ## Cross-task blockers / handoffs

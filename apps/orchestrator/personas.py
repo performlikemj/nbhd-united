@@ -134,7 +134,7 @@ def render_identity_md(persona_key: str) -> str:
     )
 
 
-def _load_soul_from_key_vault() -> str | None:
+def _load_soul_from_key_vault(*, metadata_only=False) -> str | None:
     """Attempt to load the core SOUL.md content from Azure Key Vault.
 
     Returns the content string or None if unavailable.
@@ -156,25 +156,25 @@ def _load_soul_from_key_vault() -> str | None:
     try:
         from apps.orchestrator.azure_client import read_key_vault_secret
 
-        content = read_key_vault_secret(secret_name)
+        content = read_key_vault_secret(secret_name, **({"metadata_only": True} if metadata_only else {}))
         if content and content.strip():
             logger.info("Loaded SOUL.md from Key Vault secret: %s", secret_name)
             _load_soul_from_key_vault._cached = content.strip()
             return _load_soul_from_key_vault._cached
     except Exception as exc:
-        logger.warning("Failed to load SOUL.md from Key Vault: %s", exc)
+        logger.warning("Failed to load SOUL.md from Key Vault: %s", "key_vault_unavailable" if metadata_only else exc)
 
     _load_soul_from_key_vault._cached = None
     return None
 
 
-def render_soul_md(persona_key: str) -> str:
+def render_soul_md(persona_key: str, *, metadata_only=False) -> str:
     """Render SOUL.md content.
 
     Reads the core soul from Key Vault (the heart of the product).
     Falls back to a generated version from persona traits if KV is unavailable.
     """
-    kv_soul = _load_soul_from_key_vault()
+    kv_soul = _load_soul_from_key_vault(**({"metadata_only": True} if metadata_only else {}))
     if kv_soul:
         return kv_soul
 
@@ -206,7 +206,7 @@ def render_soul_md(persona_key: str) -> str:
     )
 
 
-def _load_soul_template_body() -> str | None:
+def _load_soul_template_body(*, metadata_only=False) -> str | None:
     """Load the SOUL baseline body: repo template first, then env, then Key Vault.
 
     The repo template (``templates/openclaw/SOUL.md``) is the sentinel-split
@@ -228,7 +228,7 @@ def _load_soul_template_body() -> str | None:
     env_template = os.environ.get("NBHD_SOUL_MD_TEMPLATE")
     if env_template:
         return env_template
-    return _load_soul_from_key_vault()
+    return _load_soul_from_key_vault(**({"metadata_only": True} if metadata_only else {}))
 
 
 def _hardcoded_soul_complete(traits: str) -> str:
@@ -248,7 +248,7 @@ def _hardcoded_soul_complete(traits: str) -> str:
     )
 
 
-def render_soul_managed(persona_key: str, tenant=None) -> str:
+def render_soul_managed(persona_key: str, tenant=None, *, metadata_only=False) -> str:
     """Render the platform-managed SOUL.md region (sentinel markers included).
 
     This is the region the platform re-asserts; the agent's growth region below
@@ -266,7 +266,7 @@ def render_soul_managed(persona_key: str, tenant=None) -> str:
     persona = get_persona(persona_key)
     traits = persona["soul_traits"].strip()
 
-    source = _load_soul_template_body()
+    source = _load_soul_template_body(**({"metadata_only": True} if metadata_only else {}))
     if source and SOUL_BEGIN_MARKER in source:
         # Full managed template (repo file) — just fill the persona placeholder.
         managed = source.replace("{{PERSONA_SOUL_TRAITS}}", traits)
@@ -347,7 +347,7 @@ def render_identity_managed(persona_key: str, tenant=None) -> str:
     return managed.strip() + "\n"
 
 
-def _load_agents_md_from_key_vault() -> str | None:
+def _load_agents_md_from_key_vault(*, metadata_only=False) -> str | None:
     """Attempt to load AGENTS.md template from Azure Key Vault.
 
     Returns the template string (with {{PERSONA_PERSONALITY}} placeholder) or None.
@@ -369,13 +369,13 @@ def _load_agents_md_from_key_vault() -> str | None:
     try:
         from apps.orchestrator.azure_client import read_key_vault_secret
 
-        content = read_key_vault_secret(secret_name)
+        content = read_key_vault_secret(secret_name, **({"metadata_only": True} if metadata_only else {}))
         if content and content.strip():
             logger.info("Loaded AGENTS.md from Key Vault secret: %s", secret_name)
             _load_agents_md_from_key_vault._cached = content.strip()
             return _load_agents_md_from_key_vault._cached
     except Exception as exc:
-        logger.warning("Failed to load AGENTS.md from Key Vault: %s", exc)
+        logger.warning("Failed to load AGENTS.md from Key Vault: %s", "key_vault_unavailable" if metadata_only else exc)
 
     _load_agents_md_from_key_vault._cached = None
     return None
@@ -396,7 +396,7 @@ def _load_agents_md_from_template_file() -> str | None:
         return None
 
 
-def render_agents_md(persona_key: str) -> str:
+def render_agents_md(persona_key: str, *, metadata_only=False) -> str:
     """Render AGENTS.md content for a persona.
 
     Resolution order (repo file first, so AGENTS body changes ship via CI):
@@ -426,7 +426,7 @@ def render_agents_md(persona_key: str) -> str:
         return env_template.replace("{{PERSONA_PERSONALITY}}", persona["agents_personality"])
 
     # 3. Try Key Vault (emergency hot-patch override only if the repo file is absent)
-    kv_template = _load_agents_md_from_key_vault()
+    kv_template = _load_agents_md_from_key_vault(**({"metadata_only": True} if metadata_only else {}))
     if kv_template:
         return kv_template.replace("{{PERSONA_PERSONALITY}}", persona["agents_personality"])
     # Fallback: hardcoded version
@@ -680,7 +680,7 @@ def _get_tenant_prompt_extras(tenant, section: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
+def render_workspace_files(persona_key: str, tenant=None, *, metadata_only=False) -> dict[str, str]:
     """Render all persona-aware workspace files.
 
     Returns a dict mapping env var names to content:
@@ -696,11 +696,11 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     without branching the template or running a schema migration.
     """
     result = {
-        "NBHD_AGENTS_MD": render_agents_md(persona_key),
+        "NBHD_AGENTS_MD": render_agents_md(persona_key, **({"metadata_only": True} if metadata_only else {})),
         # Sentinel-split managed regions — the platform re-asserts these; the
         # agent's growth region below the END marker is merged in at write time
         # by apps.orchestrator.identity_merge (never produced here).
-        "NBHD_SOUL_MD": render_soul_managed(persona_key, tenant),
+        "NBHD_SOUL_MD": render_soul_managed(persona_key, tenant, **({"metadata_only": True} if metadata_only else {})),
         "NBHD_IDENTITY_MD": render_identity_managed(persona_key, tenant),
     }
     if _subagent_workspace_surfaces_enabled(tenant):

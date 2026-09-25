@@ -229,13 +229,13 @@ class RoundFourTests(TestCase):
             patch.object(
                 m.runtime_operator,
                 "preservation_inventory",
-                return_value=[job(delivery={"mode": "announce", "threadId": "private"})],
+                return_value=[{"key": "runtime:0123456789abcdef", "reasons": ["unproven_shape"]}],
             ),
             self.assertRaisesRegex(CommandError, "BLOCKED_UNSUPPORTED"),
         ):
             call_command("migrate_tenant_openclaw", tenant=str(self.tenant.pk), verify_only=True, stdout=out)
-        self.assertIn("delivery_threadId", out.getvalue())
-        self.assertIn("reminder-id", out.getvalue())
+        self.assertIn("unproven_shape", out.getvalue())
+        self.assertIn("runtime:0123456789abcdef", out.getvalue())
         self.assertNotIn("private", out.getvalue())
         self.assertEqual(type(self.tenant).objects.filter(pk=self.tenant.pk).values().get(), before)
 
