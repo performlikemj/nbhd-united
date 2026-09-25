@@ -13,125 +13,8 @@ import {
   useNeighborhoodHomeQuery,
   useSkyMembershipMutation,
 } from "@/lib/queries";
-import type { HomeNeighbor, MissionAsk, NeighborBond } from "@/lib/types";
-
-// Line width = how much you two share, in three bounded steps. A quiet friend
-// still gets a visible line; nothing on screen is a number.
-const BOND_WIDTH: Record<NeighborBond, number> = { light: 0.8, steady: 1.6, strong: 2.6 };
-const BOND_ALPHA: Record<NeighborBond, number> = { light: 0.32, steady: 0.48, strong: 0.66 };
-
-const INNER = 0.22; // ring radii as a fraction of the map box (a circle on desktop, taller on phones)
-const OUTER = 0.39;
-
-function byName(a: HomeNeighbor, b: HomeNeighbor) {
-  return a.display_name.localeCompare(b.display_name) || a.friendship_id.localeCompare(b.friendship_id);
-}
-
-function sinceLabel(n: HomeNeighbor) {
-  return n.in_my_sky ? "in your sky" : `friends since ${n.friends_since.slice(0, 4)}`;
-}
-
-/**
- * Stable spots on two rings: your sky inside, everyone else outside. Order is
- * by name, never activity; the outer ring turns to stay clear of inner spokes
- * so no line runs through someone else's name.
- */
-function placePeople(neighbors: HomeNeighbor[]) {
-  const inner = neighbors.filter((n) => n.in_my_sky).sort(byName);
-  const outer = neighbors.filter((n) => !n.in_my_sky).sort(byName);
-  const angles = (count: number, turn: number) =>
-    Array.from({ length: count }, (_, i) => -Math.PI / 2 + turn + (i / Math.max(count, 1)) * Math.PI * 2);
-  const innerA = angles(inner.length, 0);
-  const step = (Math.PI * 2) / Math.max(outer.length, 1);
-  let bestTurn = step / 2;
-  let bestGap = -1;
-  for (let k = 0; k < 24; k++) {
-    const turn = (k / 24) * step;
-    const gap = Math.min(
-      Math.PI,
-      ...angles(outer.length, turn).flatMap((a) =>
-        innerA.map((b) => {
-          const d = Math.abs(((a - b + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
-          return d;
-        }),
-      ),
-    );
-    if (gap > bestGap + 1e-6) {
-      bestGap = gap;
-      bestTurn = turn;
-    }
-  }
-  const at = (n: HomeNeighbor, a: number, r: number) => ({ n, x: 0.5 + Math.cos(a) * r, y: 0.5 + Math.sin(a) * r });
-  return [
-    ...inner.map((n, i) => at(n, innerA[i], INNER)),
-    ...outer.map((n, i) => at(n, angles(outer.length, bestTurn)[i], OUTER)),
-  ];
-}
-
-function PeopleMap({
-  neighbors,
-  selectedId,
-  onSelect,
-}: {
-  neighbors: HomeNeighbor[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-}) {
-  const placed = useMemo(() => placePeople(neighbors), [neighbors]);
-  return (
-    <div className="relative mx-auto aspect-[4/5] w-full max-w-[640px] sm:aspect-square">
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full" aria-hidden="true">
-        <ellipse cx="50" cy="50" rx={INNER * 100} ry={INNER * 100} fill="none" stroke="var(--os-hairline)" strokeWidth="1" strokeDasharray="2 5" vectorEffect="non-scaling-stroke" />
-        <ellipse cx="50" cy="50" rx={OUTER * 100} ry={OUTER * 100} fill="none" stroke="var(--os-hairline)" strokeWidth="1" strokeDasharray="2 5" vectorEffect="non-scaling-stroke" />
-        {placed.map(({ n, x, y }) => (
-          <line
-            key={n.friendship_id}
-            x1="50"
-            y1="50"
-            x2={x * 100}
-            y2={y * 100}
-            stroke={n.friendship_id === selectedId ? "var(--os-accent)" : `rgba(226,232,240,${BOND_ALPHA[n.bond]})`}
-            strokeWidth={BOND_WIDTH[n.bond]}
-            strokeLinecap="round"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-      </svg>
-      <div className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-1.5">
-        <span className="h-4 w-4 rounded-full bg-os-ink shadow-[0_0_18px_rgba(226,232,240,0.55)]" aria-hidden="true" />
-        <span className="rounded bg-[rgba(7,9,12,0.8)] px-1 text-[0.8125rem] text-os-ink">You</span>
-      </div>
-      {placed.map(({ n, x, y }) => {
-        const on = n.friendship_id === selectedId;
-        // Names sit on the far side of the dot so the spoke never crosses them.
-        const above = y < 0.5;
-        return (
-          <button
-            key={n.friendship_id}
-            type="button"
-            onClick={() => onSelect(n.friendship_id)}
-            aria-pressed={on}
-            aria-label={`${n.display_name}, ${sinceLabel(n)}`}
-            className={`os-focus group absolute flex -translate-x-1/2 items-center rounded-lg px-1.5 ${above ? "-translate-y-full flex-col-reverse" : "flex-col"}`}
-            style={{ left: `${x * 100}%`, top: `calc(${y * 100}% + ${above ? 7 : -7}px)` }}
-          >
-            <span
-              className={`h-3.5 w-3.5 shrink-0 rounded-full ring-2 ring-os-sky transition ${on ? "outline outline-1 outline-offset-2 outline-os-accent" : ""}`}
-              style={{ backgroundColor: `hsl(${n.avatar_hue} 55% 70%)` }}
-              aria-hidden="true"
-            />
-            <span className={`flex flex-col items-center rounded bg-[rgba(7,9,12,0.8)] px-1 ${above ? "mb-1" : "mt-1"}`}>
-              <span className={`whitespace-nowrap text-[0.8125rem] leading-tight ${on ? "text-os-accent" : "text-os-ink group-hover:text-os-accent"}`}>
-                {n.display_name}
-              </span>
-              <span className="whitespace-nowrap text-[0.6875rem] leading-tight text-os-faint">{sinceLabel(n)}</span>
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
+import { EveryoneList, PeopleMap, QUIET_AFTER, sinceLabel } from "@/components/open-sky/people-map";
+import type { HomeNeighbor, MissionAsk } from "@/lib/types";
 
 function outlineBtn(extra = "") {
   return `os-focus min-h-[40px] rounded-full border border-os-ring px-4 text-[0.8125rem] text-os-ink transition hover:border-os-accent-line hover:text-os-accent disabled:opacity-40 ${extra}`;
@@ -158,8 +41,22 @@ export function NeighborhoodOpenSky({
   const sky = useSkyMembershipMutation();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [skyError, setSkyError] = useState("");
+  const [query, setQuery] = useState("");
 
-  const neighbors = home.data?.neighbors ?? [];
+  const neighbors = useMemo(() => home.data?.neighbors ?? [], [home.data]);
+  const crowd = neighbors.filter((n) => !n.in_my_sky).length > QUIET_AFTER;
+  const matchIds = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return new Set<string>();
+    const hits = neighbors.filter((n) => n.display_name.toLowerCase().includes(q) || n.handle.toLowerCase().includes(q));
+    // Label a handful on the map; the list below shows every match.
+    return new Set(hits.slice(0, 6).map((n) => n.friendship_id));
+  }, [neighbors, query]);
+  const select = (id: string, fromList = false) => {
+    setSkyError("");
+    setSelectedId((cur) => (cur === id && !fromList ? null : id));
+    if (fromList) requestAnimationFrame(() => document.getElementById("person-panel")?.scrollIntoView({ block: "nearest" }));
+  };
   const selected = neighbors.find((n) => n.friendship_id === selectedId) ?? null;
   const waves = home.data?.pending_in ?? [];
   const waiting = home.data?.pending_out ?? [];
@@ -187,18 +84,32 @@ export function NeighborhoodOpenSky({
         ) : (
           <>
             <p className="mb-2 max-w-[60ch] text-[0.875rem] text-os-muted">
-              Closer in is your sky &mdash; the people you chose. A thicker line means you two share more.
+              {crowd
+                ? "Closer in is your sky \u2014 the people you chose. Everyone else is a small dot further out; hover, tap or search to see a name."
+                : "Closer in is your sky \u2014 the people you chose. A thicker line means you two share more."}
             </p>
-            <PeopleMap
-              neighbors={neighbors}
-              selectedId={selectedId}
-              onSelect={(id) => {
-                setSkyError("");
-                setSelectedId((cur) => (cur === id ? null : id));
-              }}
-            />
+            {crowd ? (
+              <div className="mb-2 max-w-[360px]">
+                <label htmlFor="find-person" className="sr-only">
+                  Find a person
+                </label>
+                <input
+                  id="find-person"
+                  type="search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && matchIds.size > 0) select([...matchIds][0], true);
+                  }}
+                  placeholder="Find a person"
+                  autoComplete="off"
+                  className="os-focus min-h-[44px] w-full rounded-full border border-os-ring bg-transparent px-4 text-[0.9375rem] text-os-ink placeholder:text-os-faint focus:border-os-accent-line"
+                />
+              </div>
+            ) : null}
+            <PeopleMap neighbors={neighbors} selectedId={selectedId} matchIds={matchIds} onSelect={(id) => select(id)} />
             {selected ? (
-              <div className="os-hairline-top mx-auto flex max-w-[640px] flex-wrap items-center gap-x-6 gap-y-3 pt-4" aria-live="polite">
+              <div id="person-panel" className="os-hairline-top mx-auto flex max-w-[640px] scroll-mt-24 flex-wrap items-center gap-x-6 gap-y-3 pt-4" aria-live="polite">
                 <div className="min-w-0 flex-1">
                   <p className="font-serif text-[1.5rem] leading-tight text-os-ink">{selected.display_name}</p>
                   <p className="text-[0.8125rem] text-os-muted">
@@ -214,6 +125,12 @@ export function NeighborhoodOpenSky({
                   </button>
                 </div>
                 {skyError ? <p className="w-full text-[0.8125rem] text-os-danger" role="alert">{skyError}</p> : null}
+              </div>
+            ) : null}
+            {crowd || neighbors.length > 8 ? (
+              <div className="mt-10">
+                <h3 className="os-label mb-1">Everyone</h3>
+                <EveryoneList neighbors={neighbors} query={query} selectedId={selectedId} onSelect={(id) => select(id, true)} />
               </div>
             ) : null}
           </>
