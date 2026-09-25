@@ -13,7 +13,7 @@ Owner: codex
 - Follow-up: 9.4 lifecycle (croner vs croniter semantics, suspend, idle guards).
 ## State
 - Done: all eight findings implemented, tests/gates passed, runbook and rollup updated.
-- Now: implementation complete; commit/push and draft PR description update.
+- Now: implementation bdae0d81 committed/pushed with requested trailer; draft PR description refreshed for Round 4.
 - Next: release orchestrator review and separately authorized canary work; no production execution here.
 ## Links
 - Upstream: CONTINUITY.md
@@ -50,3 +50,4 @@ Owner: codex
 - Remote main remains bd8abe4ea79196cf19eb44c3422b84309cb1b34c; automatic-path and full runtime diff empty against it.
 - Removed only own localhost test container and exact local/stopped-gate/final-gate 64-hex volumes recorded above. No broad prune. No Docker containers remain; disk recovered to 21 GiB free.
 - Production untouched; no live MJ or fleet declarations inspected, no deployments, no merge. Supplied review/directive/recon files retained untracked.
+- Delivery: bdae0d81 pushed to feat/openclaw-94-tenant-migration; draft PR #1650 remains open/unmerged. Final ledger-only delivery rollup follows on the same branch.

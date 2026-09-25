@@ -12,7 +12,7 @@
 - Follow-up: 9.4 lifecycle (croner vs croniter semantics, suspend, idle guards).
 ## State
 - Done: Round 4's eight findings addressed; all automatic paths and runtime image match origin/main. Ruff/format, migration drift, 156 focused tests plus final 26 targeted tests PASS. Final Docker gate PASS: 9347 tests / 53 skipped; frontend lint/build and config/security checks PASS.
-- Now: Round 4 complete for draft PR #1650; commit/push with requested co-author trailer.
+- Now: Round 4 implementation bdae0d81 committed/pushed to draft PR #1650 with requested co-author trailer; ready for review.
 - Next: release orchestrator review, read-only --report sizing and later approved canaries. No production access or PR merge by this task.
 ## Task Map
 ```
