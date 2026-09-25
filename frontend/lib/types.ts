@@ -1079,6 +1079,41 @@ export interface NeighborhoodData {
   pending_outgoing: PendingWave[];
 }
 
+// GET /api/v1/friends/home/ — the aggregated Neighborhood home. `bond` is a
+// qualitative bucket (never a count); `in_my_sky` is visible only to the viewer.
+export type NeighborBond = "light" | "steady" | "strong";
+
+export interface HomeNeighbor {
+  friendship_id: string;
+  display_name: string;
+  handle: string;
+  avatar_hue: number;
+  bio?: string;
+  spark_count: number;
+  in_my_sky: boolean;
+  bond: NeighborBond;
+  friends_since: string; // YYYY-MM-DD
+  has_unread_thread: boolean;
+  thread_id: string | null;
+}
+
+export interface HomeWave {
+  friendship_id: string;
+  direction?: "incoming" | "outgoing";
+  display_name: string;
+  handle: string;
+  avatar_hue: number;
+  note: string;
+  created_at: string;
+}
+
+export interface NeighborhoodHome {
+  profile: { handle: string; display_name: string; avatar_hue: number } | null;
+  neighbors: HomeNeighbor[];
+  pending_in: HomeWave[];
+  pending_out: HomeWave[];
+}
+
 // Response shape shared by the accept/decline/block and unfriend endpoints.
 export interface FriendshipStatusResult {
   friendship_id: string;
@@ -1251,6 +1286,13 @@ export interface MissionSummary {
   version: number;
 }
 
+// GET /api/v1/friends/missions/?include_invited=1 rows carry the viewer's own
+// membership state, so invitations ("asks") can be told apart from joined ones.
+export interface MissionAsk extends MissionSummary {
+  my_status: "active" | "invited";
+  my_role: "owner" | "member";
+}
+
 // One row in a mission's crew projection — handle is null if that member
 // never set a NeighborProfile handle. `showed_up`/`window_days` is the
 // filled-proportion the progress bar renders (window_days is 7 for a daily
@@ -1345,3 +1387,39 @@ export interface CircleLeaveResult {
   status: string;
   purged: boolean;
 }
+
+// GET /api/v1/datebook/agenda/?days=N — owner read-only projection of the
+// iPhone calendar mirror. `covered_days` are the only days that may say "Free".
+export type AgendaEventTime =
+  | { kind: "all_day"; start_date: string; end_date_exclusive: string }
+  | { kind: "zoned"; start_at: string; end_at: string; tz_id: string }
+  | { kind: "floating"; start_local: string; end_local: string };
+
+export type AgendaReminderDue =
+  | { kind: "all_day"; date: string }
+  | { kind: "zoned"; due_at: string; tz_id: string }
+  | { kind: "floating"; due_local: string };
+
+export type AgendaItem =
+  | { entity: "event"; id: string; day: string; time: AgendaEventTime; title: string; location?: string; calendar_title?: string }
+  | { entity: "reminder"; id: string; day: string; due: AgendaReminderDue; title: string; list_title?: string };
+
+export type DatebookAgenda =
+  | { state: "datebook_disabled" }
+  | { state: "consent_required" }
+  | {
+      state: "ok";
+      server_now: string;
+      timezone: string;
+      requested: { start_day: string; end_day_exclusive: string; start_at: string; end_at: string };
+      covered: { start_at: string; end_at: string } | null;
+      covered_days: string[];
+      freshness: {
+        events_last_complete_sync_at: string | null;
+        reminders_last_complete_sync_at: string | null;
+        events_authorization?: string | null;
+        gateway_status?: string | null;
+      };
+      items: AgendaItem[];
+      truncated: boolean;
+    };

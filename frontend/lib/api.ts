@@ -2165,6 +2165,16 @@ export function fetchNeighborhood(): Promise<import("@/lib/types").NeighborhoodD
   return apiFetch<import("@/lib/types").NeighborhoodData>("/api/v1/friends/");
 }
 
+/** GET /api/v1/friends/home/ — neighbors with bond/sky/friends_since + waves. */
+export function fetchNeighborhoodHome(): Promise<import("@/lib/types").NeighborhoodHome> {
+  return apiFetch<import("@/lib/types").NeighborhoodHome>("/api/v1/friends/home/");
+}
+
+/** POST / DELETE /api/v1/friends/<id>/sky/ — add to / take out of MY sky (cap from the server). */
+export function setInMySky(friendshipId: string, inSky: boolean): Promise<unknown> {
+  return apiFetch(`/api/v1/friends/${friendshipId}/sky/`, { method: inSky ? "POST" : "DELETE" });
+}
+
 export function sendWave(data: {
   handle: string;
   note?: string;
@@ -2540,6 +2550,11 @@ export function fetchMissions(): Promise<import("@/lib/types").MissionSummary[]>
   return apiFetch<import("@/lib/types").MissionSummary[]>("/api/v1/friends/missions/");
 }
 
+/** GET /api/v1/friends/missions/?include_invited=1 — joined missions plus open invitations. */
+export function fetchMissionAsks(): Promise<import("@/lib/types").MissionAsk[]> {
+  return apiFetch<import("@/lib/types").MissionAsk[]>("/api/v1/friends/missions/?include_invited=1");
+}
+
 /** POST /api/v1/friends/missions/ — create a 1:1 mission on an accepted friendship. */
 export function createMission(data: {
   friendship_id: string;
@@ -2736,4 +2751,9 @@ export function regenerateInviteCode(circleId: string): Promise<{ circle_id: str
     `/api/v1/friends/circles/${circleId}/invite-code/`,
     { method: "POST" },
   );
+}
+
+/** GET /api/v1/datebook/agenda/?days=N — the owner's calendar projection (read-only). */
+export function fetchDatebookAgenda(days = 7): Promise<import("@/lib/types").DatebookAgenda> {
+  return apiFetch<import("@/lib/types").DatebookAgenda>(`/api/v1/datebook/agenda/?days=${days}`);
 }

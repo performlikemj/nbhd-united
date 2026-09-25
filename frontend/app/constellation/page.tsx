@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { useConstellationQuery, useDeleteLessonMutation, usePendingLessonsQuery } from "@/lib/queries";
+import { ConstellationSky } from "@/components/open-sky/constellation-sky";
+import { useConstellationQuery, useDeleteLessonMutation, usePendingLessonsQuery, useTenantQuery } from "@/lib/queries";
 import { isPlayEnabled } from "@/lib/constellation-game/flag";
 import {
   ConstellationData,
@@ -369,6 +370,8 @@ export default function ConstellationPage() {
   const { data: rawData = EMPTY_CONSTELLATION, isLoading, error: queryError } = useConstellationQuery();
   const { data: pendingLessons = [] } = usePendingLessonsQuery();
   const deleteLesson = useDeleteLessonMutation();
+  const { data: tenant } = useTenantQuery();
+  const openSky = !!tenant?.web_redesign;
   const loading = isLoading;
   const error = queryError instanceof Error ? queryError.message : queryError ? "Failed to load constellation." : "";
   const pendingCount = pendingLessons.length;
@@ -596,7 +599,14 @@ export default function ConstellationPage() {
   if (loading) return <div className="flex items-center justify-center py-20"><p className="text-sm text-ink-muted">Loading your constellation...</p></div>;
 
   return (
-    <div className="flex flex-col flex-1 -mt-4 relative text-[#E2E8F0]" style={{ background: "#04070b", minHeight: "calc(100vh - 120px)" }}>
+    <>
+    {openSky ? (
+      <>
+        <ConstellationSky data={effectiveData} playEnabled={playEnabled} />
+        <h2 id="all-lessons" className="os-label os-hairline-top mt-12 mb-4 pt-4">All lessons</h2>
+      </>
+    ) : null}
+    <div data-os-graph={openSky ? "" : undefined} className="flex flex-col flex-1 -mt-4 relative text-[#E2E8F0]" style={{ background: "#04070b", minHeight: openSky ? "640px" : "calc(100vh - 120px)" }}>
       {/* Stage — flex child for real dimensions */}
       <section ref={stageRef} className="flex-1 relative overflow-hidden min-h-[500px] cursor-grab active:cursor-grabbing select-none"
         onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} onWheel={onWheel}
@@ -770,5 +780,6 @@ export default function ConstellationPage() {
         <style jsx>{`@keyframes slide-in { from { transform: translateX(24px); opacity: 0; } to { transform: translateX(0); opacity: 1; } } .animate-slide-in { animation: slide-in 260ms ease-out both; }`}</style>
       </section>
     </div>
+    </>
   );
 }

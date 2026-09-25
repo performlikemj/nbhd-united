@@ -7,6 +7,7 @@ import { ConfirmDialog } from "@/components/journal/confirm-dialog";
 import { IconMore } from "@/components/icons/constellation";
 import { SectionCard } from "@/components/section-card";
 import { Skeleton, SectionCardSkeleton } from "@/components/skeleton";
+import { NeighborhoodOpenSky } from "@/components/open-sky/neighborhood";
 import { StatusPill } from "@/components/status-pill";
 import { emitToast } from "@/components/toast";
 import { fetchCircleSharePreview, fetchSharePreview } from "@/lib/api";
@@ -47,6 +48,7 @@ import {
   useSendMessageMutation,
   useSendWaveMutation,
   useShareLessonMutation,
+  useTenantQuery,
   useThreadMessagesQuery,
   useThreadsQuery,
   useUnfriendMutation,
@@ -93,6 +95,8 @@ export default function FriendsPage() {
   const blockMutation = useBlockWaveMutation();
   const unfriendMutation = useUnfriendMutation();
   const openThreadMutation = useOpenThreadMutation();
+  const { data: tenant } = useTenantQuery();
+  const openSky = !!tenant?.web_redesign;
 
   const [confirmTarget, setConfirmTarget] = useState<Neighbor | null>(null);
   const [reviewingShare, setReviewingShare] = useState<PendingShare | null>(null);
@@ -145,7 +149,7 @@ export default function FriendsPage() {
   return (
     <div className="mx-auto pb-24">
       {/* ── Hero ── */}
-      <header className="mb-8 sm:mb-10">
+      <header data-os-legacy-title className="mb-8 sm:mb-10">
         <span className="mb-2 block text-[10px] font-bold uppercase tracking-[0.24em] text-signal sm:text-xs">
           Neighborhood
         </span>
@@ -159,6 +163,22 @@ export default function FriendsPage() {
           Nothing here is public &mdash; only people you&rsquo;ve both agreed to know each other.
         </p>
       </header>
+
+      {openSky ? (
+        <NeighborhoodOpenSky
+          onMessage={(n) =>
+            void handleMessageNeighbor({
+              friendship_id: n.friendship_id,
+              display_name: n.display_name,
+              handle: n.handle,
+              avatar_hue: n.avatar_hue,
+              status: "accepted",
+              since: n.friends_since,
+            })
+          }
+          onOpenCircle={setOpenCircleId}
+        />
+      ) : null}
 
       <div className="space-y-6">
         {isLoading ? (
@@ -197,7 +217,7 @@ export default function FriendsPage() {
 
             <MissionActionsCard delay={hasApprovals ? 80 : 0} />
 
-            {hasRequests && (
+            {hasRequests && !openSky && (
               <SectionCard
                 title="Requests"
                 subtitle="Waves waiting on a reply."
@@ -280,7 +300,7 @@ export default function FriendsPage() {
             <SectionCard
               title="Messages"
               subtitle={
-                threads.length > 0
+                threads.length > 0 && !openSky
                   ? `${threads.length} ${threads.length === 1 ? "conversation" : "conversations"}`
                   : undefined
               }
@@ -305,8 +325,8 @@ export default function FriendsPage() {
             </SectionCard>
 
             <SectionCard
-              title="Neighbors"
-              subtitle={`${neighbors.length} ${neighbors.length === 1 ? "neighbor" : "neighbors"}`}
+              title={openSky ? "Manage neighbors" : "Neighbors"}
+              subtitle={openSky ? undefined : `${neighbors.length} ${neighbors.length === 1 ? "neighbor" : "neighbors"}`}
               delay={(hasApprovals ? 80 : 0) + (hasRequests ? 80 : 0) + 80}
             >
               {neighbors.length === 0 ? (
@@ -337,11 +357,21 @@ export default function FriendsPage() {
               onCreateMission={() => setCreatingMission(true)}
             />
 
-            <CirclesCard
-              delay={(hasApprovals ? 80 : 0) + (hasRequests ? 80 : 0) + 160}
-              onOpenCircle={setOpenCircleId}
-              onCreateCircle={() => setCreatingCircle(true)}
-            />
+            {openSky ? (
+              <button
+                type="button"
+                onClick={() => setCreatingCircle(true)}
+                className="os-focus min-h-[40px] rounded-full border border-os-ring px-4 text-[0.8125rem] text-os-ink transition hover:border-os-accent-line hover:text-os-accent"
+              >
+                Start a circle
+              </button>
+            ) : (
+              <CirclesCard
+                delay={(hasApprovals ? 80 : 0) + (hasRequests ? 80 : 0) + 160}
+                onOpenCircle={setOpenCircleId}
+                onCreateCircle={() => setCreatingCircle(true)}
+              />
+            )}
             <JoinCircleForm />
 
             <ShareLessonCard />

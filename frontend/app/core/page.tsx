@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { BreathingOrb } from "@/components/core/breathing-orb";
+import { GhostCircleButton } from "@/components/open-sky/primitives";
+import { SkyCanvas } from "@/components/open-sky/sky-canvas";
+import { EclipseRenderer } from "@/lib/sky-art/eclipse";
 import { CoreAudioPlayer } from "@/components/core/audio-player";
 import { CoreContextPanel } from "@/components/core/context-panel";
 import { CoreStats } from "@/components/core/core-stats";
@@ -19,7 +22,7 @@ import {
   type Meditation,
 } from "@/lib/core";
 import { composeMeditation, fetchMeditation, fetchMeditations } from "@/lib/api";
-import { useMeQuery } from "@/lib/queries";
+import { useMeQuery, useTenantQuery } from "@/lib/queries";
 import type { MeditationSession } from "@/lib/types";
 
 type Phase = "loading" | "invite" | "composing" | "ready" | "failed";
@@ -59,6 +62,32 @@ export default function CorePage() {
   // cached app-wide (app shell), so this is resolved on first render; the Intl
   // fallback only bites before the cache warms (i.e. the old browser-tz behavior).
   const { data: me } = useMeQuery();
+  // Open Sky (web redesign): the orb becomes the eclipse → sun art, driven by
+  // real playback progress; the orb's action moves to a ghost circle button.
+  const { data: tenant } = useTenantQuery();
+  const openSky = !!tenant?.web_redesign;
+  const [progress, setProgress] = useState(() => {
+    // DEV-ONLY fixture seam (`?coreProgress=0.5`) for screenshots; inlined away in production.
+    if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_WEB_FIXTURES === "1" && typeof window !== "undefined") {
+      const v = Number(new URLSearchParams(window.location.search).get("coreProgress"));
+      return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
+    }
+    return 0;
+  });
+  const beganAtRef = useRef<number | null>(null);
+  const [eclipse] = useState(() => new EclipseRenderer());
+  const progressRef = useRef(0);
+  useEffect(() => {
+    progressRef.current = progress;
+  }, [progress]);
+  const eclipsePainter = useMemo(
+    () => ({
+      draw: (ctx: CanvasRenderingContext2D, w: number, h: number, dpr: number, t: number) => {
+        eclipse.draw(ctx, w, h, dpr, t, { progress: progressRef.current, beganAt: beganAtRef.current });
+      },
+    }),
+    [eclipse],
+  );
   const tz = me?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
   // Sessions are stored raw and projected through the tz here, so a late-arriving
@@ -218,6 +247,9 @@ export default function CorePage() {
     // Inert until the initial load resolves and while a compose is in flight —
     // so a tap can never fire a stray (billable) compose before we know state.
     if (phase === "loading" || phase === "composing") return;
+    if (phase === "ready" && today && !(playing && current?.id === today.id)) {
+      beganAtRef.current = performance.now() / 1000;
+    }
     if (phase === "invite" || phase === "failed") void compose();
     else if (phase === "ready" && today) play(today);
   };
@@ -243,27 +275,83 @@ export default function CorePage() {
         <p className="mt-4 max-w-[560px] text-sm leading-relaxed text-ink-muted">
           Your assistant composes a guided meditation drawn from your journal, your goals, your recent
           activity, and anything you share below &mdash; the words, the pacing, where the silences fall
-          &mdash; then voices it aloud. Nothing runs, and nothing&rsquo;s billed, until you press the orb.
+          &mdash; then voices it aloud. Nothing runs, and nothing&rsquo;s billed, until you press {openSky ? "Begin" : "the orb"}.
         </p>
       </header>
 
       {/* ── Today / compose ── */}
-      <section className="relative mb-6 overflow-hidden rounded-panel border border-border bg-surface/50 p-8 shadow-panel sm:p-12">
-        <div
-          className="pointer-events-none absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(ellipse 60% 50% at 50% 0%, rgba(78,205,196,0.10), transparent 70%), radial-gradient(ellipse 50% 40% at 80% 100%, rgba(124,107,240,0.08), transparent 70%)",
-          }}
-        />
+      <section
+        className={
+          openSky
+            ? "relative mb-6"
+            : "relative mb-6 overflow-hidden rounded-panel border border-border bg-surface/50 p-8 shadow-panel sm:p-12"
+        }
+      >
+        {openSky ? null : (
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background:
+                "radial-gradient(ellipse 60% 50% at 50% 0%, rgba(78,205,196,0.10), transparent 70%), radial-gradient(ellipse 50% 40% at 80% 100%, rgba(124,107,240,0.08), transparent 70%)",
+            }}
+          />
+        )}
         <div className="relative flex flex-col items-center text-center">
-          <div className={phase === "loading" ? "opacity-40 transition-opacity duration-500" : "transition-opacity duration-500"}>
-            <BreathingOrb
-              compose={phase === "invite" || phase === "failed"}
-              playing={playing && todayActive}
-              onClick={onOrb}
-            />
-          </div>
+          {openSky ? (
+            <>
+              <SkyCanvas
+                painter={eclipsePainter}
+                label={
+                  progress >= 0.999
+                    ? "The full sun, the session is complete"
+                    : progress > 0
+                      ? "The moon sliding away from the sun as the session plays"
+                      : "The sun in eclipse, its corona breathing"
+                }
+                className={
+                  phase === "loading"
+                    ? "os-art-fade h-[380px] w-full max-w-[560px] opacity-40 transition-opacity duration-500 sm:h-[440px]"
+                    : "os-art-fade h-[380px] w-full max-w-[560px] transition-opacity duration-500 sm:h-[440px]"
+                }
+              />
+              <div className="mt-2">
+                <GhostCircleButton
+                  size={60}
+                  onClick={onOrb}
+                  disabled={phase === "loading" || phase === "composing"}
+                  label={
+                    phase === "invite" || phase === "failed"
+                      ? "Compose"
+                      : playing && todayActive
+                        ? "Pause"
+                        : progress > 0 && todayActive
+                          ? "Resume"
+                          : "Begin"
+                  }
+                  icon={
+                    phase === "invite" || phase === "failed" ? (
+                      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+                    ) : playing && todayActive ? (
+                      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor"><path d="M7 5h3v14H7zM14 5h3v14h-3z" /></svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                    )
+                  }
+                />
+              </div>
+              {progress >= 0.999 && todayActive ? (
+                <p className="os-serif mt-6 text-[1.75rem] text-white">Welcome back.</p>
+              ) : null}
+            </>
+          ) : (
+            <div className={phase === "loading" ? "opacity-40 transition-opacity duration-500" : "transition-opacity duration-500"}>
+              <BreathingOrb
+                compose={phase === "invite" || phase === "failed"}
+                playing={playing && todayActive}
+                onClick={onOrb}
+              />
+            </div>
+          )}
 
           {phase === "loading" && (
             <p className="mt-8 text-[10px] uppercase tracking-[0.22em] text-ink-faint" role="status">
@@ -276,7 +364,7 @@ export default function CorePage() {
               <p className="mt-8 text-[10px] uppercase tracking-[0.22em] text-ink-faint">Today · on demand</p>
               <h2 className="mt-2 font-display text-2xl italic text-ink sm:text-3xl">Compose today&rsquo;s sit</h2>
               <p className="mx-auto mt-4 max-w-[430px] text-sm leading-relaxed text-ink-muted">
-                Press the orb and your assistant writes a fresh ten minutes from your journal, goals, and
+                {openSky ? "Press Compose" : "Press the orb"} and your assistant writes a fresh ten minutes from your journal, goals, and
                 recent days, then reads it to you &mdash; pauses and all.
               </p>
               <p className="mt-5 font-mono text-[11px] text-ink-faint">
@@ -331,7 +419,7 @@ export default function CorePage() {
               <p className="mx-auto mt-4 max-w-[430px] text-sm leading-relaxed text-ink-muted">
                 {error ?? "Something went wrong composing your meditation."}
               </p>
-              <p className="mt-5 font-mono text-[11px] text-ink-faint">Press the orb to retry</p>
+              <p className="mt-5 font-mono text-[11px] text-ink-faint">{openSky ? "Press Compose to retry" : "Press the orb to retry"}</p>
             </>
           )}
         </div>
@@ -398,6 +486,7 @@ export default function CorePage() {
         <CoreAudioPlayer
           meditation={current}
           playing={playing}
+          onProgress={current.id === today?.id ? setProgress : undefined}
           onTogglePlay={() => setPlaying((p) => !p)}
           onClose={() => {
             setCurrent(null);
