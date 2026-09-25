@@ -333,7 +333,7 @@ class MigrationStepTests(TestCase):
             migration.image_step(self.tenant, rec)
         self.assertEqual(calls, ["image", "health"])
         update.assert_called_once_with(
-            self.tenant.container_id, "image", revision_suffix="m94-fresh", operation_timeout=300
+            self.tenant.container_id, "image", revision_suffix="m94-fresh", operation_timeout=300, retrofit_storage=True
         )
 
     def test_version_and_tag_written_together(self):
@@ -420,14 +420,17 @@ class MigrationStepTests(TestCase):
 
 class RuntimeGuardTests(SimpleTestCase):
     def test_refuse_cross_family_and_unknown_target(self):
-        tenant = SimpleNamespace(openclaw_version="2026.5.28", openclaw_migration={})
+        tenant = SimpleNamespace(
+            openclaw_version="2026.5.28", container_image_tag="2026.5.28-abc1234", openclaw_migration={}
+        )
         self.assertFalse(image_only_update_allowed(tenant, TAG))
         self.assertFalse(image_only_update_allowed(tenant, "abcdef0"))
         self.assertTrue(image_only_update_allowed(tenant, "2026.5.28-abcdef0"))
         tenant.openclaw_version = migration.VERSION
         self.assertFalse(image_only_update_allowed(tenant, "2026.5.28-abcdef0"))
+        tenant.container_image_tag = TAG
         self.assertTrue(image_only_update_allowed(tenant, TAG))
-        tenant.openclaw_migration = {"status": "FAILED"}
+        tenant.container_image_tag = "abcdef0"
         self.assertFalse(image_only_update_allowed(tenant, TAG))
 
     def test_registry_digest_validation(self):
@@ -469,20 +472,6 @@ class LifecycleAndDispatchTests(TestCase):
         self.assertIn("migrate_tenant_openclaw", response.content.decode())
         update.assert_not_called()
 
-    def test_same_tag_task_resumes_explicit_migration(self):
-        from apps.orchestrator.tasks import apply_single_tenant_image_task
-
-        self.tenant.container_image_tag = TAG
-        self.tenant.openclaw_migration = record() | {"status": "FAILED"}
-        self.tenant.save()
-        with (
-            patch.object(migration, "migrate_tenant") as migrate,
-            patch("apps.orchestrator.azure_client.update_container_image") as update,
-        ):
-            apply_single_tenant_image_task(str(self.tenant.pk), TAG)
-        migrate.assert_called_once_with(self.tenant.id, TAG)
-        update.assert_not_called()
-
     @override_settings(OPENCLAW_IMAGE_TAG=TAG, OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS="")
     def test_legacy_wake_retains_main_empty_allowlist_behavior(self):
         from apps.orchestrator.hibernation import wake_hibernated_tenant
@@ -504,132 +493,3 @@ class LifecycleAndDispatchTests(TestCase):
     def modern(self):
         self.tenant.openclaw_version = migration.VERSION
         self.tenant.save()
-
-    def test_94_schedule_capture_uses_operator_not_http(self):
-        from apps.orchestrator.hibernation import _capture_tenant_cron_schedules
-
-        self.modern()
-        jobs = [job(), job("disabled", enabled=False)]
-        with (
-            patch("apps.orchestrator.runtime_operator.list_crons", return_value=jobs),
-            patch("apps.cron.gateway_client.invoke_gateway_tool") as http,
-        ):
-            captured = _capture_tenant_cron_schedules(self.tenant)
-        self.assertEqual(captured, [jobs[0]])
-        http.assert_not_called()
-
-    def test_94_failed_schedule_capture_does_not_hibernate(self):
-        from apps.orchestrator.hibernation import hibernate_idle_tenant
-
-        self.modern()
-        with (
-            patch("apps.orchestrator.runtime_operator.list_crons", side_effect=RuntimeError("offline")),
-            patch("apps.orchestrator.azure_client.hibernate_container_app") as hibernate,
-        ):
-            self.assertFalse(hibernate_idle_tenant(self.tenant))
-        hibernate.assert_not_called()
-
-    def test_suspend_resume_preserves_previously_disabled_jobs_and_pauses_writer(self):
-        from apps.cron.suspension import resume_tenant_crons, suspend_tenant_crons
-
-        self.modern()
-        CronJob.objects.create(tenant=self.tenant, name="reminder", data=job())
-        enabled = job("operator", declarationKey="")
-        disabled = job("disabled", enabled=False, declarationKey="")
-        after = [enabled | {"enabled": False}, disabled]
-        with (
-            patch("apps.orchestrator.runtime_operator.capture_cron_declarations", return_value=[enabled, disabled]),
-            patch("apps.cron.share_cron_sync.write_tenant_crons_file") as write,
-            patch(
-                "apps.orchestrator.runtime_operator.list_crons",
-                side_effect=[[enabled, disabled], after, after],
-            ),
-            patch("apps.orchestrator.runtime_operator.set_cron_enabled") as toggle,
-            patch("apps.cron.suspension.invoke_gateway_tool") as http,
-            patch("time.sleep"),
-        ):
-            suspend_tenant_crons(self.tenant)
-        toggle.assert_called_once_with(self.tenant, "operator-id", False)
-        self.assertEqual(_desired_jobs(self.tenant), [])
-        http.assert_not_called()
-        with (
-            patch("apps.cron.share_cron_sync.write_tenant_crons_file"),
-            patch("apps.orchestrator.runtime_operator.restore_crons", return_value={"verified": True}) as restore,
-            patch(
-                "apps.orchestrator.runtime_operator.inspect_signed_crons",
-                return_value={
-                    "matches": [
-                        {"match": True, "id": "one", "key": f"nbhd:{CronJob.objects.get(tenant=self.tenant).pk}"}
-                    ],
-                    "extras": [],
-                    "expected": 1,
-                },
-            ),
-            patch("apps.orchestrator.runtime_operator.list_crons", return_value=after),
-            patch("apps.orchestrator.runtime_operator.set_cron_enabled") as toggle,
-            patch("apps.cron.suspension.invoke_gateway_tool") as http,
-        ):
-            resume_tenant_crons(self.tenant)
-        restore.assert_called_once_with(self.tenant, [enabled, disabled])
-        self.assertEqual(len(_desired_jobs(self.tenant)), 1)
-        http.assert_not_called()
-
-    def test_suspend_failure_keeps_durable_pause_for_retry(self):
-        from apps.cron.suspension import suspend_tenant_crons
-
-        self.modern()
-        with (
-            patch("apps.orchestrator.runtime_operator.capture_cron_declarations", return_value=[job()]),
-            patch("apps.orchestrator.runtime_operator.list_crons", return_value=[job()]),
-            patch("apps.cron.share_cron_sync.write_tenant_crons_file", side_effect=RuntimeError("share")),
-            self.assertRaises(RuntimeError),
-        ):
-            suspend_tenant_crons(self.tenant)
-        self.tenant.refresh_from_db()
-        self.assertTrue(self.tenant.cron_suspend_state["active"])
-
-    def test_94_delayed_restore_never_uses_http(self):
-        from apps.orchestrator.tasks import restore_crons_after_image_update_task
-
-        self.modern()
-        with (
-            patch("apps.cron.share_cron_sync.write_tenant_crons_file") as write,
-            patch("apps.cron.gateway_client.invoke_gateway_tool") as http,
-        ):
-            restore_crons_after_image_update_task(str(self.tenant.pk))
-        write.assert_called_once()
-        http.assert_not_called()
-
-    def test_suspend_waits_for_signed_removal_instead_of_disabling_managed_job(self):
-        from apps.cron.suspension import suspend_tenant_crons
-
-        self.modern()
-        managed = job(declarationKey="nbhd:1")
-        with (
-            patch("apps.orchestrator.runtime_operator.capture_cron_declarations", return_value=[managed]),
-            patch("apps.orchestrator.runtime_operator.list_crons", side_effect=[[managed], [], []]),
-            patch("apps.cron.share_cron_sync.write_tenant_crons_file"),
-            patch("apps.orchestrator.runtime_operator.set_cron_enabled") as toggle,
-            patch("time.sleep") as sleep,
-        ):
-            suspend_tenant_crons(self.tenant)
-        toggle.assert_not_called()
-        self.assertIn((25,), [call.args for call in sleep.call_args_list])
-
-    def test_94_idle_and_imminent_guards_use_operator_metadata(self):
-        from apps.orchestrator.hibernation import _cron_active_or_imminent, _next_cron_within_window
-
-        self.modern()
-        upcoming = int((timezone.now() + timedelta(minutes=1)).timestamp() * 1000)
-        jobs = [job(state={"nextRunAtMs": upcoming})]
-        with (
-            patch("apps.orchestrator.runtime_operator.list_crons", return_value=jobs),
-            patch("apps.cron.gateway_client.invoke_gateway_tool") as http,
-        ):
-            self.assertEqual(_next_cron_within_window(self.tenant), upcoming)
-            self.assertEqual(_cron_active_or_imminent(self.tenant), "cron_imminent")
-            jobs[0]["state"]["runningAtMs"] = upcoming - 60000
-            self.assertEqual(_cron_active_or_imminent(self.tenant), "cron_in_flight")
-        http.assert_not_called()
-        with patch("apps.orchestrator.runtime_operator.list_crons", side_effect=RuntimeError("unreachable")):
-            self.assertEqual(_cron_active_or_imminent(self.tenant), "cron_state_unknown")

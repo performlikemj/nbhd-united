@@ -278,18 +278,6 @@ def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
         logger.info("Skipping image update for hibernated tenant %s", tenant_id[:8])
         return
 
-    from apps.orchestrator.runtime_guard import MIGRATION_REQUIRED, image_only_update_allowed
-
-    # An explicit migration owns its resume checkpoints, even at the same tag.
-    if tenant.openclaw_migration and tenant.openclaw_migration.get("status") != "PASS":
-        from apps.orchestrator.openclaw_migration import migrate_tenant
-
-        migrate_tenant(tenant.id, desired_tag)
-        return
-    if not image_only_update_allowed(tenant, desired_tag):
-        logger.warning("%s tenant=%s", MIGRATION_REQUIRED, tenant_id)
-        return
-
     # Idempotency: a duplicate QStash delivery (signature retry, re-enqueue)
     # must not re-push an image the tenant is already running. Re-bumping the
     # same tag derives the same Azure revision suffix and can wedge a
@@ -307,16 +295,10 @@ def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
     # Phase 1: Snapshot current cron state before the restart wipes SQLite.
     try:
         from apps.cron.gateway_client import invoke_gateway_tool
-        from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
         from apps.orchestrator.services import _extract_cron_jobs
 
-        if tenant_uses_file_cron_sync(tenant):
-            from apps.orchestrator.runtime_operator import list_crons
-
-            jobs = list_crons(tenant)
-        else:
-            result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-            jobs = _extract_cron_jobs(result)
+        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+        jobs = _extract_cron_jobs(result)
         if jobs is not None:
             Tenant.objects.filter(id=tenant_id).update(
                 cron_jobs_snapshot={
@@ -619,12 +601,6 @@ def restore_crons_after_image_update_task(tenant_id: str) -> None:
 
     tenant = Tenant.objects.filter(id=tenant_id).select_related("user").first()
     if not tenant or not tenant.container_id:
-        return
-
-    from apps.cron.share_cron_sync import tenant_uses_file_cron_sync, write_tenant_crons_file
-
-    if tenant_uses_file_cron_sync(tenant):
-        write_tenant_crons_file(tenant)
         return
 
     snapshot = getattr(tenant, "cron_jobs_snapshot", None)

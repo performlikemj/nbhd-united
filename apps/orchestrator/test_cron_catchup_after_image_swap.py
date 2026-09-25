@@ -150,7 +150,6 @@ class RestoreFiresMissedCronsTests(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Catchup Test", telegram_chat_id=864213579)
-        self.tenant.openclaw_version = "2026.5.28"
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-catchup-test"
         self.tenant.container_fqdn = "oc-catchup-test.internal"

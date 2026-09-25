@@ -31,7 +31,7 @@ from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
 _TARGET_TAG = "2026.9.4-abc1234"
-_OLDER_TAG = "old-sha"
+_OLDER_TAG = "2026.9.4-1234abc"
 _REGISTRY = "nbhdunited.azurecr.io"
 
 

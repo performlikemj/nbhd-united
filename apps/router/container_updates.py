@@ -76,10 +76,6 @@ def update_container(tenant: Tenant) -> bool:
         return False
 
     latest_tag = get_latest_image_tag()
-    from apps.orchestrator.runtime_guard import image_only_update_allowed
-
-    if not image_only_update_allowed(tenant, latest_tag):
-        return False
     image = ACR_IMAGE_TEMPLATE.format(tag=latest_tag)
 
     try:

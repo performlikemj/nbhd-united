@@ -695,11 +695,6 @@ class Tenant(models.Model):
         blank=True,
         help_text="Private OpenClaw migration checkpoints, source snapshot and verification evidence.",
     )
-    cron_suspend_state = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text="Signed cron lifecycle pause and operator job IDs to resume.",
-    )
 
     # Per-tenant flag for the Postgres-canonical cron rollout. The dashboard,
     # runtime endpoints, and provisioning paths read/write the apps.cron.CronJob

@@ -3,9 +3,7 @@
 import json
 from pathlib import Path
 
-from django.conf import settings
-
-FIELDS = json.loads((Path(settings.BASE_DIR) / "runtime/openclaw/cron-declaration-fields.json").read_text())
+FIELDS = json.loads(Path(__file__).with_name("cron-declaration-fields.json").read_text())
 
 
 def supported_declaration(job):

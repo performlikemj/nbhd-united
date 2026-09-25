@@ -20,7 +20,6 @@ class CronSuspensionTestBase(TestCase):
         self.tenant = Tenant.objects.create(
             user=self.user,
             status=Tenant.Status.ACTIVE,
-            openclaw_version="2026.5.28",
             container_id="oc-test-container",
             container_fqdn="oc-test.internal",
         )

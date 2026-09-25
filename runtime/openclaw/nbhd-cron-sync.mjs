@@ -25,7 +25,6 @@
 //      and agent-created crons are never touched.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -35,14 +34,6 @@ const execFileP = promisify(execFile);
 
 const ALLOWED_PAYLOAD_KINDS = new Set(["agentTurn", "systemEvent"]);
 const DECL_PREFIX = "nbhd:";
-const FIELDS = JSON.parse(readFileSync(new URL('./cron-declaration-fields.json', import.meta.url), 'utf8'));
-export function supportedDeclaration(job) {
-  if (!job || Object.keys(job).some(k=>!FIELDS.job.includes(k))) return false;
-  for (const part of ['payload','delivery','schedule','pacing']) {
-    if (Object.keys(job[part]||{}).some(k=>!FIELDS[part].includes(k))) return false;
-  }
-  return true;
-}
 // Match a command/script-bearing KEY (followed by a colon), so a plain reminder
 // message whose text merely contains the word "command" is not a false positive.
 const DENY_FIELD_RE = /"(command|commandArgv|command_argv|commandInput|commandCwd|commandEnv|script)"\s*:/i;
@@ -118,13 +109,12 @@ export function atFireMs(schedule) {
 // Build a SAFE `openclaw cron add` argv from extracted job fields. Returns null
 // for anything unmappable. Only ever emits --message / --system-event.
 export function buildAddArgs(job) {
-  if (!isSafeJob(job) || !supportedDeclaration(job)) return null;
+  if (!isSafeJob(job)) return null;
   const decl = String(job.declarationKey || "");
   if (!decl.startsWith(DECL_PREFIX)) return null; // Django must stamp the key
-  const name = String(job.name || decl);
+  const name = String(job.displayName || job.name || decl);
   const args = ["cron", "add", name, "--declaration-key", decl];
 
-  if (job.displayName != null) args.push('--display-name', String(job.displayName));
   const s = job.schedule || {};
   if (s.kind === "every") {
     const d = msToDuration(s.everyMs);
@@ -133,12 +123,6 @@ export function buildAddArgs(job) {
   } else if (s.kind === "cron" && s.expr) {
     args.push("--cron", String(s.expr));
     if (s.tz) args.push("--tz", String(s.tz));
-    if (s.staggerMs === 0) args.push('--exact');
-    else if (s.staggerMs != null) {
-      const stagger = msToDuration(s.staggerMs);
-      if (!stagger) return null;
-      args.push('--stagger', stagger);
-    }
   } else if (s.kind === "at") {
     let at = s.at;
     if (at == null && Number.isFinite(s.atMs)) at = new Date(Number(s.atMs)).toISOString();
@@ -157,7 +141,6 @@ export function buildAddArgs(job) {
     args.push("--message", String(msg));
     // Individual flags from 2026.9.4 registerCronMutationOptions. --json is
     // output-only. These are agentTurn parameters, never new payload kinds.
-    if (p.thinking != null) args.push("--thinking", String(p.thinking));
     if (p.model != null) args.push("--model", String(p.model));
     if (p.fallbacks != null) args.push("--fallbacks", cliList(p.fallbacks));
     if (p.timeoutSeconds != null) args.push("--timeout-seconds", String(p.timeoutSeconds));
@@ -172,9 +155,7 @@ export function buildAddArgs(job) {
     // cron ADD has no --no-light-context (EDIT only); false becomes absent.
     // Likewise --tools "" cannot express an explicit empty allowlist in 9.4.
   } else if (p.kind === "systemEvent") {
-    if (Object.keys(p).some(k=>!['kind','text','message','event','toolsAllow','toolsAllowIsDefault'].includes(k))) return null;
     args.push("--system-event", String(p.text ?? p.message ?? p.event ?? "heartbeat"));
-    if (p.toolsAllow != null) args.push('--tools', cliList(p.toolsAllow));
   } else {
     return null;
   }
@@ -183,24 +164,11 @@ export function buildAddArgs(job) {
   // (delivery.mode:"none"), so disable the runner's fallback delivery. Only an
   // explicit announce delivery re-enables it.
   const deliv = job.delivery || {};
-  if (!['none','announce','webhook'].includes(deliv.mode || 'none')) return null;
-  if (deliv.mode === 'webhook') {
-    if (!/^https?:\/\//.test(deliv.to||'') || ['channel','accountId','threadId'].some(k=>deliv[k]!=null)) return null;
-    args.push('--webhook', deliv.to);
-  } else if (p.kind === 'agentTurn') {
-    args.push(deliv.mode === 'announce' ? '--announce' : '--no-deliver');
-    if (deliv.channel && deliv.channel !== 'last') args.push('--channel', String(deliv.channel));
-    for (const [field,flag] of [['to','--to'],['accountId','--account'],['threadId','--thread-id']]) {
-      if (deliv[field] != null) args.push(flag, String(deliv[field]));
-    }
-  } else if (deliv.mode === 'announce') return null;
-  if (deliv.bestEffort === true) args.push('--best-effort-deliver');
-  args.push('--session', job.sessionTarget || (p.kind === 'agentTurn' ? 'isolated' : 'main'));
-  if (job.sessionKey != null) args.push('--session-key', String(job.sessionKey));
-  const deleteAfter = job.deleteAfterRun ?? (s.kind === 'at');
-  args.push(deleteAfter ? '--delete-after-run' : '--keep-after-run');
-  for (const field of ['min','max']) {
-    if (job.pacing?.[field] != null) args.push('--pacing-'+field, String(job.pacing[field]));
+  if (deliv.mode === "announce") {
+    args.push("--announce");
+    if (deliv.channel && deliv.channel !== "last") args.push("--channel", String(deliv.channel));
+  } else {
+    args.push("--no-deliver");
   }
 
   if (job.wakeMode === "now" || job.wakeMode === "next-heartbeat") args.push("--wake", job.wakeMode);
@@ -217,12 +185,9 @@ function cliList(value) {
 // controls and the enforcement contract in description. Runtime timestamps and
 // schedule anchors are intentionally ignored by the argv projection.
 export function sameCron(current, desired) {
-  if (desired?.schedule?.anchorMs != null && current?.schedule?.anchorMs !== desired.schedule.anchorMs) return false;
   const normalize = (job) => {
     if (!job) return null;
     const copy = structuredClone(job);
-    if (desired?.schedule?.anchorMs == null && copy.schedule) delete copy.schedule.anchorMs;
-    if (desired?.schedule?.staggerMs == null && copy.schedule) delete copy.schedule.staggerMs;
     // Leave the container's wake mode alone unless the declaration pins it.
     if (desired?.wakeMode == null) delete copy.wakeMode;
     else copy.wakeMode ||= "now";
@@ -257,25 +222,8 @@ async function oc(args) {
   return stdout;
 }
 
-// The cron shorthand CLI cannot express interval phase. Create disabled, then
-// use the supported operator RPC to set the exact schedule before enabling.
-export async function applyCron(job, run, args = buildAddArgs(job)) {
-  if (!args) throw Error('unsupported declaration');
-  const anchor = job.schedule?.kind === 'every' ? job.schedule.anchorMs : null;
-  if (anchor == null) return run(args);
-  if (!Number.isSafeInteger(anchor) || anchor < 0) throw Error('invalid anchor');
-  await run(args.includes('--disabled') ? args : [...args, '--disabled']);
-  const doc = JSON.parse(await run(['cron', 'list', '--all', '--json']));
-  const rows = (Array.isArray(doc) ? doc : doc.jobs).filter(j => j.declarationKey === job.declarationKey);
-  if (rows.length !== 1) throw Error('ambiguous interval');
-  return run(['gateway', 'call', 'cron.update', '--params', JSON.stringify({
-    id: rows[0].id || rows[0].jobId,
-    patch: {schedule: job.schedule, enabled: job.enabled !== false},
-  }), '--json']);
-}
-
 async function listNbhdDeclarations(run) {
-  const out = await run(["cron", "list", "--all", "--json"]);
+  const out = await run(["cron", "list", "--json"]);
   const doc = JSON.parse(out);
   const rows = Array.isArray(doc) ? doc : (doc && Array.isArray(doc.jobs) ? doc.jobs : []);
   return rows
@@ -311,9 +259,9 @@ export async function reconcileOnce({ run = oc } = {}) {
     const args = buildAddArgs(job);
     if (!args) { warn("skip unmappable job:", job && job.name); skipped++; continue; }
     desiredKeys.add(String(job.declarationKey));
-    if (currentByKey.get(job.declarationKey)?.enabled !== false && sameCron(currentByKey.get(job.declarationKey), job)) continue;
+    if (sameCron(currentByKey.get(job.declarationKey), job)) continue;
     try {
-      await applyCron(job, run, args);
+      await run(args);
       applied++;
     } catch (e) {
       warn("cron add failed for", job && job.name, "-", (e && e.message ? e.message : e));

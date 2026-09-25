@@ -50,6 +50,7 @@ class BumpOpenclawVersionTest(TestCase):
     @patch("apps.orchestrator.services.upload_config_to_file_share")
     def test_bump_all_skips_already_bumped(self, mock_upload, mock_download, mock_config, mock_image):
         self.tenant.openclaw_version = _BUMP_TARGET
+        self.tenant.container_image_tag = _BUMP_IMAGE
         self.tenant.save()
 
         call_command(

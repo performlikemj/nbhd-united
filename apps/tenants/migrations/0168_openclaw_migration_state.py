@@ -11,13 +11,6 @@ class Migration(migrations.Migration):
     operations = [
         migrations.AddField(
             model_name="tenant",
-            name="cron_suspend_state",
-            field=models.JSONField(
-                blank=True, default=dict, help_text="Signed cron lifecycle pause and operator job IDs to resume."
-            ),
-        ),
-        migrations.AddField(
-            model_name="tenant",
             name="openclaw_migration",
             field=models.JSONField(
                 blank=True,

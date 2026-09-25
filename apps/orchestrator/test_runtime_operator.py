@@ -88,7 +88,11 @@ class OperatorCronAdapterTests(SimpleTestCase):
         with patch.object(operator, "run_node", side_effect=lambda tenant, body: body):
             body = operator.inspect_signed_crons(Mock(), cleanup=cleanup)
         module = Path("runtime/openclaw/nbhd-cron-sync.mjs").resolve().as_uri()
-        body = body.replace("/opt/nbhd/nbhd-cron-sync.mjs", module)
+        comparator = Path("apps/orchestrator/migration_cron_compare.mjs").read_text().replace("export ", "")
+        body = body.replace(
+            "const {readSignedJobs,sameCron,buildAddArgs,atFireMs}=await import('/opt/nbhd/nbhd-cron-sync.mjs');",
+            "const {readSignedJobs}=await import(" + json.dumps(module) + ");" + comparator,
+        )
         signed = json.dumps(desired)
         key = "offline-test-key"
         with tempfile.TemporaryDirectory() as directory:
@@ -200,7 +204,10 @@ class ImageStorageRevisionTests(SimpleTestCase):
             patch("apps.orchestrator.azure_client.get_container_client", return_value=client),
         ):
             update_container_image(
-                "oc-test", "test.azurecr.io/nbhd-openclaw:2026.9.4-abcdef0", revision_suffix="m94-test"
+                "oc-test",
+                "test.azurecr.io/nbhd-openclaw:2026.9.4-abcdef0",
+                revision_suffix="m94-test",
+                retrofit_storage=True,
             )
         client.container_apps.begin_create_or_update.assert_called_once()
         self.assertEqual(app.template.revision_suffix, "m94-test")

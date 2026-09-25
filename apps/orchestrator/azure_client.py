@@ -2174,7 +2174,12 @@ def _new_image_revision_suffix(image: str) -> str:
 
 
 def update_container_image(
-    container_name: str, image: str, *, revision_suffix: str | None = None, operation_timeout: int | None = None
+    container_name: str,
+    image: str,
+    *,
+    revision_suffix: str | None = None,
+    operation_timeout: int | None = None,
+    retrofit_storage: bool = False,
 ) -> None:
     """Update the container image of an existing Container App.
 
@@ -2200,11 +2205,8 @@ def update_container_image(
     _ensure_plugin_runtime_deps_in_template(app)
     _ensure_index_cache_in_template(app)
     _ensure_gateway_readiness_probe_in_template(app)
-    # Legacy runtimes retain their storage; 9.4 images need the complete retrofit.
-    import re
-
-    match = re.search(r":(\d{4})\.(\d+)\.(\d+)", image)
-    if match and tuple(map(int, match.groups())) >= (2026, 9, 4):
+    # Explicit migration only; ordinary image updates preserve main behavior.
+    if retrofit_storage:
         _ensure_oc_state_dir_in_template(app)
 
     # Keep the stable tag-derived part for image comparisons, but mint a

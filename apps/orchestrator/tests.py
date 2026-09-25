@@ -996,7 +996,6 @@ class ImageUpdateCronRestoreTest(TestCase):
             display_name="Image Update Test",
             telegram_chat_id=444555666,
         )
-        self.tenant.openclaw_version = "2026.5.28"
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-test-container"
         self.tenant.container_fqdn = "oc-test.internal.example.io"
@@ -1017,14 +1016,14 @@ class ImageUpdateCronRestoreTest(TestCase):
             ]
         }
 
-        apply_single_tenant_image_task(str(self.tenant.id), "2026.5.28-abc123")
+        apply_single_tenant_image_task(str(self.tenant.id), "abc123")
 
         self.tenant.refresh_from_db()
         snapshot = self.tenant.cron_jobs_snapshot
         self.assertIsNotNone(snapshot)
         self.assertEqual(len(snapshot["jobs"]), 2)
         self.assertEqual(snapshot["trigger"], "pre-image-update")
-        self.assertEqual(snapshot["image_tag"], "2026.5.28-abc123")
+        self.assertEqual(snapshot["image_tag"], "abc123")
 
     @patch("apps.cron.publish.publish_task")
     @patch("apps.orchestrator.azure_client.update_container_image")
@@ -1036,7 +1035,7 @@ class ImageUpdateCronRestoreTest(TestCase):
 
         mock_gw.return_value = {"jobs": []}
 
-        apply_single_tenant_image_task(str(self.tenant.id), "2026.5.28-abc123")
+        apply_single_tenant_image_task(str(self.tenant.id), "abc123")
 
         mock_publish.assert_called_once()
         call_args = mock_publish.call_args

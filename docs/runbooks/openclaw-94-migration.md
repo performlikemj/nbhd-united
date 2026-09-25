@@ -8,6 +8,9 @@ perform this migration.
 
 ## Preflight
 
+Merge/deploy main including #1651 before canaries, so regenerated prompts use
+the current panel instruction. No image rebuild is required by this rescope.
+
 - Keep `OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS` **empty**. The migration command uses
   an explicit UUID list, independent of that image rollout allowlist.
 - Choose an immutable `2026.9.4-<sha>` built with #1623, #1626, #1627 and #1635
@@ -119,9 +122,9 @@ The automated command is an infrastructure gate. The orchestrator must also:
   silently replaced; secret references are preserved by the revision update.
 - Send a synthetic chat turn and run a **Brave search**; verify actual responses.
 - Make a controlled scheduled delivery, check no duplicates, then test
-  hibernate → wake → delivery. Inspect `cron_suspend_state` if wake fails:
-  signed managed jobs are paused in Postgres-backed lifecycle state and rebuilt;
-  only previously enabled operator jobs are re-enabled. Disabled jobs stay disabled.
+  hibernate → wake → delivery. File-cron tenants compute their next wake from
+  the same Postgres rows as the signed writer and skip blocked HTTP suspension.
+  Boot sync reinstalls signed jobs; disabled jobs stay disabled.
 - Resolve all agent re-sync IDs and review any one-shots whose fire time elapsed
   during maintenance. Do not blindly replay a reminder that may already have fired.
 - Require stable cron IDs, clean console/error telemetry and no user-visible
@@ -181,42 +184,53 @@ configured fleet target. Use this for the MJ and `1c77c8c1` health checks.
   Earlier exports remain in private `cron_export_history`; only unchanged
   import-owned rows are refreshed. Newer canonical edits and dashboard deletions
   win over stale runtime exports; retries never resurrect deleted imported rows.
-- Running jobs, unknown next-fire times, and jobs due within 20 minutes defer
-  image replacement (`cron_running`, `cron_next_fire_unknown`, `cron_imminent`).
-  These checks run before capture/import/canonical changes. A pre-submit
-  deferral releases reconciliation. For frequent recurrences, use the supported
-  `--pause-recurring` procedure below; no permanent schedule change is required.
-- Unknown execution fields and unsupported declarations fail before replacement
-  (`unsupported_cron`). The shared field contract preserves delivery recipient,
-  channel, account/thread, session, retention, thinking, pacing and other mapped
-  execution controls. Arbitrary scripts remain refused. Runtime `anchorMs` is
-  accepted and preserved using operator `gateway call cron.update` after disabled
-  creation, before enabling; interval phase survives restoration.
-- Verification records every captured one-shot, including historical exports.
-  Expired reminders without positive delivery evidence fail with
-  `one_shot_expired_undelivered`; missing future reminders fail with
-  `one_shot_pending_missing`. Cancellation vs. delivery cannot be inferred from
-  absence after expiry alone. A complete fresh recapture BEFORE the original
-  due time audits absence as `cancelled_at_source` or `superseded_at_source`.
-  Review private records and delivery evidence before recovery;
-  never mark an absent reminder delivered merely to pass verification.
-- Hibernation stores full noncanonical declarations in private
-  `cron_suspend_state`, transfers them through authenticated share files, and
-  recreates lost jobs after EmptyDir destruction. Payloads never cross
-  `NBHD_RESULT` or appear in logs. Temporary files are removed after transfer.
-  Cleanup uses the Azure Files data plane, independent of replica availability.
-  The recovery record clears only after restored declarations and signed jobs
-  are verified. An aborted suspension resumes scheduling immediately; failed
-  recovery retains the record and original schedule snapshot for retry.
-- `idle_hibernate_skipped tenant=<short-id> reason=<code>` is one structured
-  WARNING per failed capture/suspend/probe attempt. Monitor this in Log Analytics
-  for unexpectedly awake containers and retained recovery records.
+- Only enabled **one-shot** jobs running, lacking a parseable due time, or due
+  within 20 minutes defer cutover (`cron_running`, `cron_next_fire_unknown`,
+  `cron_imminent`). Eligibility runs before import or canonical changes.
+- Recurring jobs are not paused and do not trigger the imminence guard. A fire
+  during the approximately five-minute cutover may be skipped; missed recurring
+  fires are not replayed. Image/config failures can extend this interruption.
+- Unsupported declarations fail closed. The migration-only comparator checks
+  delivery destinations (`delivery.to`) and other execution fields inside the
+  replica. It does not change the image's signed poller. If the deployed image
+  cannot reproduce a captured declaration, verification stops; resolve that
+  image compatibility separately before expansion.
+- Every captured one-shot is audited, including historical exports. Absence
+  from both current Postgres truth (including deleted/tombstoned rows) and the
+  live runtime at verification is `cancelled`, with an observation timestamp.
+  A remaining canonical row with missing runtime delivery still fails as
+  `one_shot_pending_missing` or `one_shot_expired_undelivered`. Never infer delivery
+  from absence or silently mark a missing canonical reminder delivered.
 
-Deploy the orchestrator changes and build a fresh OpenClaw image from this
-branch before migrating. The controller supplies its current comparison code
-for read-only checks and restoration on existing 9.4 images; the image's signed
-poller also needs the updated adapter to apply all execution fields.
+## Scope and lifecycle limitations
 
+This PR changes no OpenClaw image files. Automatic image tasks, message updates,
+wake, suspension/resume, runtime capture and delayed restore retain main behavior.
+Keep the image rollout allowlist empty during migration. The storage retrofit
+is explicitly enabled only by the migration, never ordinary image updates.
+
+The sole new lifecycle behavior is in hibernation for `tenant_uses_file_cron_sync`
+tenants: compute cron wake from the signed writer's canonical Postgres set and
+skip HTTP suspend. Scale-to-zero stops firing and boot sync restores the signed
+set. The payload-free `noncanonical_jobs_not_restored` count uses Postgres plus
+the last snapshot: it is an estimate, not a fresh runtime inventory. Uncaptured
+native/operator jobs are unknown and may be lost on scale-to-zero.
+
+Manual fleet tools are the approved exception: `bump_all_tenant_images`, its
+`rollout-byo-image-bump` endpoint, `rollout-atomic-bump`, and
+`bump_openclaw_version --all` refuse family crossings or ambiguous image tags.
+The atomic endpoint requires a valid explicit `tenant_id`; empty/malformed JSON,
+empty/unknown scope, and mismatched image/version families are rejected before
+publication. Use the migration command for 5.x/bare-SHA → 9.x.
+
+Follow-ups, outside this PR:
+- Poller error logging can expose reminder names/argv (pre-existing REVIEW3 #8).
+  Replace it with fixed reason codes and safe counts in a separate image change.
+- Persist noncanonical jobs by making every creator canonical or defining a
+  separate runtime persistence contract. This PR adds no private restore store.
+- Harden lifecycle queue failures, ambiguous Azure outcomes and concurrent wakes
+  separately. No recovery callbacks, sleep-intent markers or pause machinery are
+  introduced here.
 
 ## Exact deployed-container execution (release orchestrator only)
 
@@ -251,7 +265,7 @@ Inside that console:
 cd /app
 python manage.py showmigrations tenants
 python manage.py check
-# Confirm 0168/0169 are applied, and command help includes --pause-recurring.
+# Confirm 0168/0169 are applied, and command help includes --verify-only.
 python manage.py migrate_tenant_openclaw --help
 TAG='2026.9.4-<approved-build-sha>'
 TENANT_ID=4e13ec0e-08d8-4999-8070-d446475f29e4
@@ -278,8 +292,7 @@ Before executing, verify each prerequisite from this same container:
   share over HTTPS; verify a uniquely named, payload-free probe via
   `_put_share_file`, `download_workspace_file_binary`, `delete_workspace_file`
   in a `try/finally`. Verify signing-key bindings without displaying their values.
-- **Queue:** QStash token and callback URL are configured, and delayed callbacks
-  are accepted; the development synchronous fallback is not a recovery queue.
+- **Queue:** QStash token and callback URL are configured for cron-aware wake.
 - **Privacy:** require encrypted database/backups and Azure Files at rest, TLS in
   transit, restricted service-identity access and no payload logging. These are
   release prerequisites; local tests do not establish production configuration.
@@ -292,52 +305,12 @@ python manage.py migrate_tenant_openclaw --tenant 148ccf1c-ef13-47f8-ada1-a98fa9
 python manage.py migrate_tenant_openclaw --tenant 1c77c8c1-f721-4f5b-9b98-403ac25b070c --verify-only
 ```
 
-## Frequent schedules and missed runs
+## Private migration record retention
 
-Use `python manage.py migrate_tenant_openclaw --tenant "$TENANT_ID" --tag "$TAG"
---pause-recurring` (one shell line) for an explicitly approved per-tenant cron
-maintenance window. Keep other operators, cron creators and dashboard edits out
-of this short window. The command records only the previously enabled IDs,
-disables them, verifies no job is running or enabled, then submits the image.
-Previously disabled jobs stay disabled. A pre-submit pause failure restores only
-those IDs. Retry on the old revision restores a saved interrupted pause before
-recapturing; retry on the new revision continues the saved cutover.
-
-The expected cutover is about five minutes, but image/config failures can extend
-it. **Missed recurring fires are skipped, not replayed**; the next future interval
-retains its anchor. Imminent one-shots still defer even with this flag; wait for
-their delivery or explicitly reschedule them. After image submission, failures
-retain the maintenance fence for operator repair; there is no automatic rollback
-or claim that cron delivery continues during a failed migration.
-
-## Recovery ownership and retention
-
-Signed-file-only wake is not adopted: typed automation tools write Postgres,
-but native/operator cron mutations and the direct HTTP phase-two `_sync:*`
-creator are not a transactional canonical-write interface. Importing existing
-jobs cannot guarantee future jobs or cancellations. Making all creators canonical
-would require a separate runtime/tool contract change and rollout. The migration
-therefore retains private recovery for noncanonical jobs. It refuses ambiguous
-same-name/equivalent duplicates and verifies the entire matching runtime set.
-
-Raw migration and suspension JSON are excluded from Django admin forms. Only
-superusers get a fixed metadata/count summary. Temporary transfer files are
-removed through Azure Files even when console access fails. A delayed QStash
-data-plane deletion is armed before each transfer, survives controller/replica
-termination and retries storage outages. If retries exhaust, delete files with
-the `nbhd-cron-recovery-` / `nbhd-cron-restore-` prefixes older than five minutes
-through Azure Files before closing the incident. Never download payloads into
-an incident ticket. Suspension declarations clear after verified recovery.
-Retain failed migration exports only while recovery remains unresolved; after a
-successful canary soak and 7 days, an authorized operator should remove
-`cron_export` and `cron_export_history` from the JSON while retaining metadata,
-`preserved_unmanaged_ids`, dispositions and audit timestamps. Apply the same
-retention policy to backups. Do not clear an unresolved recovery record.
-
-For 9.4 deactivation, a delayed recovery callback and durable sleep/intent marker
-precede the Azure call. If Azure times out, inspect actual revision state: an
-inactive app remains marked hibernated with a wake scheduled; an active app
-resumes captured scheduling before the marker clears. Unknown state retains the
-marker and recovery callback. A completed hibernation's recovery callback is a
-no-op. All of this is gated to file-cron-sync tenants; 5.28 retains main's exact
-capture/suspend/deactivate/wake sequence, including “proceeding anyway”.
+Raw migration JSON is excluded from Django admin forms and public serializers.
+No private lifecycle declarations or temporary cron transfer files are created.
+Retain failed exports while recovery remains unresolved. After successful canary
+soak and 7 days, an authorized operator should remove `cron_export` and
+`cron_export_history` while retaining metadata, `preserved_unmanaged_ids`,
+dispositions and audit timestamps; apply the retention policy to backups too.
+Never delete preserved unmanaged IDs while those jobs remain in the signed set.

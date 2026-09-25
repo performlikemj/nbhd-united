@@ -104,20 +104,7 @@ class UserAdmin(BaseUserAdmin):
 
 @admin.register(Tenant)
 class TenantAdmin(admin.ModelAdmin):
-    exclude = ("openclaw_migration", "cron_suspend_state")
-
-    def get_readonly_fields(self, request, obj=None):
-        fields = super().get_readonly_fields(request, obj)
-        return (*fields, "cron_recovery_metadata") if request.user.is_superuser else fields
-
-    @admin.display(description="Cron recovery metadata (no payloads)")
-    def cron_recovery_metadata(self, obj):
-        migration = obj.openclaw_migration or {}
-        suspension = obj.cron_suspend_state or {}
-        # Fixed enumerations and counts only; no arbitrary JSON values.
-        status = migration.get("status")
-        status = status if status in {"RUNNING", "FAILED", "PASS", "DEFERRED"} else "none"
-        return f"Migration: {status}; captured: {len(migration.get('cron_export', []))}; recovery declarations: {len(suspension.get('declarations', []))}; paused: {bool(suspension.get('active'))}"
+    exclude = ("openclaw_migration",)
 
     list_display = (
         "user",

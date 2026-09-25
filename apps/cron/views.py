@@ -319,7 +319,6 @@ TASK_MAP = {
     "resume_hibernated_crons": "apps.orchestrator.hibernation.resume_hibernated_crons_task",
     # Cron-aware wake — wake hibernated containers for scheduled crons
     "wake_for_cron": "apps.orchestrator.hibernation.wake_for_cron_task",
-    "cleanup_cron_transfer": "apps.orchestrator.runtime_operator.cleanup_cron_transfer_task",
     "check_cron_wake_idle": "apps.orchestrator.hibernation.check_cron_wake_idle_task",
     # Cleanup delivered message buffers
     "cleanup_delivered_buffers": "apps.orchestrator.hibernation.cleanup_delivered_buffers_task",
@@ -2298,11 +2297,11 @@ def rollout_atomic_bump(request):
     share, and the container image — required when a release crosses an
     OpenClaw config schema boundary.
 
-    POST body (all optional):
+    POST body (tenant_id required; other fields optional):
         {
             "oc_version": "2026.5.7",   // default: settings.OPENCLAW_CURRENT_VERSION
             "image_tag":  "<sha>",       // default: settings.OPENCLAW_IMAGE_TAG
-            "tenant_id":  "<uuid>",      // optional canary mode — bump only this tenant
+            "tenant_id":  "<uuid>",      // required explicit scope
             "dry_run":    false
         }
 
@@ -2329,18 +2328,27 @@ def rollout_atomic_bump(request):
         logger.warning("Unauthorized rollout_atomic_bump attempt")
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
-    body: dict = {}
-    if request.body:
-        try:
-            body = json.loads(request.body)
-        except Exception:
-            body = {}
+    try:
+        body = json.loads(request.body)
+        if not isinstance(body, dict) or not isinstance(body.get("tenant_id"), str):
+            raise ValueError
+        from uuid import UUID
+
+        tenant_filter = str(UUID(body["tenant_id"].strip()))
+        for field in ("oc_version", "image_tag"):
+            if field in body and (not isinstance(body[field], str) or not body[field].strip()):
+                raise ValueError
+        if "dry_run" in body and not isinstance(body["dry_run"], bool):
+            raise ValueError
+    except (ValueError, TypeError):
+        return JsonResponse(
+            {"error": "An explicit valid tenant_id and a well-formed JSON object are required"}, status=400
+        )
 
     from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION
 
     oc_version = str(body.get("oc_version") or OPENCLAW_CURRENT_VERSION).strip()
     image_tag = str(body.get("image_tag") or getattr(settings, "OPENCLAW_IMAGE_TAG", "") or "").strip()
-    tenant_filter = str(body.get("tenant_id") or "").strip()
     dry_run = bool(body.get("dry_run", False))
 
     if not image_tag or image_tag == "latest":
@@ -2372,8 +2380,13 @@ def rollout_atomic_bump(request):
             status=Tenant.Status.ACTIVE,
             container_id__gt="",
         )
-        if tenant_filter:
-            eligible = eligible.filter(id=tenant_filter)
+        eligible = eligible.filter(id=tenant_filter)
+        from apps.orchestrator.runtime_guard import MIGRATION_REQUIRED, manual_version_update_allowed
+
+        if not eligible.exists():
+            return JsonResponse({"error": "Unknown or ineligible tenant_id"}, status=400)
+        if any(not manual_version_update_allowed(t, image_tag, oc_version) for t in eligible):
+            return JsonResponse({"error": MIGRATION_REQUIRED}, status=400)
         # Idempotency: skip tenants already at target on BOTH version + image_tag.
         # A version-only match isn't enough (a prior partial failure could leave
         # version=target but image_tag stale).

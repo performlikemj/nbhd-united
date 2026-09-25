@@ -20,14 +20,15 @@ class RolloutAtomicBumpEndpointTest(TestCase):
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-atomic-test"
         self.tenant.container_fqdn = "oc-atomic-test.internal"
-        self.tenant.openclaw_version = "2026.0.0"  # arbitrary < target
+        self.tenant.openclaw_version = "2026.5.7"
+        self.tenant.container_image_tag = "2026.5.7-abc1234"
         self.tenant.save()
         cache.delete("rollout_atomic_bump:in_flight")
 
     def _post(self, body=None, secret="test-deploy-secret"):
         return self.client.post(
             "/api/cron/rollout-atomic-bump/",
-            data=json.dumps(body or {}),
+            data=json.dumps({"tenant_id": str(self.tenant.id), **(body or {})}),
             content_type="application/json",
             HTTP_X_DEPLOY_SECRET=secret,
         )
@@ -51,7 +52,7 @@ class RolloutAtomicBumpEndpointTest(TestCase):
 
     @patch("apps.cron.publish.publish_batch", return_value=0)
     def test_dry_run_does_not_publish(self, mock_publish):
-        resp = self._post(body={"dry_run": True, "oc_version": "2026.99.0", "image_tag": "futuresha"})
+        resp = self._post(body={"dry_run": True, "oc_version": "2026.5.28", "image_tag": "2026.5.28-abcdef0"})
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertTrue(body["dry_run"])
@@ -61,12 +62,12 @@ class RolloutAtomicBumpEndpointTest(TestCase):
 
     @patch("apps.cron.publish.publish_batch", return_value=1)
     def test_queues_task_for_eligible_tenant(self, mock_publish):
-        resp = self._post(body={"oc_version": "2026.99.0", "image_tag": "futuresha"})
+        resp = self._post(body={"oc_version": "2026.5.28", "image_tag": "2026.5.28-abcdef0"})
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertEqual(body["queued"], 1)
-        self.assertEqual(body["oc_version"], "2026.99.0")
-        self.assertEqual(body["image_tag"], "futuresha")
+        self.assertEqual(body["oc_version"], "2026.5.28")
+        self.assertEqual(body["image_tag"], "2026.5.28-abcdef0")
         # publish_batch invoked with the per-tenant atomic-bump task
         args, _ = mock_publish.call_args
         tasks = args[0]
@@ -74,16 +75,16 @@ class RolloutAtomicBumpEndpointTest(TestCase):
         task_name, task_args, _ = tasks[0]
         self.assertEqual(task_name, "bump_openclaw_atomic_per_tenant")
         self.assertEqual(task_args[0], str(self.tenant.id))
-        self.assertEqual(task_args[1], "2026.99.0")
-        self.assertEqual(task_args[2], "futuresha")
+        self.assertEqual(task_args[1], "2026.5.28")
+        self.assertEqual(task_args[2], "2026.5.28-abcdef0")
 
     @patch("apps.cron.publish.publish_batch", return_value=0)
     def test_skips_already_bumped_tenants(self, mock_publish):
-        self.tenant.openclaw_version = "2026.99.0"
-        self.tenant.container_image_tag = "futuresha"
+        self.tenant.openclaw_version = "2026.5.28"
+        self.tenant.container_image_tag = "2026.5.28-abcdef0"
         self.tenant.save()
 
-        resp = self._post(body={"oc_version": "2026.99.0", "image_tag": "futuresha"})
+        resp = self._post(body={"oc_version": "2026.5.28", "image_tag": "2026.5.28-abcdef0"})
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertEqual(body["queued"], 0)
@@ -101,8 +102,8 @@ class RolloutAtomicBumpEndpointTest(TestCase):
 
         resp = self._post(
             body={
-                "oc_version": "2026.99.0",
-                "image_tag": "futuresha",
+                "oc_version": "2026.5.28",
+                "image_tag": "2026.5.28-abcdef0",
                 "tenant_id": str(self.tenant.id),
             }
         )
@@ -114,7 +115,7 @@ class RolloutAtomicBumpEndpointTest(TestCase):
         # Hold the lock to simulate an in-flight rollout
         cache.set("rollout_atomic_bump:in_flight", "1", timeout=30)
         try:
-            resp = self._post(body={"oc_version": "2026.99.0", "image_tag": "futuresha"})
+            resp = self._post(body={"oc_version": "2026.5.28", "image_tag": "2026.5.28-abcdef0"})
             self.assertEqual(resp.status_code, 409)
         finally:
             cache.delete("rollout_atomic_bump:in_flight")

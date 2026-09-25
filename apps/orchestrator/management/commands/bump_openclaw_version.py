@@ -26,7 +26,7 @@ Usage:
 from __future__ import annotations
 
 from django.conf import settings
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from apps.orchestrator.services import bump_openclaw_version_for_tenant
 from apps.tenants.models import Tenant
@@ -62,9 +62,15 @@ class Command(BaseCommand):
             tenants = Tenant.objects.filter(
                 status=Tenant.Status.ACTIVE,
                 container_id__gt="",
-            ).exclude(openclaw_version=target_version)
+            )
 
         tenant_list = list(tenants)
+        if options["all"]:
+            from apps.orchestrator.runtime_guard import MIGRATION_REQUIRED, manual_version_update_allowed
+
+            if any(not manual_version_update_allowed(t, image_tag, target_version) for t in tenant_list):
+                raise CommandError(MIGRATION_REQUIRED)
+            tenant_list = [t for t in tenant_list if t.openclaw_version != target_version]
         if not tenant_list:
             self.stdout.write("No eligible tenants found.")
             return

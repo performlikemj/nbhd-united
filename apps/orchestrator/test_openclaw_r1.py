@@ -19,8 +19,7 @@ from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from apps.cron.models import CronJob
-from apps.cron.suspension import resume_tenant_crons
-from apps.orchestrator import hibernation
+from apps.cron.signals import suppress_cronjob_reconcile
 from apps.orchestrator import openclaw_migration as migration
 from apps.orchestrator import runtime_operator as operator
 from apps.orchestrator.test_runtime_operator import OperatorCronAdapterTests
@@ -51,10 +50,13 @@ class PrivateChannelTests(SimpleTestCase):
             patch.object(operator.websocket, "create_connection", side_effect=connect),
         ):
             self.assertEqual(operator.run_node(Mock(), "return {ok:true};"), {"ok": True})
-            body = """const {sameCron,buildAddArgs}=await import('/opt/nbhd/nbhd-cron-sync.mjs');
+            body = (
+                Path("apps/orchestrator/migration_cron_compare.mjs").read_text().replace("export ", "")
+                + """
 const d={name:'test',declarationKey:'nbhd:test',schedule:{kind:'cron',expr:'0 9 * * *'},payload:{kind:'agentTurn',message:'private'},delivery:{mode:'announce',to:'a'}};
 return {same:sameCron({...d,status:'idle',schedule:{...d.schedule,staggerMs:0}},d),different:sameCron({...d,delivery:{mode:'announce',to:'b'}},d)};
 """
+            )
             self.assertEqual(operator.run_node(Mock(), body), {"same": True, "different": False})
 
 
@@ -73,59 +75,11 @@ class RecoveryTests(TestCase):
         self.tenant.openclaw_version = migration.VERSION
         self.tenant.save()
 
-    def test_r2_aborted_hibernate_resumes_scheduling(self):
-        with (
-            patch.object(hibernation, "_capture_tenant_cron_schedules", return_value=[job()]),
-            patch("apps.cron.suspension.suspend_tenant_crons", side_effect=RuntimeError("probe")),
-            patch("apps.cron.suspension.resume_tenant_crons", return_value={"errors": 0}) as resume,
-        ):
-            self.assertFalse(hibernation.hibernate_idle_tenant(self.tenant))
-        resume.assert_called_once()
-
-    def test_r2_retry_keeps_original_snapshot(self):
-        snapshot = {"jobs": [job()]}
-        self.tenant.cron_suspend_state = {"active": True, "enabled_ids": ["reminder-id"]}
-        self.tenant.cron_jobs_snapshot = snapshot
-        self.tenant.save()
-        with patch.object(hibernation, "_live_enabled_cron_jobs", return_value=[]):
-            self.assertEqual(hibernation._capture_tenant_cron_schedules(self.tenant), snapshot["jobs"])
-        self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.cron_jobs_snapshot, snapshot)
-
-    def test_r3_missing_noncanonical_job_cannot_clear_recovery(self):
-        self.tenant.cron_suspend_state = {
-            "active": True,
-            "enabled_ids": ["operator-id"],
-            "declarations": [job("operator")],
-        }
-        self.tenant.save()
-        with (
-            patch.object(operator, "list_crons", return_value=[]),
-            patch.object(operator, "restore_crons", return_value={"verified": False}, create=True),
-            patch("apps.cron.share_cron_sync.write_tenant_crons_file"),
-        ):
-            try:
-                resume_tenant_crons(self.tenant)
-            except RuntimeError:
-                pass
-        self.tenant.refresh_from_db()
-        self.assertTrue(self.tenant.cron_suspend_state)
-
-    def test_r8_suspend_probe_failure_warns_once_without_payload(self):
-        with (
-            patch.object(hibernation, "_capture_tenant_cron_schedules", return_value=[]),
-            patch("apps.cron.suspension.suspend_tenant_crons", side_effect=RuntimeError("private-payload")),
-            patch("apps.cron.suspension.resume_tenant_crons", return_value={"errors": 0}),
-            self.assertLogs(hibernation.logger, level="WARNING") as logs,
-        ):
-            self.assertFalse(hibernation.hibernate_idle_tenant(self.tenant))
-        self.assertEqual(len(logs.output), 1)
-        self.assertIn("reason=suspend_failed", logs.output[0])
-        self.assertNotIn("private-payload", logs.output[0])
-
     def test_r4_expired_captured_one_shot_fails_verification(self):
         rec = record()
         rec["cron_export"] = [job(schedule={"kind": "at", "at": (timezone.now() - timedelta(minutes=1)).isoformat()})]
+        with suppress_cronjob_reconcile():
+            CronJob.objects.create(tenant=self.tenant, name="reminder", data=rec["cron_export"][0])
         rec["evidence"]["preflight"] = {"target_image": "offline"}
         with (
             patch.object(migration, "_desired_jobs", return_value=[]),
@@ -217,41 +171,6 @@ class RegistryTests(SimpleTestCase):
 
 
 class AdditionalRecoveryTests(RecoveryTests):
-    def test_r2_azure_failure_restores_before_return(self):
-        with (
-            patch.object(hibernation, "_capture_tenant_cron_schedules", return_value=[job()]),
-            patch("apps.cron.suspension.suspend_tenant_crons", return_value={"errors": 0}),
-            patch("apps.orchestrator.azure_client.hibernate_container_app", side_effect=RuntimeError("azure")),
-            patch("apps.orchestrator.azure_client.container_app_has_active_revision", return_value=True),
-            patch("apps.cron.publish.publish_task"),
-            patch("apps.cron.suspension.resume_tenant_crons", return_value={"errors": 0}) as resume,
-        ):
-            self.assertFalse(hibernation.hibernate_idle_tenant(self.tenant))
-        resume.assert_called_once()
-
-    def test_r3_full_declarations_survive_and_verified_resume_clears(self):
-        from apps.cron.suspension import suspend_tenant_crons
-
-        jobs = [job("operator"), job("_sync:agent", enabled=False)]
-        with (
-            patch.object(operator, "capture_cron_declarations", return_value=jobs),
-            patch.object(operator, "list_crons", return_value=[]),
-            patch("apps.cron.share_cron_sync.write_tenant_crons_file"),
-            patch("time.sleep"),
-        ):
-            suspend_tenant_crons(self.tenant)
-        self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.cron_suspend_state["declarations"], jobs)
-        with (
-            patch.object(operator, "restore_crons", return_value={"verified": True}) as restore,
-            patch.object(operator, "inspect_signed_crons", return_value={"matches": [], "expected": 0, "extras": []}),
-            patch("apps.cron.share_cron_sync.write_tenant_crons_file"),
-        ):
-            resume_tenant_crons(self.tenant)
-        restore.assert_called_once_with(self.tenant, jobs)
-        self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.cron_suspend_state, {})
-
     def test_r5_cancel_after_completed_capture_never_reimports_old_job(self):
         rec = record()
         with patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": [job()]}):
@@ -319,7 +238,7 @@ class DeclarationContractTests(SimpleTestCase):
             },
             schedule={"kind": "cron", "expr": "0 9 * * *", "tz": "UTC", "staggerMs": 0},
         )
-        module = Path("runtime/openclaw/nbhd-cron-sync.mjs").resolve().as_uri()
+        module = Path("apps/orchestrator/migration_cron_compare.mjs").resolve().as_uri()
         script = (
             "const {buildAddArgs,sameCron}=await import("
             + json.dumps(module)
@@ -353,47 +272,3 @@ console.log(JSON.stringify({flags,checks}));"""
             self.assertIn(flag, output["flags"])
         # Omitted staggering and recurring retention retain runtime defaults.
         self.assertEqual(output["checks"].count(True), 2)
-
-    def test_r3_restore_uses_private_file_and_recreates_missing_disabled_jobs(self):
-        import tempfile
-
-        jobs = [job("operator"), job("_sync:agent", enabled=False)]
-        with tempfile.TemporaryDirectory() as directory:
-
-            def write(tenant_id, name, *, data, **kwargs):
-                Path(directory, name).write_bytes(data)
-
-            def execute(tenant, body, **kwargs):
-                body = body.replace(
-                    "/opt/nbhd/nbhd-cron-sync.mjs", Path("runtime/openclaw/nbhd-cron-sync.mjs").resolve().as_uri()
-                )
-                prefix = "const fs=require('node:fs'),crypto=require('node:crypto');const jobs=[];const oc=(args)=>{if(args[1]==='list')return JSON.stringify({jobs});if(args[1]==='add'){const envelope=JSON.parse(fs.readFileSync(require('node:path').join(process.env.TEST_DIR,fs.readdirSync(process.env.TEST_DIR).find(n=>n.startsWith('nbhd-cron-restore-'))),'utf8'));const d=JSON.parse(envelope.signed).find(j=>j.name===args[2]);jobs.push({...d,id:'restored-'+d.id,declarationKey:args[args.indexOf('--declaration-key')+1],enabled:!args.includes('--disabled')});return '{}';}throw Error('unexpected');};"
-                result = subprocess.run(
-                    ["node", "-e", prefix + "(async()=>{" + body + "})().then(r=>console.log(JSON.stringify(r)));"],
-                    env={
-                        **os.environ,
-                        "NODE_OPTIONS": "",
-                        "TEST_DIR": directory,
-                        "OPENCLAW_CONFIG_PATH": directory + "/openclaw.json",
-                        "NBHD_INTERNAL_API_KEY": "test-key",
-                    },
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                self.assertNotIn("Private reminder payload", result.stdout)
-                return json.loads(result.stdout)
-
-            with (
-                patch("apps.orchestrator.azure_client._put_share_file", side_effect=write),
-                patch(
-                    "apps.orchestrator.azure_client.delete_workspace_file",
-                    side_effect=lambda tid, name: Path(directory, name).unlink(),
-                ),
-                patch("apps.cron.gateway_client.get_gateway_token_for_tenant", return_value="test-key"),
-                patch.object(operator, "run_node", side_effect=execute),
-            ):
-                self.assertEqual(
-                    operator.restore_crons(SimpleNamespace(pk="tenant"), jobs), {"verified": True, "count": 2}
-                )
-            self.assertEqual(list(Path(directory).iterdir()), [])

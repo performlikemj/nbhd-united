@@ -186,8 +186,7 @@ def capture(tenant, record):
     if any(not supported_declaration(j) for j in jobs):
         raise MigrationError("unsupported_cron")
     # Eligibility is read-only and precedes export, imports and canonical flip.
-    # An explicit recurring pause skips missed recurring runs, never one-shots.
-    assert_cutover_safe(jobs, pause_recurring=record.get("pause_recurring", False))
+    assert_cutover_safe(jobs)
     previous = record.get("cron_export")
     if previous is not None and previous != jobs:
         record.setdefault("cron_export_history", []).append({"at": record.get("cron_export_at"), "jobs": previous})
@@ -277,27 +276,20 @@ def capture(tenant, record):
     }
 
 
-def assert_cutover_safe(jobs, *, pause_recurring=False):
+def assert_cutover_safe(jobs):
+    """Defer imminent one-shots without mutating jobs; recurrences may be missed."""
     from apps.cron.pending_at_views import _at_fires_at_ms
-
-    from .hibernation import _find_earliest_next_run
 
     now = int(timezone.now().timestamp() * 1000)
     for job in jobs:
+        if (job.get("schedule") or {}).get("kind") != "at" or not job.get("enabled", True):
+            continue
         if (job.get("state") or {}).get("runningAtMs") or job.get("runningAtMs"):
             raise MigrationError("cron_running")
-        if not job.get("enabled", True):
-            continue
-        schedule = job.get("schedule") or {}
-        due = _at_fires_at_ms(job) if schedule.get("kind") == "at" else _find_earliest_next_run([job], now)
-        if due is None and schedule.get("kind") == "every":
-            interval = schedule.get("everyMs", 0)
-            anchor = schedule.get("anchorMs", now)
-            if interval > 0:
-                due = anchor + max(0, (now - anchor) // interval + 1) * interval
+        due = _at_fires_at_ms(job)
         if due is None:
             raise MigrationError("cron_next_fire_unknown")
-        if due <= now + 20 * 60 * 1000 and not (pause_recurring and schedule.get("kind") != "at"):
+        if due <= now + 20 * 60 * 1000:
             raise MigrationError("cron_imminent")
 
 
@@ -329,6 +321,7 @@ def one_shot_dispositions(tenant, record):
             j
             for j in observed
             if j.get("id") == (job.get("id") or job.get("jobId"))
+            or j.get("name") == job["name"]
             or j.get("declarationKey") == "nbhd:" + rows.get(job["name"], "missing")
         ]
         delivered = any(
@@ -336,7 +329,9 @@ def one_shot_dispositions(tenant, record):
             and (j.get("state") or {}).get("lastRunAtMs", 0) >= (due or now)
             for j in matches
         )
-        if not job.get("enabled", True):
+        if job["name"] not in rows and not matches:
+            disposition = "cancelled"
+        elif not job.get("enabled", True):
             disposition = "disabled_retained"
         elif delivered or (job.get("id") or job.get("jobId")) in delivered_ids:
             disposition = "delivered"
@@ -346,7 +341,13 @@ def one_shot_dispositions(tenant, record):
             disposition = "expired_undelivered"
         else:
             disposition = "pending_missing"
-        dispositions.append({"id": job.get("id") or job.get("jobId"), "disposition": disposition})
+        dispositions.append(
+            {
+                "id": job.get("id") or job.get("jobId"),
+                "disposition": disposition,
+                "observed_at": timezone.now().isoformat(),
+            }
+        )
     record["one_shot_dispositions"] = dispositions
     if any(d["disposition"] == "expired_undelivered" for d in dispositions):
         raise MigrationError("one_shot_expired_undelivered")
@@ -382,17 +383,13 @@ def image_step(tenant, record):
     if _image(app) != image or app.template.revision_suffix != suffix:
         if VERSION in _image(app):
             raise MigrationError("unexpected_target_revision")
-        if record.get("delivery_pause"):
-            # A prior process may have died while the OLD revision was paused.
-            # Recover its exact enabled IDs before obtaining fresh source truth.
-            resume_source_crons(tenant, record)
         record["evidence"]["capture"] = capture(tenant, record)
-        assert_cutover_safe(record["cron_export"], pause_recurring=record.get("pause_recurring", False))
-        if record.get("pause_recurring"):
-            pause_source_crons(tenant, record)
+        assert_cutover_safe(record["cron_export"])
         record["image_submitted"] = True
         _save(tenant, record)
-        azure_client.update_container_image(tenant.container_id, image, revision_suffix=suffix, operation_timeout=300)
+        azure_client.update_container_image(
+            tenant.container_id, image, revision_suffix=suffix, operation_timeout=300, retrofit_storage=True
+        )
     # If a process died after the Azure write, re-use that revision instead of
     # creating another revision and losing the just-restored ephemeral state.
     return wait_healthy(tenant, image=image, suffix=suffix)
@@ -513,7 +510,7 @@ def verify_existing(tenant, record):
         raise VerificationError(code) from None
 
 
-def migrate_tenant(tenant_id, tag: str, *, dry_run=False, pause_recurring=False) -> dict:
+def migrate_tenant(tenant_id, tag: str, *, dry_run=False) -> dict:
     if not re.fullmatch(r"2026\.9\.4-[0-9a-f]{7,40}", tag or ""):
         raise MigrationError("Target must be an immutable 2026.9.4-<sha> tag")
     with transaction.atomic():
@@ -551,8 +548,6 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False, pause_recurring=False)
                 raise MigrationError("Migration already running; wait for its 30-minute lease to expire")
             if not record:
                 record = {"tag": tag, "started_at": timezone.now().isoformat(), "completed": [], "evidence": {}}
-            if pause_recurring:
-                record["pause_recurring"] = True
             record["status"] = "RUNNING"
             _save(tenant, record)
     if already_current:
@@ -591,8 +586,6 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False, pause_recurring=False)
             "cron_imminent",
             "cron_running",
             "cron_next_fire_unknown",
-            "cron_pause_not_quiet",
-            "cron_pause_source_changed",
         }:
             record["status"] = "DEFERRED"
         # SDK errors can embed URLs, tokens and output. Persist only safe failures.
@@ -600,47 +593,3 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False, pause_recurring=False)
         record["failure"] = {"step": step, "reason": reason, "at": timezone.now().isoformat()}
         _save(tenant, record)
         raise MigrationError(f"FAILED at {step}: {reason}. {RECOVERY}") from None
-
-
-def pause_source_crons(tenant, record):
-    """Explicit per-tenant delivery pause; durable ID set, never bulk resume.
-
-    Recurrences missed during cutover are skipped. One-shots remain protected
-    by the eligibility guard. A failed pre-submit pause restores only our IDs.
-    """
-    from apps.cron.gateway_client import invoke_gateway_tool
-
-    from .cron_reconcile import _complete_cron_observation
-
-    ids = [j.get("id") or j.get("jobId") for j in record["cron_export"] if j.get("enabled", True)]
-    record["delivery_pause"] = {
-        "enabled_ids": ids,
-        "started_at": timezone.now().isoformat(),
-        "missed_run_policy": "skip_recurring",
-    }
-    _save(tenant, record)
-    try:
-        for job_id in ids:
-            invoke_gateway_tool(tenant, "cron.update", {"jobId": job_id, "patch": {"enabled": False}})
-        observed = _complete_cron_observation(invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True}))
-        if observed is None or any(
-            j.get("enabled", True) or (j.get("state") or {}).get("runningAtMs") or j.get("runningAtMs")
-            for j in observed
-        ):
-            raise MigrationError("cron_pause_not_quiet")
-        if {j.get("id") or j.get("jobId") for j in observed} != {
-            j.get("id") or j.get("jobId") for j in record["cron_export"]
-        }:
-            raise MigrationError("cron_pause_source_changed")
-    except Exception:
-        resume_source_crons(tenant, record)
-        raise
-
-
-def resume_source_crons(tenant, record):
-    from apps.cron.gateway_client import invoke_gateway_tool
-
-    for job_id in record["delivery_pause"]["enabled_ids"]:
-        invoke_gateway_tool(tenant, "cron.update", {"jobId": job_id, "patch": {"enabled": True}})
-    record.pop("delivery_pause", None)
-    _save(tenant, record)
