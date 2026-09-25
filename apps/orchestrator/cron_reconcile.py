@@ -473,7 +473,9 @@ def regenerate_tenant_crons(tenant: Tenant, *, recovery: bool = False) -> dict:
         return summary
 
     migration = getattr(tenant, "openclaw_migration", {}) or {}
-    if migration.get("status") in {"RUNNING", "FAILED"}:
+    if migration.get("status") == "RUNNING" or (
+        migration.get("status") == "FAILED" and migration.get("image_submitted")
+    ):
         # The migration writes its signed file explicitly after config pickup.
         return summary
 

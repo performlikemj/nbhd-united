@@ -54,11 +54,17 @@ def run_node(tenant, body: str, *, timeout: int = 90):
             "export ", ""
         )
         adapter = constants.replace("export ", "") + pure
+        apply = source[
+            source.index("export async function applyCron") : source.index("async function listNbhdDeclarations")
+        ].replace("export ", "")
         body = body.replace(
             "const {readSignedJobs,sameCron,buildAddArgs,atFireMs}=await import('/opt/nbhd/nbhd-cron-sync.mjs');",
             "const {readSignedJobs}=await import('/opt/nbhd/nbhd-cron-sync.mjs');" + adapter,
         )
         body = body.replace("const {sameCron,buildAddArgs}=await import('/opt/nbhd/nbhd-cron-sync.mjs');", adapter)
+        body = body.replace(
+            "const {sameCron,buildAddArgs,applyCron}=await import('/opt/nbhd/nbhd-cron-sync.mjs');", adapter + apply
+        )
     script = (
         "const {execFileSync}=require('node:child_process');"
         "const fs=require('node:fs');const crypto=require('node:crypto');"
@@ -226,10 +232,11 @@ def capture_cron_declarations(tenant):
     """Transfer full declarations over authenticated file storage, never stdout."""
     import uuid
 
-    from .azure_client import download_workspace_file_binary
+    from .azure_client import delete_workspace_file, download_workspace_file_binary
     from .cron_declarations import supported_declaration
 
     name = f"nbhd-cron-recovery-{uuid.uuid4().hex}.json"
+    _queue_transfer_cleanup(tenant, name)
     path_js = (
         "require('node:path').join(require('node:path').dirname(process.env.OPENCLAW_CONFIG_PATH),"
         + json.dumps(name)
@@ -253,7 +260,7 @@ def capture_cron_declarations(tenant):
             raise OperatorError("recovery_export_invalid")
         return [dict(j, id=j.get("id") or j["jobId"]) for j in jobs]
     finally:
-        run_node(tenant, f"fs.rmSync({path_js},{{force:true}});return true;")
+        delete_workspace_file(str(tenant.pk), name)
 
 
 def restore_crons(tenant, declarations):
@@ -264,9 +271,10 @@ def restore_crons(tenant, declarations):
 
     from apps.cron.gateway_client import get_gateway_token_for_tenant
 
-    from .azure_client import _put_share_file
+    from .azure_client import _put_share_file, delete_workspace_file
 
     name = f"nbhd-cron-restore-{uuid.uuid4().hex}.json"
+    _queue_transfer_cleanup(tenant, name)
     signed = json.dumps(declarations, sort_keys=True, separators=(",", ":"))
     key = get_gateway_token_for_tenant(tenant)
     if not key:
@@ -281,17 +289,27 @@ def restore_crons(tenant, declarations):
     try:
         return run_node(
             tenant,
-            _LIST
+            """
+const lock=require('node:path').join(require('node:path').dirname(process.env.OPENCLAW_CONFIG_PATH),'.nbhd-cron-restore.lock');
+if(fs.existsSync(lock) && Date.now()-fs.statSync(lock).mtimeMs>120000)fs.rmSync(lock,{force:true});
+const fd=fs.openSync(lock,'wx',0o600);
+try {
+"""
+            + _LIST
             + """
-const {sameCron,buildAddArgs}=await import('/opt/nbhd/nbhd-cron-sync.mjs');
+const {sameCron,buildAddArgs,applyCron}=await import('/opt/nbhd/nbhd-cron-sync.mjs');
 const envelope=JSON.parse(fs.readFileSync(FILE,'utf8'));
 const sig=crypto.createHmac('sha256',process.env.NBHD_INTERNAL_API_KEY).update(envelope.signed).digest('hex');
 if(sig!==envelope.sig) throw Error('signature');
 const desired=JSON.parse(envelope.signed);
 const normalized=j=>({...j,declarationKey:'nbhd:recovery'});
+// Other creators may have recovered the same declaration with a different ID.
+// Include semantic/name conflicts, not just our IDs, in EVERY observation.
+const candidates=(rows,d,key)=>rows.filter(j=>(j.id||j.jobId)===(d.id||d.jobId)||j.declarationKey===key||j.name===d.name||sameCron(normalized(j),normalized(d)));
+const read=()=>{const doc=JSON.parse(oc(['cron','list','--all','--json']));const rows=Array.isArray(doc)?doc:doc.jobs;if(!Array.isArray(rows)||doc.hasMore===true||Number(doc.total||0)>rows.length||doc.nextOffset)throw Error('incomplete');return rows;};
 for(const d of desired){
     const key=d.declarationKey || ('recovery:'+crypto.createHash('sha256').update(d.id||d.jobId).digest('hex'));
-    let found=jobs.filter(j=>(j.id||j.jobId)===(d.id||d.jobId)||j.declarationKey===key);
+    let found=candidates(read(),d,key);
     if(found.length>1) throw Error('ambiguous');
     if(!found.length){
         if(d.enabled!==false && d.schedule?.kind==='at' && (d.schedule.atMs ?? Date.parse(d.schedule.at||''))<=Date.now()) throw Error('expired');
@@ -299,21 +317,40 @@ for(const d of desired){
         if(!args) throw Error('unsupported');
         args[args.indexOf('--declaration-key')+1]=key;
         if(d.enabled===false)args.push('--disabled');
-        oc(args);
+        await applyCron({...d,declarationKey:key}, async args=>oc(args), args);
     }else{
         if(!sameCron(normalized(found[0]),normalized(d)))throw Error('conflict');
         if((found[0].enabled!==false)!==(d.enabled!==false))oc(['cron',d.enabled===false?'disable':'enable',found[0].id||found[0].jobId]);
     }
 }
-const restoredDoc=JSON.parse(oc(['cron','list','--all','--json']));
-const observed=Array.isArray(restoredDoc)?restoredDoc:restoredDoc.jobs;
+const observed=read();
 const verified=desired.every(d=>{
     const key=d.declarationKey || ('recovery:'+crypto.createHash('sha256').update(d.id||d.jobId).digest('hex'));
-    const found=observed.filter(j=>(j.id||j.jobId)===(d.id||d.jobId)||j.declarationKey===key);
+    const found=candidates(observed,d,key);
     return found.length===1 && (found[0].enabled!==false)===(d.enabled!==false) && sameCron(normalized(found[0]),normalized(d));
 });
 return {verified,count:desired.length};
+} finally {fs.closeSync(fd);fs.rmSync(lock,{force:true});}
 """.replace("FILE", path_js),
         )
     finally:
-        run_node(tenant, f"fs.rmSync({path_js},{{force:true}});return true;")
+        delete_workspace_file(str(tenant.pk), name)
+
+
+def _queue_transfer_cleanup(tenant, name):
+    """A delayed data-plane delete survives controller/replica termination."""
+    if is_mock():
+        return
+    if not settings.QSTASH_TOKEN or not settings.API_BASE_URL:
+        raise OperatorError("recovery_cleanup_queue_unavailable")
+    from apps.cron.publish import publish_task
+
+    publish_task("cleanup_cron_transfer", str(tenant.pk), name, delay_seconds=300)
+
+
+def cleanup_cron_transfer_task(tenant_id, name):
+    from .azure_client import delete_workspace_file
+
+    if not re.fullmatch(r"nbhd-cron-(?:recovery|restore)-[0-9a-f]{32}\.json", name):
+        raise ValueError("invalid_transfer_name")
+    delete_workspace_file(str(tenant_id), name)

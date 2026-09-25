@@ -319,6 +319,7 @@ TASK_MAP = {
     "resume_hibernated_crons": "apps.orchestrator.hibernation.resume_hibernated_crons_task",
     # Cron-aware wake — wake hibernated containers for scheduled crons
     "wake_for_cron": "apps.orchestrator.hibernation.wake_for_cron_task",
+    "cleanup_cron_transfer": "apps.orchestrator.runtime_operator.cleanup_cron_transfer_task",
     "check_cron_wake_idle": "apps.orchestrator.hibernation.check_cron_wake_idle_task",
     # Cleanup delivered message buffers
     "cleanup_delivered_buffers": "apps.orchestrator.hibernation.cleanup_delivered_buffers_task",

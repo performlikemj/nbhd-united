@@ -483,8 +483,8 @@ class LifecycleAndDispatchTests(TestCase):
         migrate.assert_called_once_with(self.tenant.id, TAG)
         update.assert_not_called()
 
-    @override_settings(OPENCLAW_IMAGE_TAG=TAG, OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS="*")
-    def test_wake_never_crosses_legacy_runtime_even_allowlisted(self):
+    @override_settings(OPENCLAW_IMAGE_TAG=TAG, OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS="")
+    def test_legacy_wake_retains_main_empty_allowlist_behavior(self):
         from apps.orchestrator.hibernation import wake_hibernated_tenant
 
         self.tenant.hibernated_at = timezone.now()

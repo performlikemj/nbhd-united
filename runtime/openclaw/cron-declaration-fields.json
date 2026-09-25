@@ -50,6 +50,7 @@
     "expr",
     "tz",
     "everyMs",
+    "anchorMs",
     "at",
     "atMs",
     "staggerMs"

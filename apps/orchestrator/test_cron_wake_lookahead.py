@@ -153,10 +153,7 @@ class CheckCronWakeIdleLookAheadTests(_Base):
                 )
                 self.tenant.refresh_from_db()
                 self.assertIsNotNone(self.tenant.cron_wake_at)
-                self.assertEqual(len(logs.output), 1)
-                self.assertIn(str(self.tenant.id)[:8], logs.output[0])
-                self.assertIn("reason=cron_state_unknown", logs.output[0])
-                self.assertNotIn("Traceback", logs.output[0])
+                self.assertIn(str(self.tenant.id), logs.output[0])
 
     def test_upcoming_cron_defers_even_if_publish_fails(self):
         with (

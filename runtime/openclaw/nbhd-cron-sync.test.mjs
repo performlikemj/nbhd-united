@@ -20,6 +20,28 @@ process.env.NBHD_CRONS_FILE = CRONS_FILE;
 
 const { isSafeJob, buildAddArgs, sameCron, reconcileOnce, msToDuration, atFireMs, readSignedJobs } = await import("./nbhd-cron-sync.mjs");
 
+test('hourly anchor is preserved before enabling, then stable across polls', async () => {
+  const { applyCron } = await import('./nbhd-cron-sync.mjs');
+  const desired = {name:'hourly',declarationKey:'nbhd:hourly',enabled:true,schedule:{kind:'every',everyMs:3600000,anchorMs:1700000000123},payload:{kind:'agentTurn',message:'test'}};
+  const calls=[];
+  let current;
+  const run=async args=>{
+    calls.push(args);
+    if(args[1]==='add') { assert.ok(args.includes('--disabled')); current={...desired,id:'stable',enabled:false,schedule:{...desired.schedule,anchorMs:1800000000000}}; return '{}'; }
+    if(args[1]==='list') return JSON.stringify({jobs:[current]});
+    assert.deepEqual(args.slice(0,4),['gateway','call','cron.update','--params']);
+    const patch=JSON.parse(args[4]);
+    assert.equal(patch.id,'stable');
+    assert.equal(patch.patch.schedule.anchorMs,1700000000123);
+    current={...current,...patch.patch}; return '{}';
+  };
+  await applyCron(desired,run);
+  assert.equal(current.enabled,true);
+  assert.equal(sameCron(current,desired),true);
+  assert.equal(sameCron({...current,schedule:{...current.schedule,anchorMs:1800000000000}},desired),false);
+  assert.equal(calls.length,3);
+});
+
 function signDoc(jobs, { badSig = false, tamper = false } = {}) {
   const signed = JSON.stringify(jobs);
   let sig = createHmac("sha256", KEY).update(signed).digest("hex");
@@ -299,7 +321,7 @@ test("reconcileOnce: past or undetermined one-shots absent from current are skip
     for (let poll = 0; poll < 2; poll++) {
       assert.deepEqual(await reconcileOnce({ run }), { applied: 0, removed: 0, skipped: 1, ok: true });
     }
-    assert.deepEqual(calls, [["cron", "list", "--json"], ["cron", "list", "--json"]]);
+    assert.deepEqual(calls, [["cron", "list", "--all", "--json"], ["cron", "list", "--all", "--json"]]);
   }
 });
 
@@ -335,7 +357,7 @@ test("reconcileOnce: signature and kind controls hold; removals stay in nbhd nam
   const result = await reconcileOnce({ run });
   assert.equal(result.skipped, 1);
   assert.equal(result.applied, 0);
-  assert.deepEqual(calls, [["cron", "list", "--json"], ["cron", "rm", "stale"]]);
+  assert.deepEqual(calls, [["cron", "list", "--all", "--json"], ["cron", "rm", "stale"]]);
   await writeFile(CRONS_FILE, signDoc([typedJob()], { badSig: true }));
   calls.length = 0;
   assert.equal((await reconcileOnce({ run })).ok, false);
@@ -350,7 +372,7 @@ test("reconcileOnce: list failure makes no mutations", async () => {
     throw new Error("synthetic list failure");
   } });
   assert.equal(result.ok, false);
-  assert.deepEqual(calls, [["cron", "list", "--json"]]);
+  assert.deepEqual(calls, [["cron", "list", "--all", "--json"]]);
 });
 
 // Pins buildAddArgs' emitted flags against the REAL 2026.9.4 cron CLI source.

@@ -14,7 +14,7 @@ Owner: Codex
 - Fail closed on ambiguous cron provenance and failed verification.
 ## State
 - Done: Implementation, runbook, 213 focused tests, static/migration checks; final Docker gate green (9292 tests, 43 skipped; frontend lint/build PASS).
-- Now: Fix round 1 complete: fab6c447 pushed to feat/openclaw-94-tenant-migration; draft PR #1650 remains unmerged.
+- Now: Round 2 complete and validated: 212 focused tests and full Docker gate PASS; delivery target feat/openclaw-94-tenant-migration / draft PR #1650.
 - Next: Release orchestrator review and approved canaries. No production execution by this task.
 ## Links
 - Upstream: CONTINUITY.md
@@ -97,3 +97,47 @@ Owner: Codex
 - Release risks: build a fresh runtime image with the updated signed adapter; real managed-identity/ACR and console behavior still require approved canaries. Unsupported declarations and unresolved expired one-shots intentionally stop migration. Existing ID-only lifecycle recovery records cannot prove missing payload restoration and remain blocked for manual recovery.
 
 - Completion: fab6c447 pushed to origin/feat/openclaw-94-tenant-migration. Required trailer present. Only the user-provided directive/recon/review files remain untracked. Draft PR #1650 is unmerged; production untouched.
+
+## Fix round 2 (complete)
+- Main merged cleanly (includes #1649); chat gates and Talk route kept identical to origin/main.
+- Hard constraint: 5.28 lifecycle must follow main exactly; production forbidden.
+- Simplification rejected for now: operator jobs and direct phase-two runtime creation bypass canonical rows; one-time import cannot guarantee future preservation. Fix individual findings with regression-first coverage.
+- Now: regression tests and fixes. Next: Ruff, migration drift, focused tests, serialized Docker gate, scoped commit/push.
+
+### Round 2 regression evidence and decisions
+- Baseline run: 8 tests, 7 failures + 1 error (F1 legacy suspend call sequence; F2 missing durable intent/wake; F4 hourly anchor rejected; F5 mutating eligibility and overwritten canonical edit; F6 historical cancellation blocked; F7 raw admin fields and replica-dependent cleanup). Separate real-Node F3 probe failed with 2 enabled copies instead of 1.
+- Initial two local test invocations overlapped teardown of the isolated test DB; no shared/prod DB involved. Subsequent runs serialized. Logs: /private/tmp/oc94-r2-red.log and oc94-r2-f3-red.log.
+- Simplification NOT adopted: native cron remains allowed via group:openclaw; typed automation tools use Django but RuntimeCronPhase2SummaryView still calls cron.add directly, and operator CLI mutations bypass canonical rows. One-time import cannot guarantee future creation/cancellation durability. A fully canonical creator contract needs a separate runtime/tool rollout.
+- F1/HARD RULE: restored main's literal legacy hibernation/capture bodies and legacy warning behavior. New recovery dispatch is file-cron-only. Pinned origin/main source fixture compares complete hibernate call traces (success, suspend failure, Azure failure). Legacy suspend/resume bodies remain main's. Legacy wake retains main's allowlist behavior, including when opted in; KEEP THE ALLOWLIST EMPTY during rollout.
+- F2: queue recovery callback and commit sleep/intent marker before Azure deactivation; reconcile inactive/active/unknown state. Inactive stays marked asleep and gets cron wake; active resumes before marker clearing; unknown retains queued recovery. Completed recovery callbacks no-op. Post-Azure DB failure tested.
+- F3: restore serialized by exclusive short-lived share lock, re-read complete runtime set before each mutation, match by original ID/recovery key/equivalent declaration/name conflict, and verify complete matching set. Recreated jobs with new IDs are reused rather than duplicated.
+- F4: runtime anchorMs allowed, unsupported execution controls still refused. Hourly phase restored by disabled add then operator cron.update schedule+enabled; subsequent polls retain IDs. Node test verifies ordering and exact phase.
+- F5: eligibility before export/import/canonical flip; DEFERRED releases reconciliation. Import version baseline commits atomically with rows; retries preserve newer canonical edits and dashboard tombstones. Explicit --pause-recurring disables saved enabled IDs, verifies quiet, recovers interrupted pre-submit pause; missed recurring fires skipped, imminent one-shots still deferred.
+- F6: complete recapture before old due time audits missing IDs as cancelled_at_source / superseded_at_source; expired absence still fails closed without delivery evidence.
+- F7: raw fields excluded from admin; superuser metadata-only summary. Transfer cleanup uses Azure Files directly; delayed QStash deletion is queued before transfer for process/replica-loss recovery. Runbook defines encryption/access/retention requirements.
+- F8: git diff origin/main -- apps/router/chat_gates.py apps/router/talk_route.py is empty.
+- F9: baseline runbook missing 7 required execution contracts; corrected document passes checks for revision-pinned nbhd-django-westus2 console, /app, both MJ verify-only commands, MI data-plane/HTTPS/WSS/health/share prerequisites and supported pause.
+- Focused iteration: 142 executable tests PASS (one additional misspelled test label caused command failure); expanded 210-test run found only five old log assertions that incorrectly expected new 9.4 warning behavior on legacy fixtures. Restored those assertions from main and added file-cron-only warning test. Final expanded run pending.
+- Ruff lint/format PASS; makemigrations --check --dry-run: no changes; Node signed-sync: 29 PASS, 1 optional pinned package-source skip. Full Docker gate pending.
+- Own local Postgres container nbhd-oc94-r2-tests; owned anonymous volume fe7857f8b2e7a0c7f1ef45d01e434cff326737c36507ecfc90342f6a38378ca4. No broad prune; remove only recorded owned volumes.
+
+- Final focused suite: 211 PASS (7.003s); Ruff check/format, migration drift and whitespace PASS. Node 29 PASS / 1 optional skip. Serialized make docker-gate started after verifying no other gate containers; log /private/tmp/oc94-r2-docker-gate.log.
+
+- Docker gate ownership: nbhd-docker-gate-*-12306, Postgres volume 3225c634f256c29eeec7bec2ffb924d525a321ef25323c900372bbbc6704c066. PR #1650 confirmed OPEN/DRAFT, head feat/openclaw-94-tenant-migration, base main.
+
+- First round-2 Docker gate: frontend PASS; backend 9339 run / 52 skipped / 3 failures + 1 error, all new R2 tests. Full-suite environment probes change AZURE_MOCK; our tests implicitly relied on startup state, and the new real-Node test needed the existing optional-Node guard for Python-only backend image. Fixed test isolation with explicit local mock environment and Node availability guard; production code unchanged. Removed only own gate volume 3225c634f256c29eeec7bec2ffb924d525a321ef25323c900372bbbc6704c066. Focused rerun pending, then serialized complete-code Docker rerun.
+
+- Test-isolation focused rerun: 211 PASS. Second Docker run (suffix 22379) deliberately stopped (137) before completion after identifying an import rollback bookkeeping edge: ownership versions mutated the in-memory record before transaction commit. Regression-first test added; fix pending its red result. Removed only second gate volume 40b93de8a8a71452a990dadcb71b8094edf865e1e038d5529a559c30bb6f46b9. No production calls.
+
+- Rollback regression reproduced: test_f5_rolled_back_import_does_not_keep_ownership_versions failed with versions present after rolled-back row insert. Fixed by saving a separate checkpoint copy inside the transaction and publishing versions to the caller only after commit. Expanded final focused suite: 212 PASS (7.095s); Ruff/format and diff checks PASS. Complete-code serialized gate running; log /private/tmp/oc94-r2-docker-gate-complete.log.
+
+- Complete-code gate ownership: nbhd-docker-gate-*-24578; anonymous Postgres volume d9aab489c8ac90dbba18bdb8d0a3d625a2b5c33046b9695f8dd2f0e4f53f6bab. Backend running; source unchanged after snapshot.
+
+### Round 2 final validation
+- `ruff check .` and `ruff format --check .`: PASS (1678 Python files); `makemigrations --check --dry-run`: no changes; staged diff whitespace: PASS.
+- Focused suite: 212 tests PASS (7.095s), including real-Node duplicate restoration and pinned main call-trace comparison. Node signed-sync suite: 29 PASS, 1 optional upstream-package-source check skipped.
+- Complete-code `make docker-gate`: PASS, exit 0. Backend: 9340 tests in 735.464s, 53 skipped (Python backend image has no Node; real-Node tests were run locally). Config validator/security audit PASS. Frontend lint/static build PASS. Log: /private/tmp/oc94-r2-docker-gate-complete.log.
+- No production calls, deployment, or PR merge. Draft PR #1650 remains the delivery target on the same branch. Required co-author trailer prepared for the scoped fix commit.
+- Remaining release prerequisites: fresh runtime image for updated signed poller; real MI/ACR, WSS, share and tenant health canaries; empty rollout allowlist preserves main's legacy wake behavior. Explicit recurring pause skips missed recurrences and may extend on migration failure. Unsupported controls/unresolved expired one-shots fail closed; private-data encryption/access/retention prerequisites remain operator responsibilities. No automatic rollback.
+
+- Cleanup complete: removed own nbhd-oc94-r2-tests container and remaining recorded volumes fe7857f8b2e7a0c7f1ef45d01e434cff326737c36507ecfc90342f6a38378ca4 / d9aab489c8ac90dbba18bdb8d0a3d625a2b5c33046b9695f8dd2f0e4f53f6bab. Earlier superseded gate volumes also removed; no broad pruning or unrelated resource removal.

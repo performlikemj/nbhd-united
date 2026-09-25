@@ -51,7 +51,15 @@ def supported_declaration(job):
         return False
     if schedule["kind"] == "every":
         ms = schedule.get("everyMs")
-        if not isinstance(ms, (int, float)) or ms < 1000 or ms % 1000 or set(schedule) - {"kind", "everyMs"}:
+        if (
+            not isinstance(ms, (int, float))
+            or ms < 1000
+            or ms % 1000
+            or set(schedule) - {"kind", "everyMs", "anchorMs"}
+        ):
+            return False
+        anchor = schedule.get("anchorMs")
+        if anchor is not None and (not isinstance(anchor, int) or isinstance(anchor, bool) or anchor < 0):
             return False
     elif schedule["kind"] == "cron":
         if not schedule.get("expr") or set(schedule) - {"kind", "expr", "tz", "staggerMs"}:

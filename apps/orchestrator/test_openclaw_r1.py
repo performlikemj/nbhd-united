@@ -222,6 +222,8 @@ class AdditionalRecoveryTests(RecoveryTests):
             patch.object(hibernation, "_capture_tenant_cron_schedules", return_value=[job()]),
             patch("apps.cron.suspension.suspend_tenant_crons", return_value={"errors": 0}),
             patch("apps.orchestrator.azure_client.hibernate_container_app", side_effect=RuntimeError("azure")),
+            patch("apps.orchestrator.azure_client.container_app_has_active_revision", return_value=True),
+            patch("apps.cron.publish.publish_task"),
             patch("apps.cron.suspension.resume_tenant_crons", return_value={"errors": 0}) as resume,
         ):
             self.assertFalse(hibernation.hibernate_idle_tenant(self.tenant))
@@ -365,7 +367,7 @@ console.log(JSON.stringify({flags,checks}));"""
                 body = body.replace(
                     "/opt/nbhd/nbhd-cron-sync.mjs", Path("runtime/openclaw/nbhd-cron-sync.mjs").resolve().as_uri()
                 )
-                prefix = "const fs=require('node:fs'),crypto=require('node:crypto');const jobs=[];const oc=(args)=>{if(args[1]==='list')return JSON.stringify({jobs});if(args[1]==='add'){const envelope=JSON.parse(fs.readFileSync(require('node:path').join(process.env.TEST_DIR,fs.readdirSync(process.env.TEST_DIR)[0]),'utf8'));const d=JSON.parse(envelope.signed).find(j=>j.name===args[2]);jobs.push({...d,id:'restored-'+d.id,declarationKey:args[args.indexOf('--declaration-key')+1],enabled:!args.includes('--disabled')});return '{}';}throw Error('unexpected');};"
+                prefix = "const fs=require('node:fs'),crypto=require('node:crypto');const jobs=[];const oc=(args)=>{if(args[1]==='list')return JSON.stringify({jobs});if(args[1]==='add'){const envelope=JSON.parse(fs.readFileSync(require('node:path').join(process.env.TEST_DIR,fs.readdirSync(process.env.TEST_DIR).find(n=>n.startsWith('nbhd-cron-restore-'))),'utf8'));const d=JSON.parse(envelope.signed).find(j=>j.name===args[2]);jobs.push({...d,id:'restored-'+d.id,declarationKey:args[args.indexOf('--declaration-key')+1],enabled:!args.includes('--disabled')});return '{}';}throw Error('unexpected');};"
                 result = subprocess.run(
                     ["node", "-e", prefix + "(async()=>{" + body + "})().then(r=>console.log(JSON.stringify(r)));"],
                     env={
@@ -384,6 +386,10 @@ console.log(JSON.stringify({flags,checks}));"""
 
             with (
                 patch("apps.orchestrator.azure_client._put_share_file", side_effect=write),
+                patch(
+                    "apps.orchestrator.azure_client.delete_workspace_file",
+                    side_effect=lambda tid, name: Path(directory, name).unlink(),
+                ),
                 patch("apps.cron.gateway_client.get_gateway_token_for_tenant", return_value="test-key"),
                 patch.object(operator, "run_node", side_effect=execute),
             ):

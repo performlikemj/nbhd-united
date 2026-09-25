@@ -40,7 +40,7 @@ Resource group `rg-nbhd-prod` (has 4 `CanNotDelete` locks — prefer `--status D
 provision → **active** ⇄ **hibernated** (idle ≥2h on `last_message_at`, hourly sweep in `apps/orchestrator/tasks.py`) → **suspended** (billing) → deprovision.
 
 - Hibernation **deactivates revisions**, it does not scale to zero. So `az containerapp list` shows `runningStatus: Running` + `minReplicas: 1` for every tenant — that is a false signal. Trust the **Replicas metric** and per-resource cost queries; `revision list` is also unreliable for "is it running".
-- Wake refreshes are allowlisted and restricted to the current runtime family. A hibernated 5.x tenant wakes on its existing image; upgrade it only after waking with `migrate_tenant_openclaw --tenant UUID`. Keep `OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS` empty during the 9.4 migration. See `docs/runbooks/openclaw-94-migration.md`.
+- Wake refreshes retain main's allowlist behavior for legacy HTTP tenants; file-cron tenants also enforce the runtime-family guard. Keep the allowlist empty so a hibernated 5.x tenant wakes on its existing image; upgrade it only after waking with `migrate_tenant_openclaw --tenant UUID`. Keep `OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS` empty during the 9.4 migration. See `docs/runbooks/openclaw-94-migration.md`.
 - DB-backed features (Fuel/Core/Horizons/settings) are pure Django↔Postgres and work while hibernated; Core and Horizons call OpenRouter directly. The container is only needed for chat. Cold start on first message is expected behavior, not a bug.
 
 ## Message flow

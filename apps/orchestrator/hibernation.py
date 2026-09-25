@@ -80,6 +80,66 @@ def hibernate_idle_tenant(tenant: Tenant) -> bool:
 
     Returns True on success.
     """
+    from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
+
+    if tenant_uses_file_cron_sync(tenant):
+        return _hibernate_file_cron_tenant(tenant)
+
+    tid = str(tenant.id)[:8]
+
+    # 1. Capture cron schedules before suspending (for cron-aware wake)
+    cron_jobs = _capture_tenant_cron_schedules(tenant)
+
+    # 2. Suspend crons while container is still up
+    if tenant.container_fqdn:
+        try:
+            from apps.cron.suspension import suspend_tenant_crons
+
+            result = suspend_tenant_crons(tenant)
+            logger.info(
+                "idle_hibernate: suspended %d crons for tenant %s",
+                result.get("disabled", 0),
+                tid,
+            )
+        except Exception:
+            logger.exception(
+                "idle_hibernate: failed to suspend crons for %s — proceeding anyway",
+                tid,
+            )
+
+    # 3. Deactivate all revisions → 0 replicas
+    try:
+        from apps.orchestrator.azure_client import hibernate_container_app
+
+        hibernate_container_app(tenant.container_id)
+    except Exception:
+        logger.exception("idle_hibernate: failed to hibernate container for %s", tid)
+        return False
+
+    # 4. Mark tenant as hibernated, clear any stale cron_wake_at
+    Tenant.objects.filter(id=tenant.id).update(
+        hibernated_at=timezone.now(),
+        cron_wake_at=None,
+    )
+    logger.info("idle_hibernate: tenant %s hibernated successfully", tid)
+
+    # 5. Schedule wake for the next cron job
+    _schedule_next_cron_wake(tenant, cron_jobs)
+
+    return True
+
+
+def _hibernate_file_cron_tenant(tenant: Tenant) -> bool:
+    """Hibernate a single idle tenant's container.
+
+    Order matters:
+    1. Capture cron schedules (container must be reachable)
+    2. Suspend crons (container must be reachable)
+    3. Deactivate revisions
+    4. Schedule next cron wake
+
+    Returns True on success.
+    """
     tid = str(tenant.id)[:8]
     if (tenant.openclaw_migration or {}).get("status") in {"RUNNING", "FAILED"}:
         return False  # An explicit migration/recovery owns the runtime.
@@ -106,17 +166,47 @@ def hibernate_idle_tenant(tenant: Tenant) -> bool:
         if tenant.container_fqdn and suspend_tenant_crons(tenant).get("errors"):
             raise RuntimeError("suspend")
         reason = "deactivation_failed"
-        from apps.orchestrator.azure_client import hibernate_container_app
+        from apps.cron.publish import publish_task
+        from apps.orchestrator.azure_client import hibernate_container_app, is_mock
+
+        if not is_mock() and (not settings.QSTASH_TOKEN or not settings.API_BASE_URL):
+            raise RuntimeError("recovery_queue_unavailable")
+
+        # Arm a bounded recovery wake BEFORE the irreversible Azure request.
+        # A crash/timeout must never leave a stopped app looking awake in DB.
+        # This conservative wake also covers tenants with no scheduled jobs.
+        publish_task("wake_for_cron", str(tenant.pk), recovery_only=True, delay_seconds=300)
+        tenant.refresh_from_db(fields=["cron_suspend_state"])
+        state = {**tenant.cron_suspend_state, "deactivation": "pending"}
+        _update_tenant_after_azure(tenant.pk, cron_suspend_state=state, hibernated_at=timezone.now(), cron_wake_at=None)
+        tenant.cron_suspend_state = state
 
         hibernate_container_app(tenant.container_id)
         reason = "persist_failed"
-        Tenant.objects.filter(id=tenant.id).update(hibernated_at=timezone.now(), cron_wake_at=None)
         reason = "wake_schedule_failed"
         _schedule_next_cron_wake(tenant, cron_jobs)
+        state["deactivation"] = "complete"
+        _update_tenant_after_azure(tenant.pk, cron_suspend_state=state)
     except Exception:
-        # If Azure actually deactivated before raising, operator restoration
-        # fails closed and the durable record remains for wake/retry.
         tenant.refresh_from_db(fields=["hibernated_at"])
+        if tenant.hibernated_at:
+            from apps.orchestrator.azure_client import container_app_has_active_revision
+
+            try:
+                if not container_app_has_active_revision(tenant.container_id):
+                    _schedule_next_cron_wake(tenant, cron_jobs)
+                    return True
+                # The app is still awake. Restore only captured enabled jobs;
+                # clear the marker only after successful recovery.
+                if resume_tenant_crons(tenant).get("errors"):
+                    raise RuntimeError("resume")
+                _update_tenant_after_azure(tenant.pk, hibernated_at=None, cron_wake_at=None)
+            except Exception:
+                # Unknown Azure state retains the sleep marker and the already
+                # published recovery wake; never infer awake from an exception.
+                reason += "_recovery_pending"
+            logger.warning("idle_hibernate_skipped tenant=%s reason=%s", tid, reason)
+            return False
         if not tenant.hibernated_at:
             try:
                 if resume_tenant_crons(tenant).get("errors"):
@@ -143,12 +233,53 @@ def _live_enabled_cron_jobs(tenant):
         except Exception:
             raise GatewayError("Operator cron observation unavailable") from None
     jobs = _extract_cron_jobs(invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": False}))
-    if jobs is None:
-        raise GatewayError("Incomplete cron observation")
     return jobs
 
 
 def _capture_tenant_cron_schedules(tenant: Tenant) -> list[dict]:
+    """Query tenant's enabled cron jobs and save a snapshot.
+
+    Returns the raw job list for use by ``_schedule_next_cron_wake``.
+
+    Resilience: when the live gateway call fails (typical case: the
+    per-tenant container is in an inactive revision state at the moment
+    of hibernation and Azure returns an HTML 404), fall back to the
+    persisted ``tenant.cron_jobs_snapshot`` or, failing that, the
+    ``build_cron_seed_jobs`` recomputation. This keeps the wake chain
+    intact even when the upstream is unreachable — without the fallback,
+    a single failed ``cron.list`` would silently leave the tenant with
+    no future wake scheduled.
+    """
+    from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
+
+    if tenant_uses_file_cron_sync(tenant):
+        return _file_capture_tenant_cron_schedules(tenant)
+
+    if not tenant.container_fqdn:
+        return []
+
+    try:
+        from apps.cron.gateway_client import invoke_gateway_tool
+
+        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": False})
+        data = result.get("details", result) if isinstance(result, dict) else result
+        jobs = data.get("jobs", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+
+        # Persist snapshot for debugging / restore purposes
+        Tenant.objects.filter(id=tenant.id).update(
+            cron_jobs_snapshot={"jobs": jobs, "snapshot_at": timezone.now().isoformat()},
+        )
+        return jobs
+    except Exception:
+        logger.warning(
+            "idle_hibernate: live cron.list failed for tenant %s — falling back to snapshot/seed",
+            str(tenant.id)[:8],
+            exc_info=True,
+        )
+        return _load_fallback_cron_jobs(tenant)
+
+
+def _file_capture_tenant_cron_schedules(tenant: Tenant) -> list[dict]:
     """Query tenant's enabled cron jobs and save a snapshot.
 
     Returns the raw job list for use by ``_schedule_next_cron_wake``.
@@ -415,11 +546,20 @@ def _cron_active_or_imminent(
     unknown cron state is not permission to stop the container.
     """
     from apps.cron.gateway_client import GatewayError
+    from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
 
     try:
         jobs = _live_enabled_cron_jobs(tenant)
     except GatewayError:
-        logger.warning("idle_hibernate_skipped tenant=%s reason=cron_state_unknown", str(tenant.id)[:8])
+        if tenant_uses_file_cron_sync(tenant):
+            logger.warning("idle_hibernate_skipped tenant=%s reason=cron_state_unknown", str(tenant.id)[:8])
+            return "cron_state_unknown"
+        logger.warning(
+            "defer-for-cron: live cron.list failed for tenant %s — deferring hibernation/image replacement "
+            "(cron_state_unknown)",
+            tenant.id,
+            exc_info=True,
+        )
         return "cron_state_unknown"
 
     if not jobs:
@@ -519,6 +659,7 @@ def wake_hibernated_tenant(tenant: Tenant, *, cron_wake: bool = False) -> bool:
             # Image-refresh path takes priority over plain wake.
             from django.conf import settings as django_settings
 
+            from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
             from apps.orchestrator.azure_client import (
                 ensure_plugin_runtime_deps_mount,
                 update_container_image,
@@ -539,7 +680,7 @@ def wake_hibernated_tenant(tenant: Tenant, *, cron_wake: bool = False) -> bool:
                 desired_tag != "latest"
                 and current_tag != desired_tag
                 and image_rollout_allowed(tenant.id)
-                and image_only_update_allowed(tenant, desired_tag)
+                and (not tenant_uses_file_cron_sync(tenant) or image_only_update_allowed(tenant, desired_tag))
             )
 
             if needs_image_refresh:
@@ -765,7 +906,7 @@ def _write_deferred_state(tenant: Tenant, *, label: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def wake_for_cron_task(tenant_id: str) -> dict:
+def wake_for_cron_task(tenant_id: str, *, recovery_only: bool = False) -> dict:
     """Wake a hibernated tenant's container for a scheduled cron job.
 
     Called by QStash about four minutes before the tenant's next cron is due.
@@ -776,6 +917,18 @@ def wake_for_cron_task(tenant_id: str) -> dict:
     if not tenant:
         logger.warning("wake_for_cron: tenant %s not found", tenant_id[:8])
         return {"status": "tenant_not_found"}
+
+    if recovery_only:
+        from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
+        from apps.cron.suspension import resume_tenant_crons
+
+        state = tenant.cron_suspend_state or {}
+        if not tenant_uses_file_cron_sync(tenant) or not state or state.get("deactivation") == "complete":
+            return {"status": "recovery_not_needed"}
+        if not tenant.hibernated_at:
+            if resume_tenant_crons(tenant).get("errors"):
+                raise RuntimeError("cron_recovery_failed")
+            return {"status": "aborted_suspend_recovered"}
 
     if not tenant.hibernated_at:
         # Tenant is already awake — the local gateway will fire the cron
@@ -810,6 +963,8 @@ def wake_for_cron_task(tenant_id: str) -> dict:
 
     # Wake the container (clears hibernated_at, resumes crons, delivers buffers)
     if not wake_hibernated_tenant(tenant, cron_wake=True):
+        if recovery_only:
+            raise RuntimeError("cron_recovery_wake_failed")
         return {"status": "wake_failed"}
 
     # Schedule the configured idle check; re-hibernate if no user messages arrive.
@@ -879,14 +1034,33 @@ def check_cron_wake_idle_task(tenant_id: str) -> dict:
     try:
         upcoming_cron_ms = _next_cron_within_window(tenant)
     except GatewayError:
-        reason = "cron_state_unknown"
+        from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
+
+        if tenant_uses_file_cron_sync(tenant):
+            reason = "cron_state_unknown"
+            try:
+                from apps.cron.publish import publish_task
+
+                publish_task("check_cron_wake_idle", tenant_id, delay_seconds=_cron_wake_idle_seconds())
+            except Exception:
+                reason += "_retry_failed"
+            logger.warning("idle_hibernate_skipped tenant=%s reason=%s", tenant_id[:8], reason)
+            return {"status": "deferred_for_unknown_cron_state"}
+        logger.warning(
+            "check_cron_wake_idle: cron state unknown for tenant %s — deferring re-hibernation",
+            tenant_id,
+            exc_info=True,
+        )
         try:
             from apps.cron.publish import publish_task
 
             publish_task("check_cron_wake_idle", tenant_id, delay_seconds=_cron_wake_idle_seconds())
         except Exception:
-            reason += "_retry_failed"
-        logger.warning("idle_hibernate_skipped tenant=%s reason=%s", tenant_id[:8], reason)
+            logger.warning(
+                "check_cron_wake_idle: failed to schedule deferred check for %s — leaving tenant awake",
+                tenant_id,
+                exc_info=True,
+            )
         return {"status": "deferred_for_unknown_cron_state"}
     if upcoming_cron_ms is not None:
         now_ms = int(timezone.now().timestamp() * 1000)

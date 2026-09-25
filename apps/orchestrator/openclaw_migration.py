@@ -185,9 +185,28 @@ def capture(tenant, record):
         raise MigrationError("Cron provenance uncertain: duplicate names")
     if any(not supported_declaration(j) for j in jobs):
         raise MigrationError("unsupported_cron")
+    # Eligibility is read-only and precedes export, imports and canonical flip.
+    # An explicit recurring pause skips missed recurring runs, never one-shots.
+    assert_cutover_safe(jobs, pause_recurring=record.get("pause_recurring", False))
     previous = record.get("cron_export")
     if previous is not None and previous != jobs:
         record.setdefault("cron_export_history", []).append({"at": record.get("cron_export_at"), "jobs": previous})
+        fresh_ids = {j.get("id") or j.get("jobId") for j in jobs}
+        fresh_names = {j["name"] for j in jobs}
+        now_ms = int(timezone.now().timestamp() * 1000)
+        from apps.cron.pending_at_views import _at_fires_at_ms
+
+        for old in previous:
+            old_id = old.get("id") or old.get("jobId")
+            # Absence BEFORE its due time proves cancellation/replacement; an
+            # expired missing job still requires delivery evidence.
+            due = _at_fires_at_ms(old) if (old.get("schedule") or {}).get("kind") == "at" else None
+            if old_id not in fresh_ids and due and due > now_ms:
+                record.setdefault("source_resolutions", {})[old_id] = {
+                    "disposition": "superseded_at_source" if old["name"] in fresh_names else "cancelled_at_source",
+                    "observed_at": timezone.now().isoformat(),
+                    "source": "complete_live_recapture_before_due",
+                }
     # Record import ownership BEFORE the first DB write, so interrupted imports
     # can update their own rows without replacing pre-existing canonical truth.
     owned = set(record.get("imported_names", []))
@@ -206,17 +225,32 @@ def capture(tenant, record):
     # A noncanonical import cannot replace typed rows from a different authority.
     if not tenant.postgres_cron_canonical and CronJob.objects.filter(tenant=tenant, creation_path="typed").exists():
         raise MigrationError("Cron provenance uncertain: noncanonical tenant has typed Postgres rows")
-    with suppress_cronjob_reconcile():
+    with suppress_cronjob_reconcile(), transaction.atomic():
+        existing_rows = {r.name: r for r in CronJob.objects.select_for_update().filter(tenant=tenant)}
+        versions = dict(record.get("imported_versions", {}))
+        # Once imported, missing rows are dashboard tombstones, not invitations
+        # to resurrect stale runtime truth. Updated rows belong to the user.
+        known = set(versions)
+        unchanged = {name for name, row in existing_rows.items() if versions.get(name) == row.updated_at.isoformat()}
+        import_jobs = [j for j in jobs if j["name"] not in known or j["name"] in existing_rows]
         result = upsert_from_gateway_jobs(
             tenant,
-            jobs,
+            import_jobs,
             delete_missing=False,
             preserve_existing=tenant.postgres_cron_canonical,
         )
         # Re-capture user edits/cancellations only for rows owned by this import.
-        upsert_from_gateway_jobs(tenant, [j for j in jobs if j["name"] in owned], delete_missing=False)
-        CronJob.objects.filter(tenant=tenant, name__in=owned - {j["name"] for j in jobs}).update(enabled=False)
-    Tenant.objects.filter(pk=tenant.pk).update(postgres_cron_canonical=True)
+        upsert_from_gateway_jobs(tenant, [j for j in jobs if j["name"] in unchanged], delete_missing=False)
+        CronJob.objects.filter(tenant=tenant, name__in=unchanged - {j["name"] for j in jobs}).update(enabled=False)
+        for row in CronJob.objects.filter(tenant=tenant, name__in=owned):
+            if row.name not in versions or row.name in unchanged:
+                versions[row.name] = row.updated_at.isoformat()
+        # Commit ownership versions with the rows, so a crash cannot lose the
+        # compare-and-swap baseline while leaving a completed import behind.
+        Tenant.objects.filter(pk=tenant.pk).update(postgres_cron_canonical=True)
+        _save(tenant, {**record, "imported_versions": versions})
+    # Do not leak rolled-back ownership into the caller's failure checkpoint.
+    record["imported_versions"] = versions
     tenant.postgres_cron_canonical = True
     # Keep non-agent unmanaged rows in the signed desired set permanently. Agent
     # recurring jobs are explicitly handed back to their owner for re-sync.
@@ -243,7 +277,7 @@ def capture(tenant, record):
     }
 
 
-def assert_cutover_safe(jobs):
+def assert_cutover_safe(jobs, *, pause_recurring=False):
     from apps.cron.pending_at_views import _at_fires_at_ms
 
     from .hibernation import _find_earliest_next_run
@@ -256,9 +290,14 @@ def assert_cutover_safe(jobs):
             continue
         schedule = job.get("schedule") or {}
         due = _at_fires_at_ms(job) if schedule.get("kind") == "at" else _find_earliest_next_run([job], now)
+        if due is None and schedule.get("kind") == "every":
+            interval = schedule.get("everyMs", 0)
+            anchor = schedule.get("anchorMs", now)
+            if interval > 0:
+                due = anchor + max(0, (now - anchor) // interval + 1) * interval
         if due is None:
             raise MigrationError("cron_next_fire_unknown")
-        if due <= now + 20 * 60 * 1000:
+        if due <= now + 20 * 60 * 1000 and not (pause_recurring and schedule.get("kind") != "at"):
             raise MigrationError("cron_imminent")
 
 
@@ -281,6 +320,10 @@ def one_shot_dispositions(tenant, record):
     dispositions = []
     delivered_ids = {d["id"] for d in record.get("one_shot_dispositions", []) if d["disposition"] == "delivered"}
     for job in captured:
+        resolution = record.get("source_resolutions", {}).get(job.get("id") or job.get("jobId"))
+        if resolution:
+            dispositions.append({"id": job.get("id") or job.get("jobId"), "disposition": resolution["disposition"]})
+            continue
         due = _at_fires_at_ms(job)
         matches = [
             j
@@ -339,8 +382,15 @@ def image_step(tenant, record):
     if _image(app) != image or app.template.revision_suffix != suffix:
         if VERSION in _image(app):
             raise MigrationError("unexpected_target_revision")
+        if record.get("delivery_pause"):
+            # A prior process may have died while the OLD revision was paused.
+            # Recover its exact enabled IDs before obtaining fresh source truth.
+            resume_source_crons(tenant, record)
         record["evidence"]["capture"] = capture(tenant, record)
-        assert_cutover_safe(record["cron_export"])
+        assert_cutover_safe(record["cron_export"], pause_recurring=record.get("pause_recurring", False))
+        if record.get("pause_recurring"):
+            pause_source_crons(tenant, record)
+        record["image_submitted"] = True
         _save(tenant, record)
         azure_client.update_container_image(tenant.container_id, image, revision_suffix=suffix, operation_timeout=300)
     # If a process died after the Azure write, re-use that revision instead of
@@ -463,7 +513,7 @@ def verify_existing(tenant, record):
         raise VerificationError(code) from None
 
 
-def migrate_tenant(tenant_id, tag: str, *, dry_run=False) -> dict:
+def migrate_tenant(tenant_id, tag: str, *, dry_run=False, pause_recurring=False) -> dict:
     if not re.fullmatch(r"2026\.9\.4-[0-9a-f]{7,40}", tag or ""):
         raise MigrationError("Target must be an immutable 2026.9.4-<sha> tag")
     with transaction.atomic():
@@ -501,6 +551,8 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False) -> dict:
                 raise MigrationError("Migration already running; wait for its 30-minute lease to expire")
             if not record:
                 record = {"tag": tag, "started_at": timezone.now().isoformat(), "completed": [], "evidence": {}}
+            if pause_recurring:
+                record["pause_recurring"] = True
             record["status"] = "RUNNING"
             _save(tenant, record)
     if already_current:
@@ -535,8 +587,60 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False) -> dict:
         }
     except Exception as exc:
         record["status"] = "FAILED"
+        if not record.get("image_submitted") and str(exc) in {
+            "cron_imminent",
+            "cron_running",
+            "cron_next_fire_unknown",
+            "cron_pause_not_quiet",
+            "cron_pause_source_changed",
+        }:
+            record["status"] = "DEFERRED"
         # SDK errors can embed URLs, tokens and output. Persist only safe failures.
         reason = str(exc) if isinstance(exc, (MigrationError, runtime_operator.OperatorError)) else type(exc).__name__
         record["failure"] = {"step": step, "reason": reason, "at": timezone.now().isoformat()}
         _save(tenant, record)
         raise MigrationError(f"FAILED at {step}: {reason}. {RECOVERY}") from None
+
+
+def pause_source_crons(tenant, record):
+    """Explicit per-tenant delivery pause; durable ID set, never bulk resume.
+
+    Recurrences missed during cutover are skipped. One-shots remain protected
+    by the eligibility guard. A failed pre-submit pause restores only our IDs.
+    """
+    from apps.cron.gateway_client import invoke_gateway_tool
+
+    from .cron_reconcile import _complete_cron_observation
+
+    ids = [j.get("id") or j.get("jobId") for j in record["cron_export"] if j.get("enabled", True)]
+    record["delivery_pause"] = {
+        "enabled_ids": ids,
+        "started_at": timezone.now().isoformat(),
+        "missed_run_policy": "skip_recurring",
+    }
+    _save(tenant, record)
+    try:
+        for job_id in ids:
+            invoke_gateway_tool(tenant, "cron.update", {"jobId": job_id, "patch": {"enabled": False}})
+        observed = _complete_cron_observation(invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True}))
+        if observed is None or any(
+            j.get("enabled", True) or (j.get("state") or {}).get("runningAtMs") or j.get("runningAtMs")
+            for j in observed
+        ):
+            raise MigrationError("cron_pause_not_quiet")
+        if {j.get("id") or j.get("jobId") for j in observed} != {
+            j.get("id") or j.get("jobId") for j in record["cron_export"]
+        }:
+            raise MigrationError("cron_pause_source_changed")
+    except Exception:
+        resume_source_crons(tenant, record)
+        raise
+
+
+def resume_source_crons(tenant, record):
+    from apps.cron.gateway_client import invoke_gateway_tool
+
+    for job_id in record["delivery_pause"]["enabled_ids"]:
+        invoke_gateway_tool(tenant, "cron.update", {"jobId": job_id, "patch": {"enabled": True}})
+    record.pop("delivery_pause", None)
+    _save(tenant, record)

@@ -217,6 +217,7 @@ function cliList(value) {
 // controls and the enforcement contract in description. Runtime timestamps and
 // schedule anchors are intentionally ignored by the argv projection.
 export function sameCron(current, desired) {
+  if (desired?.schedule?.anchorMs != null && current?.schedule?.anchorMs !== desired.schedule.anchorMs) return false;
   const normalize = (job) => {
     if (!job) return null;
     const copy = structuredClone(job);
@@ -256,8 +257,25 @@ async function oc(args) {
   return stdout;
 }
 
+// The cron shorthand CLI cannot express interval phase. Create disabled, then
+// use the supported operator RPC to set the exact schedule before enabling.
+export async function applyCron(job, run, args = buildAddArgs(job)) {
+  if (!args) throw Error('unsupported declaration');
+  const anchor = job.schedule?.kind === 'every' ? job.schedule.anchorMs : null;
+  if (anchor == null) return run(args);
+  if (!Number.isSafeInteger(anchor) || anchor < 0) throw Error('invalid anchor');
+  await run(args.includes('--disabled') ? args : [...args, '--disabled']);
+  const doc = JSON.parse(await run(['cron', 'list', '--all', '--json']));
+  const rows = (Array.isArray(doc) ? doc : doc.jobs).filter(j => j.declarationKey === job.declarationKey);
+  if (rows.length !== 1) throw Error('ambiguous interval');
+  return run(['gateway', 'call', 'cron.update', '--params', JSON.stringify({
+    id: rows[0].id || rows[0].jobId,
+    patch: {schedule: job.schedule, enabled: job.enabled !== false},
+  }), '--json']);
+}
+
 async function listNbhdDeclarations(run) {
-  const out = await run(["cron", "list", "--json"]);
+  const out = await run(["cron", "list", "--all", "--json"]);
   const doc = JSON.parse(out);
   const rows = Array.isArray(doc) ? doc : (doc && Array.isArray(doc.jobs) ? doc.jobs : []);
   return rows
@@ -293,9 +311,9 @@ export async function reconcileOnce({ run = oc } = {}) {
     const args = buildAddArgs(job);
     if (!args) { warn("skip unmappable job:", job && job.name); skipped++; continue; }
     desiredKeys.add(String(job.declarationKey));
-    if (sameCron(currentByKey.get(job.declarationKey), job)) continue;
+    if (currentByKey.get(job.declarationKey)?.enabled !== false && sameCron(currentByKey.get(job.declarationKey), job)) continue;
     try {
-      await run(args);
+      await applyCron(job, run, args);
       applied++;
     } catch (e) {
       warn("cron add failed for", job && job.name, "-", (e && e.message ? e.message : e));

@@ -18,6 +18,11 @@ class Command(BaseCommand):
         scope.add_argument("--tenant")
         scope.add_argument("--tenants", help="Comma-separated explicit UUID list; stops on first failure")
         parser.add_argument("--tag", default=None)
+        parser.add_argument(
+            "--pause-recurring",
+            action="store_true",
+            help="Explicitly pause recurring delivery during cutover; skip missed recurrences",
+        )
         mode = parser.add_mutually_exclusive_group()
         mode.add_argument("--dry-run", action="store_true")
         mode.add_argument("--verify-only", action="store_true")
@@ -43,7 +48,10 @@ class Command(BaseCommand):
                 self.stdout.write("PASS verified")
                 continue
             try:
-                result = migrate_tenant(tenant_id, tag, dry_run=options["dry_run"])
+                kwargs = {"dry_run": options["dry_run"]}
+                if options["pause_recurring"]:
+                    kwargs["pause_recurring"] = True
+                result = migrate_tenant(tenant_id, tag, **kwargs)
             except MigrationError as exc:
                 raise CommandError(f"{tenant_id}: {exc}") from None
             self.stdout.write(f"{tenant_id}: {result['status']} steps={','.join(result['steps'])}")
