@@ -20,6 +20,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.orchestrator.migration_cron_fence import cron_edits_fenced, cron_fenced_response
+
 from .cache import is_container_unavailable_error, read_jobs_from_cache
 from .gateway_client import GatewayError, invoke_gateway_tool
 from .tenant_views import _get_tenant_for_user, _is_hidden_cron, _require_active_tenant
@@ -149,6 +151,8 @@ class PendingAtCronCancelView(APIView):
 
     def delete(self, request, name: str):
         tenant = _get_tenant_for_user(request.user)
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response()
         try:
             _require_active_tenant(tenant)
         except GatewayError as exc:

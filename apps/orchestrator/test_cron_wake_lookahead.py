@@ -29,6 +29,7 @@ class _Base(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Lookahead", telegram_chat_id=950200)
+        self.tenant.openclaw_version = "2026.5.28"  # HTTP capture/suspend path
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-lookahead"
         self.tenant.container_fqdn = "oc-lookahead.internal"

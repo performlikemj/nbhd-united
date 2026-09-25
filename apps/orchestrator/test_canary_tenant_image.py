@@ -28,7 +28,7 @@ from django.test import SimpleTestCase, override_settings
 
 _REGISTRY = "nbhdunited.azurecr.io"
 _REPOSITORY = "nbhd-openclaw"
-_TAG = "canary-abc1234"
+_TAG = "2026.9.4-abc1234"
 _CONTAINER = "oc-148ccf1c-ef13-47f8-a"
 _TARGET_IMAGE = f"{_REGISTRY}/{_REPOSITORY}:{_TAG}"
 
@@ -62,6 +62,37 @@ class CanaryTenantImageMockRefusalTest(SimpleTestCase):
 
 @override_settings(AZURE_ACR_SERVER=_REGISTRY, AZURE_RESOURCE_GROUP="rg-test")
 class CanaryTenantImageReadbackTest(SimpleTestCase):
+    def setUp(self):
+        tenants = patch("apps.orchestrator.management.commands.canary_tenant_image.Tenant.objects.filter")
+        self.tenants = tenants.start()
+        self.addCleanup(tenants.stop)
+        azure = patch("apps.orchestrator.azure_client.get_container_client")
+        self.live_client = azure.start()
+        self.addCleanup(azure.stop)
+        self.live_client.return_value.container_apps.get.return_value = SimpleNamespace(
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image=_TARGET_IMAGE)])
+        )
+        self.tenants.return_value.__getitem__.return_value = [
+            SimpleNamespace(container_id=_CONTAINER, container_image_tag=_TAG, openclaw_version="2026.9.4")
+        ]
+
+    @patch("apps.orchestrator.management.commands.canary_tenant_image.is_mock", return_value=False)
+    @patch("apps.orchestrator.management.commands.canary_tenant_image.update_container_image")
+    def test_unknown_ambiguous_and_cross_family_refused(self, update, mock_mode):
+        legacy = SimpleNamespace(container_image_tag="2026.5.28-abcdef0", openclaw_version="2026.5.28")
+        for matches in (
+            [],
+            [legacy, legacy],
+            [legacy],
+            [SimpleNamespace(container_image_tag="abcdef0", openclaw_version="2026.9.4")],
+        ):
+            with self.subTest(matches=matches):
+                self.tenants.return_value.__getitem__.return_value = matches
+                with self.assertRaisesRegex(CommandError, "migrate_tenant_openclaw"):
+                    _call()
+        update.assert_not_called()
+        self.tenants.assert_called_with(container_id=_CONTAINER)
+
     @patch("apps.orchestrator.management.commands.canary_tenant_image.is_mock", return_value=False)
     @patch("apps.orchestrator.management.commands.canary_tenant_image.get_container_client")
     @patch("apps.orchestrator.management.commands.canary_tenant_image.update_container_image")
@@ -82,8 +113,7 @@ class CanaryTenantImageReadbackTest(SimpleTestCase):
             call_command("canary_tenant_image", container=_CONTAINER, tag=_TAG, stdout=out)
 
         message = str(ctx.exception)
-        self.assertIn(_TARGET_IMAGE, message)
-        self.assertIn("old-sha", message)
+        self.assertEqual("canary_image_identity_mismatch", message)
         self.assertNotIn("Canary image deployed", out.getvalue())
         mock_update.assert_called_once_with(_CONTAINER, _TARGET_IMAGE)
 

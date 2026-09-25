@@ -1,40 +1,8 @@
-"""Roll the current OpenClaw image to every tenant in one shot.
+"""Roll an image within an explicit UUID scope and the same runtime family.
 
-Bridges the gap between Django's ``OPENCLAW_IMAGE_TAG`` env var (set by CI on
-each deploy) and tenants' ``container_image_tag`` rows in Postgres. When
-those drift — e.g. PR #408 added the ``claude`` binary, but 24 tenants were
-still on 2026.4.5 because the previous fleet rollout was scoped to canary
-only — features that depend on the new image silently fail at runtime.
-
-This is the non-lazy counterpart to:
-
-  * ``apps/router/container_updates.py`` — opportunistic per-message bump
-    that only fires when a user is idle ≥2h. Slow to converge.
-  * ``apps/orchestrator/hibernation.py`` — wakes a hibernated tenant onto
-    the latest image (PR #384). Only fires on wake, not for active tenants.
-
-For an immediate fleet rollout (e.g. shipping a Dockerfile change that the
-BYO Anthropic flow needs at runtime), call this command. It targets every
-active tenant, parallelises Azure API calls behind a thread pool capped at
-five concurrent operations (Container Apps API rate limits sit around
-~30 RPM per subscription), and is idempotent — tenants whose
-``container_image_tag`` already matches the current ``OPENCLAW_IMAGE_TAG``
-are skipped.
-
-Usage:
-
-    # Default — bump every active tenant whose image is stale.
-    python manage.py bump_all_tenant_images
-
-    # Include hibernated tenants. They normally pick up the new image on
-    # next wake; pass this for true zero-skew rollouts.
-    python manage.py bump_all_tenant_images --include-hibernated
-
-    # Dry run — show who would be bumped without touching Azure.
-    python manage.py bump_all_tenant_images --dry-run
-
-    # Override target tag (default: settings.OPENCLAW_IMAGE_TAG).
-    python manage.py bump_all_tenant_images --tag <sha-or-named-tag>
+Usage: bump_all_tenant_images --tenant UUID [--tag VERSION-SHA]
+       bump_all_tenant_images --tenants UUID,UUID [--dry-run]
+Use --include-hibernated only when deliberately waking those scoped tenants.
 """
 
 from __future__ import annotations
@@ -58,9 +26,11 @@ _DEFAULT_MAX_WORKERS = 5
 
 
 class Command(BaseCommand):
-    help = "Roll the current OpenClaw image to every active tenant (idempotent, rate-limited)."
+    help = "Roll the current image within an explicit tenant scope (same runtime family only)."
 
     def add_arguments(self, parser):
+        parser.add_argument("--tenant", help="Explicit tenant UUID")
+        parser.add_argument("--tenants", help="Explicit comma-separated UUID list")
         parser.add_argument(
             "--tag",
             default=None,
@@ -89,6 +59,15 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        from apps.orchestrator.manual_scope import command_scope
+
+        try:
+            ids = command_scope(options)
+        except ValueError as exc:
+            raise CommandError(str(exc)) from None
+        selected = Tenant.objects.filter(pk__in=ids)
+        if selected.count() != len(ids):
+            raise CommandError("Unknown tenant in scope; nothing changed")
         target_tag = options["tag"] or getattr(settings, "OPENCLAW_IMAGE_TAG", "") or "latest"
         if not target_tag or target_tag == "latest":
             # `latest` is unsafe here — we can't compute "is this tenant
@@ -116,12 +95,19 @@ class Command(BaseCommand):
         # image automatically; ``--include-hibernated`` forces the bump now
         # for true zero-skew rollouts. Suspended/pending/deprovisioning/
         # deleted are out of scope (containers are gone or about to be).
-        eligible = Tenant.objects.filter(
+        eligible = selected.filter(
             status=Tenant.Status.ACTIVE,
             container_id__gt="",
         )
         if not include_hibernated:
             eligible = eligible.filter(hibernated_at__isnull=True)
+
+        from apps.orchestrator.runtime_guard import MIGRATION_REQUIRED, image_only_update_allowed
+
+        # Validate the entire scope BEFORE launching any worker, including same-tag
+        # partial upgrades. No tenant is mutated if one needs a migration.
+        if any(not image_only_update_allowed(t, target_tag) for t in selected):
+            raise CommandError(MIGRATION_REQUIRED)
 
         # Idempotence: skip tenants already on the target tag.
         to_bump = [t for t in eligible if (t.container_image_tag or "") != target_tag]
@@ -158,9 +144,11 @@ class Command(BaseCommand):
                 tid = str(tenant.id)[:8]
                 try:
                     future.result()
-                except Exception as exc:
+                except Exception:
                     failed += 1
-                    self.stderr.write(self.style.ERROR(f"  {tenant.container_id} ({tid}): FAILED — {exc}"))
+                    self.stderr.write(
+                        self.style.ERROR(f"  {tenant.container_id} ({tid}): FAILED reason=image_update_failed")
+                    )
                     continue
                 # DB write happens on the main thread so the row update
                 # honors the caller's transaction context (important for

@@ -1,0 +1,38 @@
+{
+  "sources": {
+    "runtime/openclaw/nbhd-cron-sync.mjs": "f3cd36da3f07188f20d58439adda59a1a39157ab1d73c9ab8520ec85b92303b1",
+    "apps/cron/share_cron_sync.py": "6c60643798fbd283fcabdf838992edfc8e432a6cdcbcecec3a2a7034b076a39a",
+    "apps/orchestrator/cron_reconcile.py": "8c2bff293a8a220be5dadb1260ca9d039496a1a814e740714482d958c1987b01",
+    "apps/cron/models.py": "1e521b07d0ee51fd5baebaa6ea965d9159dfbf5ad6f6131297bfc005dd4c9390",
+    "apps/cron/patterns/__init__.py": "4e40f223654e6ddfc6b8ad73b605e8667de05f8df1380c1afa87bdfb3fa79e63",
+    "apps/cron/patterns/base.py": "0d040ff8c06f860ef1473759d26e50076e1f645a260ae7bbfc86279c287cc2b6",
+    "apps/cron/patterns/daily_briefing.py": "98f995ba45cae6e2442c315373f650f8bef0228cf371d47815fe2449c5ffc76a",
+    "apps/cron/patterns/domain_summary.py": "24f5037e0eeaba15a91b39c5cc14a17ed59794a4f58a26b26cb77546d7eb6285",
+    "apps/cron/patterns/pure_reminder.py": "be143c1dc66f59742f9074159dae16a86ec037efc0a2a0a5e0bdd7552dd5e5b3",
+    "apps/cron/patterns/quote_user_intent.py": "5baf168084d91aff03d1afd9b12a375396f3356d1c137d36f00a6b0f3e47e00b",
+    "apps/cron/patterns/task_hygiene.py": "d225a2e64560b7f3dcb1d6c93204a9a1171f657d5fad955c4fd3618868228773",
+    "apps/cron/patterns/workout_congrats.py": "05b396b0631faad0876b776153bc98423cad0163a2ca9ef80e38eb7d290482e5",
+    "apps/cron/signals.py": "fb2369db7dd078d1fe3d2df6b7232970c3e1e504c9e017cad52a8c89825b78d2",
+    "runtime/openclaw/plugins/nbhd-automation-tools/index.js": "2c436c3384e4a7a854c472caea9d991352f2b171f14d5b8fd7f6dd203a0476dd",
+    "runtime/openclaw/plugins/nbhd-cron-enforcement/index.js": "8856f84a3fd83e838e780e38cce1589f8eae05998a41ed79271c40cab5005c36"
+  },
+  "synthetic": true,
+  "database": "Mock query results only; real selector, row renderer and HMAC signer",
+  "writerHash": "f3cd36da3f07188f20d58439adda59a1a39157ab1d73c9ab8520ec85b92303b1",
+  "version": {
+    "args": [
+      "--version"
+    ],
+    "exitCode": 0,
+    "stdout": "OpenClaw 2026.9.4 (3a9d69d)\n",
+    "stderr": ""
+  },
+  "isolation": "Docker --network none, no ports or mounts; cron.enabled=false; plugins.enabled=false; throwaway token",
+  "image": "nbhdunited.azurecr.io/nbhd-openclaw:2026.9.4-8ceb89f",
+  "imageId": "sha256:30c6c1e03b602d33090da9e7e8d46cf3a09f4242d5ab5e7d220dc4b06ee3e803",
+  "manifestDigest": "sha256:c244ff686863c1e9e4fc9fc55d1fac3b6a746e76039a9632db8ae082a0f21ddc",
+  "captureBatches": [
+    70,
+    5
+  ]
+}

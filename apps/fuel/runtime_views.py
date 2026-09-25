@@ -21,6 +21,7 @@ from apps.integrations.confirmation_tokens import (
     issue_confirm_token,
 )
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
+from apps.orchestrator.migration_cron_fence import cron_edits_fenced, cron_fenced_response
 from apps.pii.egress import KnownValueResponseGuardMixin
 from apps.router.document_write_guard import assert_write_allowed_for_document_turn, record_runtime_write_activity
 from apps.tenants.middleware import set_rls_context
@@ -1554,6 +1555,8 @@ class RuntimeFuelProfileView(_FuelResponseGuard, APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
+        if "preferred_time" in request.data and cron_edits_fenced(tenant):
+            return cron_fenced_response(assistant=True)
 
         blocked = assert_write_allowed_for_document_turn(tenant)
         if blocked is not None:
@@ -2857,6 +2860,8 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response(assistant=True)
 
         blocked = assert_write_allowed_for_document_turn(tenant)
         if blocked is not None:
@@ -3148,6 +3153,19 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
+        if cron_edits_fenced(tenant) and any(
+            field in request.data
+            for field in (
+                "name",
+                "status",
+                "weeks",
+                "schedule_json",
+                "week_overrides",
+                "repeat_policy",
+                "repeat_reason",
+            )
+        ):
+            return cron_fenced_response(assistant=True)
         record_runtime_write_activity(tenant)
 
         plan = self._get_plan(tenant, plan_id)
@@ -3557,6 +3575,8 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response(assistant=True)
 
         plan = self._get_plan(tenant, plan_id)
         if not plan:

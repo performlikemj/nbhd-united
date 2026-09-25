@@ -809,7 +809,7 @@ def bump_openclaw_version_for_tenant(
         raise
 
 
-def update_tenant_config(tenant_id: str) -> None:
+def update_tenant_config(tenant_id: str, *, strict: bool = False, refresh_crons: bool = True) -> None:
     """Regenerate OpenClaw config and update the running container."""
     tenant = Tenant.objects.select_related("user").get(id=tenant_id)
 
@@ -839,7 +839,9 @@ def update_tenant_config(tenant_id: str) -> None:
         from .personas import get_persona, render_workspace_files, render_workspace_rules
 
         persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
-        workspace_files = render_workspace_files(persona_key, tenant=tenant)
+        workspace_files = render_workspace_files(
+            persona_key, tenant=tenant, **({"metadata_only": True} if strict else {})
+        )
 
         # System-controlled files — always overwrite on config refresh.
         file_map_overwrite = {
@@ -918,6 +920,8 @@ def update_tenant_config(tenant_id: str) -> None:
             try:
                 current = download_workspace_file(str(tenant.id), file_path)
             except Exception:
+                if strict:
+                    raise
                 logger.warning(
                     "update_tenant_config: read of %s failed for tenant %s; skipping identity merge-push",
                     file_path,
@@ -952,6 +956,8 @@ def update_tenant_config(tenant_id: str) -> None:
                 content,
             )
     except Exception:
+        if strict:
+            raise
         logger.exception("Failed to upload workspace files for tenant %s", tenant_id)
 
     # Refresh USER.md (platform-managed envelope region merged with any
@@ -960,9 +966,20 @@ def update_tenant_config(tenant_id: str) -> None:
     try:
         from .workspace_envelope import TRIGGER_CONFIG_UPDATE, push_user_md
 
-        push_user_md(tenant, force=True, trigger=TRIGGER_CONFIG_UPDATE)
+        pushed = push_user_md(
+            tenant, force=True, trigger=TRIGGER_CONFIG_UPDATE, **({"metadata_only": True} if strict else {})
+        )
+        if strict and not pushed:
+            raise RuntimeError("USER.md refresh did not complete")
     except Exception:
+        if strict:
+            raise
         logger.exception("Failed to refresh USER.md for tenant %s (non-fatal)", tenant_id)
+
+    if not refresh_crons:
+        # Migration has captured authoritative cron truth; config regeneration
+        # must not refresh/reap that set before its explicit signed cutover.
+        return
 
     # Refresh the postgres CronJob rows for this tenant's system crons from
     # the current seed. The CronJob post_save signal triggers a debounced
@@ -980,6 +997,8 @@ def update_tenant_config(tenant_id: str) -> None:
                 result["preserved_custom"],
             )
     except Exception:
+        if strict:
+            raise
         logger.exception("Failed to refresh system cron rows for tenant %s (non-fatal)", tenant_id)
 
     logger.info("Updated OpenClaw config for tenant %s", tenant_id)

@@ -1,7 +1,7 @@
 """Deploy an OpenClaw image to a single tenant for canary testing.
 
 Wraps `apps.orchestrator.azure_client.update_container_image` so a single
-tenant can be flipped to a custom image tag (typically `canary-<shortsha>`)
+tenant can be flipped to an immutable, same-family image tag
 without touching `Tenant.container_image_tag` in the DB.
 
 Why we do NOT update the DB tag:
@@ -17,7 +17,7 @@ Usage:
 
     python manage.py canary_tenant_image \\
         --container oc-148ccf1c-ef13-47f8-a \\
-        --tag canary-abc1234
+        --tag 2026.9.4-abc1234
 
 See `docs/runbooks/canary.md` for the full procedure.
 """
@@ -28,6 +28,8 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.orchestrator.azure_client import get_container_client, is_mock, update_container_image
+from apps.orchestrator.runtime_guard import MIGRATION_REQUIRED, image_only_update_allowed
+from apps.tenants.models import Tenant
 
 
 class Command(BaseCommand):
@@ -42,7 +44,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--tag",
             required=True,
-            help="Image tag to deploy (e.g. canary-abc1234)",
+            help="Same-family versioned image tag (e.g. 2026.9.4-abc1234)",
         )
         parser.add_argument(
             "--repository",
@@ -68,6 +70,12 @@ class Command(BaseCommand):
         if not registry:
             raise CommandError("AZURE_ACR_SERVER is not configured")
 
+        tenants = list(Tenant.objects.filter(container_id=container)[:2])
+        if len(tenants) != 1:
+            raise CommandError("Container must resolve to exactly one tenant; " + MIGRATION_REQUIRED)
+        if repository != "nbhd-openclaw" or not image_only_update_allowed(tenants[0], tag):
+            raise CommandError(MIGRATION_REQUIRED)
+
         image = f"{registry}/{repository}:{tag}"
 
         self.stdout.write(f"Deploying canary image to {container}")
@@ -76,16 +84,15 @@ class Command(BaseCommand):
 
         try:
             update_container_image(container, image)
-        except Exception as exc:
-            raise CommandError(f"update_container_image failed: {exc}") from exc
+        except Exception:
+            raise CommandError("canary_image_update_failed") from None
 
-        actual_image = self._read_deployed_image(container)
+        try:
+            actual_image = self._read_deployed_image(container)
+        except Exception:
+            raise CommandError("canary_image_read_failed") from None
         if actual_image != image:
-            raise CommandError(
-                f"Deploy did not take: requested {image!r}, but {container}'s openclaw "
-                f"container reads back as {actual_image!r} on Azure. Do not assume this "
-                "canary is live — check the Container App revision directly."
-            )
+            raise CommandError("canary_image_identity_mismatch")
 
         self.stdout.write(self.style.SUCCESS(f"Canary image deployed to {container}"))
         self.stdout.write(

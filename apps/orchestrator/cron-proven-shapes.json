@@ -1,0 +1,2027 @@
+{
+  "shapes": [
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "at",
+          "atMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": true
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/at-offset-stable.json",
+        "fixtures/openclaw_94_cron_contract/at-utc-stable.json",
+        "fixtures/openclaw_94_cron_contract/round_six/at-expr-stable.json",
+        "fixtures/openclaw_94_cron_contract/round_six/at-ms-stable.json",
+        "fixtures/openclaw_94_cron_contract/round_six/at-numeric-stable.json",
+        "fixtures/openclaw_94_cron_contract/round_six/at-offset-stable.json",
+        "fixtures/openclaw_94_cron_contract/round_six/at-utc-stable.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "main",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/agent-main.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "announce",
+          "channel": "telegram",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/announce-telegram.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "announce",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/announce.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/control-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "lightContext": true,
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ]
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/control-lightContext.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "v4-flash",
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/control-model.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "timeoutSeconds": 120,
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/control-timeoutSeconds.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "message": {
+            "valueType": "string"
+          },
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/control-toolsAllow.json",
+        "fixtures/openclaw_94_cron_contract/round_six/tools-string.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/cron-top-hour.json",
+        "fixtures/openclaw_94_cron_contract/round_six/cron-tz.json",
+        "fixtures/openclaw_94_cron_contract/round_six/delivery-default.json",
+        "fixtures/openclaw_94_cron_contract/round_six/delivery-empty.json",
+        "fixtures/openclaw_94_cron_contract/round_six/light-false.json",
+        "fixtures/openclaw_94_cron_contract/round_six/null-all-optionals.json",
+        "fixtures/openclaw_94_cron_contract/round_six/null-fallbacks.json",
+        "fixtures/openclaw_94_cron_contract/round_six/null-lightContext.json",
+        "fixtures/openclaw_94_cron_contract/round_six/null-model.json",
+        "fixtures/openclaw_94_cron_contract/round_six/null-optionals.json",
+        "fixtures/openclaw_94_cron_contract/round_six/null-timeoutSeconds.json",
+        "fixtures/openclaw_94_cron_contract/round_six/null-toolsAllow.json",
+        "fixtures/openclaw_94_cron_contract/round_six/text-alias.json",
+        "fixtures/openclaw_94_cron_contract/round_six/tools-wildcard.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/description.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "now",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "every",
+          "everyMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/every.json",
+        "fixtures/openclaw_94_cron_contract/round_six/null-anchor.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "at",
+          "atMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_send_to_user",
+            "nbhd_task_list",
+            "nbhd_goal_list",
+            "nbhd_lessons_pending",
+            "nbhd_calendar_list_events",
+            "nbhd_daily_note_get",
+            "nbhd_sessions_pending"
+          ],
+          "timeoutSeconds": 90,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": true
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-daily_briefing-at-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "at",
+          "atMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_send_to_user",
+            "nbhd_task_list",
+            "nbhd_goal_list",
+            "nbhd_lessons_pending",
+            "nbhd_calendar_list_events",
+            "nbhd_daily_note_get",
+            "nbhd_sessions_pending"
+          ],
+          "timeoutSeconds": 90,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": true
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-daily_briefing-at.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_send_to_user",
+            "nbhd_task_list",
+            "nbhd_goal_list",
+            "nbhd_lessons_pending",
+            "nbhd_calendar_list_events",
+            "nbhd_daily_note_get",
+            "nbhd_sessions_pending"
+          ],
+          "timeoutSeconds": 90,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-daily_briefing-cron-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_send_to_user",
+            "nbhd_task_list",
+            "nbhd_goal_list",
+            "nbhd_lessons_pending",
+            "nbhd_calendar_list_events",
+            "nbhd_daily_note_get",
+            "nbhd_sessions_pending"
+          ],
+          "timeoutSeconds": 90,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-daily_briefing-cron.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "every",
+          "everyMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_send_to_user",
+            "nbhd_task_list",
+            "nbhd_goal_list",
+            "nbhd_lessons_pending",
+            "nbhd_calendar_list_events",
+            "nbhd_daily_note_get",
+            "nbhd_sessions_pending"
+          ],
+          "timeoutSeconds": 90,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-daily_briefing-every-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "every",
+          "everyMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_send_to_user",
+            "nbhd_task_list",
+            "nbhd_goal_list",
+            "nbhd_lessons_pending",
+            "nbhd_calendar_list_events",
+            "nbhd_daily_note_get",
+            "nbhd_sessions_pending"
+          ],
+          "timeoutSeconds": 90,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-daily_briefing-every.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "at",
+          "atMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_send_to_user",
+            "nbhd_task_list"
+          ],
+          "timeoutSeconds": 60,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": true
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-domain_summary-at-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "at",
+          "atMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_send_to_user",
+            "nbhd_task_list"
+          ],
+          "timeoutSeconds": 60,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": true
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-domain_summary-at.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_send_to_user",
+            "nbhd_task_list"
+          ],
+          "timeoutSeconds": 60,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-domain_summary-cron-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_send_to_user",
+            "nbhd_task_list"
+          ],
+          "timeoutSeconds": 60,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-domain_summary-cron.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "every",
+          "everyMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_send_to_user",
+            "nbhd_task_list"
+          ],
+          "timeoutSeconds": 60,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-domain_summary-every-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "every",
+          "everyMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_send_to_user",
+            "nbhd_task_list"
+          ],
+          "timeoutSeconds": 60,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-domain_summary-every.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "at",
+          "atMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": true,
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 30,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": true
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-pure_reminder-at-fallbacks.json",
+        "fixtures/openclaw_94_cron_contract/round_six/typed-workout_congrats-at-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "at",
+          "atMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": true,
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 30,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": true
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-pure_reminder-at.json",
+        "fixtures/openclaw_94_cron_contract/round_six/typed-workout_congrats-at.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": true,
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 30,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-pure_reminder-cron-fallbacks.json",
+        "fixtures/openclaw_94_cron_contract/round_six/typed-workout_congrats-cron-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": true,
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 30,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-pure_reminder-cron.json",
+        "fixtures/openclaw_94_cron_contract/round_six/typed-workout_congrats-cron.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "every",
+          "everyMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": true,
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 30,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-pure_reminder-every-fallbacks.json",
+        "fixtures/openclaw_94_cron_contract/round_six/typed-workout_congrats-every-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "every",
+          "everyMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": true,
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 30,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-pure_reminder-every.json",
+        "fixtures/openclaw_94_cron_contract/round_six/typed-workout_congrats-every.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "at",
+          "atMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": true,
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 45,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": true
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-quote_user_intent-at-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "at",
+          "atMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": true,
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 45,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": true
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-quote_user_intent-at.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": true,
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 45,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-quote_user_intent-cron-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": true,
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 45,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-quote_user_intent-cron.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "every",
+          "everyMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": true,
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 45,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-quote_user_intent-every-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "every",
+          "everyMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": true,
+          "toolsAllow": [
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 45,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-quote_user_intent-every.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "at",
+          "atMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_task_list",
+            "nbhd_task_get",
+            "nbhd_goal_list",
+            "nbhd_current_status",
+            "nbhd_task_complete",
+            "nbhd_task_skip",
+            "nbhd_task_defer",
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 120,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": true
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-task_hygiene-at-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "at",
+          "atMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_task_list",
+            "nbhd_task_get",
+            "nbhd_goal_list",
+            "nbhd_current_status",
+            "nbhd_task_complete",
+            "nbhd_task_skip",
+            "nbhd_task_defer",
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 120,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": true
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-task_hygiene-at.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_task_list",
+            "nbhd_task_get",
+            "nbhd_goal_list",
+            "nbhd_current_status",
+            "nbhd_task_complete",
+            "nbhd_task_skip",
+            "nbhd_task_defer",
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 120,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-task_hygiene-cron-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_task_list",
+            "nbhd_task_get",
+            "nbhd_goal_list",
+            "nbhd_current_status",
+            "nbhd_task_complete",
+            "nbhd_task_skip",
+            "nbhd_task_defer",
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 120,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-task_hygiene-cron.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "every",
+          "everyMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_task_list",
+            "nbhd_task_get",
+            "nbhd_goal_list",
+            "nbhd_current_status",
+            "nbhd_task_complete",
+            "nbhd_task_skip",
+            "nbhd_task_defer",
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 120,
+          "fallbacks": [
+            "v4-pro"
+          ],
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-task_hygiene-every-fallbacks.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": {
+          "valueType": "string"
+        },
+        "pacing": {},
+        "schedule": {
+          "kind": "every",
+          "everyMs": {
+            "valueType": "integer"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "lightContext": false,
+          "toolsAllow": [
+            "nbhd_task_list",
+            "nbhd_task_get",
+            "nbhd_goal_list",
+            "nbhd_current_status",
+            "nbhd_task_complete",
+            "nbhd_task_skip",
+            "nbhd_task_defer",
+            "nbhd_send_to_user"
+          ],
+          "timeoutSeconds": 120,
+          "message": {
+            "valueType": "string"
+          }
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/typed-task_hygiene-every.json"
+      ]
+    },
+    {
+      "shape": {
+        "enabled": true,
+        "sessionKey": "",
+        "wakeMode": "next-heartbeat",
+        "agentId": "",
+        "description": "",
+        "pacing": {},
+        "schedule": {
+          "kind": "cron",
+          "expr": {
+            "valueType": "string"
+          },
+          "tz": {
+            "valueType": "string"
+          }
+        },
+        "payload": {
+          "kind": "agentTurn",
+          "message": {
+            "valueType": "string"
+          },
+          "toolsAllow": [
+            "*"
+          ],
+          "lightContext": false
+        },
+        "delivery": {
+          "mode": "none",
+          "channel": "last",
+          "to": "",
+          "accountId": "",
+          "threadId": "",
+          "bestEffort": false
+        },
+        "sessionTarget": "isolated",
+        "deleteAfterRun": false
+      },
+      "fixtures": [
+        "fixtures/openclaw_94_cron_contract/round_six/wake-heartbeat.json"
+      ]
+    }
+  ]
+}

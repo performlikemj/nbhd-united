@@ -6,6 +6,21 @@ harness framework (`config_validator.py`, `config_security.py`,
 `openclaw_config_doctor_smoke.sh`) — those catch config-schema drift; the
 canary catches runtime-behavior drift that only shows up under real use.
 
+## Runtime-family boundary
+
+`canary_tenant_image` resolves `--container` to exactly one tenant and requires
+its current DB version, stored image tag and target tag to identify the same
+runtime family. Unknown/duplicate container mappings, ambiguous bare-SHA or
+`canary-*` tags, and alternate repositories are refused before Azure submission.
+For 5.x → 9.x, use the [explicit migration runbook](openclaw-94-migration.md);
+this image-only command does not capture cron state or update DB version/tag.
+
+The Makefile's legacy default `CANARY_TAG=canary-<sha>` is therefore refused at
+deploy. Supply a version-prefixed tag matching the image being built and the
+selected tenant's existing family. The old rollback examples below are also
+subject to this boundary: use a known same-family versioned image. Cross-family
+recovery must follow the migration runbook's manual recovery procedure.
+
 ## When to canary
 
 Required for:
@@ -54,14 +69,14 @@ PR before proceeding.
 From the PR branch:
 
 ```bash
-make canary
+make canary CANARY_TAG="2026.9.4-$(git rev-parse --short HEAD)"
 ```
 
 That runs `canary-build` followed by `canary-deploy`:
 
 - `canary-build` calls `az acr build` against the live ACR, tagging the
-  image `canary-<short-sha>` so it can't collide with CI's `<full-sha>`
-  / `latest` tags. Nothing else in the fleet picks it up.
+  image with your explicit `CANARY_TAG`. Verify that its version prefix matches
+  `Dockerfile.openclaw` and the selected tenant before building.
 - `canary-deploy` shells out to `python manage.py canary_tenant_image`
   locally, which calls `apps.orchestrator.azure_client.update_container_image`
   to flip just the canary container onto the new tag.
@@ -81,7 +96,7 @@ That runs `canary-build` followed by `canary-deploy`:
 Override defaults if needed:
 
 ```bash
-make canary CANARY_CONTAINER=oc-<other> CANARY_TAG=canary-myhotfix
+make canary CANARY_CONTAINER=oc-<other> CANARY_TAG=2026.9.4-abcdef0
 ```
 
 ### 3. Watch startup
@@ -147,7 +162,7 @@ good sign.
   all tenants, and the `apply-pending-configs` cron rolls the new image
   to the whole fleet. Because the canary's DB `container_image_tag` was
   left untouched in step 2, that same cron also reconciles the canary
-  container off the `canary-*` tag back onto the canonical tag — no
+  container off the custom tag back onto the canonical tag — no
   lingering canary state.
 - **Fail** — do NOT merge. Roll back the canary first (see §7), fix on
   the branch, rebuild, redeploy to canary, retest.
@@ -155,7 +170,7 @@ good sign.
 ### 7. Rollback
 
 Find the last known-good tag this tenant was on (the SHA the rest of
-the fleet is currently running is a safe choice):
+the fleet is currently running must still pass the family guard):
 
 ```bash
 az containerapp revision list \
@@ -168,7 +183,7 @@ az containerapp revision list \
 Then redeploy that tag to the canary container:
 
 ```bash
-make canary-rollback PREV_TAG=<previous-sha>
+make canary-rollback PREV_TAG=2026.9.4-<previous-sha>
 ```
 
 For the absolute fastest rollback (if the previous revision is still
@@ -190,8 +205,9 @@ Canary ACR tags accumulate. To inspect:
 make canary-prune
 ```
 
-That lists all `canary-*` tags newest-first and prints the delete command
-template. Keep the most recent 2–3, delete the rest by hand.
+That lists legacy `canary-*` tags newest-first and prints the delete command
+template. It does not list the version-prefixed tags required by the family
+guard; handle their retention through the versioned-image release process.
 
 ## Open improvements
 

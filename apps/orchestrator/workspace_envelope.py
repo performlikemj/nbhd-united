@@ -101,7 +101,7 @@ def _render_current_time_line(tenant: Tenant) -> str:
     return f"_Current local time: {now.strftime('%A, %B %d, %Y at %H:%M')} ({user_tz})_"
 
 
-def render_managed_region(tenant: Tenant) -> str:
+def render_managed_region(tenant: Tenant, *, metadata_only: bool = False) -> str:
     """The full managed block, sentinel markers included.
 
     Walks the envelope registry in ``order`` ascending, calling each
@@ -163,11 +163,14 @@ def render_managed_region(tenant: Tenant) -> str:
         except Exception:
             # A misbehaving section shouldn't blow up the whole region.
             # Log + skip — agent still gets every other pillar's state.
-            logger.exception(
-                "Envelope section '%s' raised during render for tenant %s",
-                section.key,
-                str(tenant.id)[:8],
-            )
+            if metadata_only:
+                logger.warning("Envelope render failure reason=section_render_failed")
+            else:
+                logger.exception(
+                    "Envelope section '%s' raised during render for tenant %s",
+                    section.key,
+                    str(tenant.id)[:8],
+                )
             continue
         if not body:
             continue
@@ -562,6 +565,7 @@ def push_user_md(
     force: bool = False,
     trigger: str = TRIGGER_UNCLASSIFIED,
     sender_model: str | None = None,
+    metadata_only: bool = False,
 ) -> bool:
     """Single-flight render and write of USER.md for one tenant.
 
@@ -607,6 +611,7 @@ def push_user_md(
                     trigger=metadata.primary[0],
                     sender_model=None if metadata.primary[1] == "none" else metadata.primary[1],
                     _metadata=metadata,
+                    **({"metadata_only": True} if metadata_only else {}),
                 )
             except Exception as exc:
                 attempt_error = exc
@@ -676,6 +681,7 @@ def _push_user_md_once(
     trigger: str = TRIGGER_UNCLASSIFIED,
     sender_model: str | None = None,
     _metadata: _PushMetadata | None = None,
+    metadata_only: bool = False,
 ) -> bool:
     """Render, merge, and write one USER.md snapshot.
 
@@ -725,7 +731,11 @@ def _push_user_md_once(
         if tenant_obj is None:
             tenant_obj = Tenant.objects.select_related("user").get(id=tenant_id)
 
-        managed = render_managed_region(tenant_obj)
+        managed = (
+            render_managed_region(tenant_obj, metadata_only=True)
+            if metadata_only
+            else render_managed_region(tenant_obj)
+        )
 
         try:
             existing = download_workspace_file(tenant_id, "workspace/USER.md")

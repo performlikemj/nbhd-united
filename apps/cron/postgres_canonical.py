@@ -362,7 +362,9 @@ def bulk_update_foreground(tenant: Tenant, ids_or_names: list[str], foreground: 
 
 
 # Used by tests + service code that needs to seed Postgres directly.
-def upsert_from_gateway_jobs(tenant: Tenant, raw_jobs: list[dict[str, Any]]) -> dict:
+def upsert_from_gateway_jobs(
+    tenant: Tenant, raw_jobs: list[dict[str, Any]], *, delete_missing: bool = True, preserve_existing: bool = False
+) -> dict:
     """Replace a tenant's Postgres CronJob rows with the gateway's current set.
 
     Mirrors ``apps/cron/cache.py::upsert_jobs_to_cache`` but also writes the
@@ -407,7 +409,7 @@ def upsert_from_gateway_jobs(tenant: Tenant, raw_jobs: list[dict[str, Any]]) -> 
                     enabled=enabled,
                 )
                 upserted += 1
-            else:
+            elif not preserve_existing:
                 row.gateway_job_id = gateway_job_id
                 row.data = job
                 row.source = source
@@ -418,7 +420,7 @@ def upsert_from_gateway_jobs(tenant: Tenant, raw_jobs: list[dict[str, Any]]) -> 
 
         stale_names = set(existing) - desired_names
         removed = 0
-        if stale_names:
+        if stale_names and delete_missing:
             removed = CronJob.objects.filter(tenant=tenant, name__in=stale_names).count()
             CronJob.objects.filter(tenant=tenant, name__in=stale_names).delete()
 

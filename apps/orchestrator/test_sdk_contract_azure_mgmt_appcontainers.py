@@ -34,6 +34,10 @@ class AzureContainerAppsSdkContractTest(SimpleTestCase):
 
         inspect.signature(operations.begin_create_or_update).bind("resource-group", "app", {})
         inspect.signature(operations.get).bind("resource-group", "app")
+        inspect.signature(operations.get_auth_token).bind("resource-group", "app")
+        inspect.signature(self.client.container_apps_revision_replicas.list_replicas).bind(
+            "resource-group", "app", "revision"
+        )
         inspect.signature(operations.list_by_resource_group).bind("resource-group")
         inspect.signature(operations.begin_delete).bind("resource-group", "app")
 
@@ -91,3 +95,33 @@ class AzureContainerAppsSdkContractTest(SimpleTestCase):
 
     def test_caught_revision_exception_still_exists(self):
         self.assertTrue(issubclass(ResourceExistsError, Exception))
+
+    def test_operator_response_model_paths(self):
+        from azure.mgmt.appcontainers.models import ContainerApp, ContainerAppAuthToken, ReplicaCollection
+
+        app = ContainerApp.deserialize({"properties": {"latestRevisionName": "r1", "latestReadyRevisionName": "r1"}})
+        token = ContainerAppAuthToken.deserialize({"properties": {"token": "offline-test"}})
+        replicas = ReplicaCollection.deserialize(
+            {
+                "value": [
+                    {
+                        "properties": {
+                            "containers": [
+                                {
+                                    "name": "openclaw",
+                                    "ready": True,
+                                    "execEndpoint": "wss://example.invalid/exec",
+                                    "logStreamEndpoint": "https://example.invalid/logstream",
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        self.assertEqual(app.latest_revision_name, app.latest_ready_revision_name)
+        self.assertEqual(token.token, "offline-test")
+        container = replicas.value[0].containers[0]
+        self.assertTrue(container.ready)
+        self.assertEqual(container.exec_endpoint, "wss://example.invalid/exec")
+        self.assertEqual(container.log_stream_endpoint, "https://example.invalid/logstream")

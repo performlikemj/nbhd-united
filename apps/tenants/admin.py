@@ -104,6 +104,8 @@ class UserAdmin(BaseUserAdmin):
 
 @admin.register(Tenant)
 class TenantAdmin(admin.ModelAdmin):
+    exclude = ("openclaw_migration",)
+
     list_display = (
         "user",
         "status",
