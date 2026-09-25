@@ -238,6 +238,7 @@ class PrestagingTests(TestCase):
             patch.object(m, "live_source_jobs", return_value=[source]),
             patch.object(m, "get_app", return_value=app),
             patch.object(m, "wait_healthy", return_value={"health": True}),
+            patch.object(m.azure_client, "snapshot_tenant_share", return_value="snap-test"),
             patch.object(m.azure_client, "update_container_image", side_effect=apply) as update,
             patch.dict(
                 m.HANDLERS,
@@ -293,6 +294,7 @@ class PrestagingTests(TestCase):
             patch.object(m, "live_source_jobs", return_value=[job()]),
             patch.object(m, "get_app", return_value=app),
             patch.object(m.azure_client, "download_workspace_file_binary", return_value=b"corrupt"),
+            patch.object(m.azure_client, "snapshot_tenant_share", return_value="snap-test"),
             patch.object(m.azure_client, "update_container_image") as image,
             self.assertRaisesRegex(m.MigrationError, "signed_file_readback_mismatch"),
         ):

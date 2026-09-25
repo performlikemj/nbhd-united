@@ -196,6 +196,7 @@ class MigrationOrderingTests(TestCase):
             patch.object(migration, "get_app", return_value=app),
             patch.object(migration.runtime_operator, "config_observed") as config,
             patch.object(migration, "verify", return_value={"result": "PASS"}) as verify,
+            patch.object(migration.azure_client, "snapshot_tenant_share", return_value="snap-test"),
             patch.object(migration.azure_client, "update_container_image") as update,
         ):
             result = migration.verify_existing(self.tenant, {})
@@ -391,6 +392,7 @@ class MigrationStepTests(TestCase):
         with (
             patch.object(migration.time, "sleep"),
             patch.object(migration, "get_app", return_value=app),
+            patch.object(migration.azure_client, "snapshot_tenant_share", return_value="snap-test"),
             patch.object(migration.azure_client, "update_container_image") as update,
             patch.object(migration, "wait_healthy", return_value={}) as health,
         ):
@@ -410,6 +412,7 @@ class MigrationStepTests(TestCase):
             patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": []}),
             patch.object(migration.time, "sleep"),
             patch.object(migration, "get_app", return_value=app),
+            patch.object(migration.azure_client, "snapshot_tenant_share", return_value="snap-test"),
             patch.object(
                 migration.azure_client, "update_container_image", side_effect=lambda *a, **k: calls.append("image")
             ) as update,
