@@ -18,6 +18,7 @@ import {
   IconSettings,
 } from "@/components/icons/constellation";
 import { OpenSkyStarfield } from "@/components/open-sky/starfield";
+import { OpenSkyPageHeader } from "@/components/open-sky/primitives";
 import { useMeQuery } from "@/lib/queries";
 import type { Tenant } from "@/lib/types";
 
@@ -62,6 +63,21 @@ export function openSkySections(tenant: Tenant | null | undefined): Section[] {
   items.push({ href: "/settings", label: "Settings", icon: IconSettings });
   return items;
 }
+
+/**
+ * Serif page titles for the existing sections (their own headings carry
+ * `data-os-legacy-title` and hide under Open Sky). Taglines are the sections'
+ * existing copy. Detail routes (e.g. /journal/goal/…) keep their own titles.
+ */
+const LEGACY_TITLES: { match: (p: string) => boolean; title: string; subtitle?: string }[] = [
+  { match: (p) => p === "/journal", title: "Journal" },
+  { match: (p) => p === "/constellation", title: "Constellation", subtitle: "The threads across your life." },
+  { match: (p) => p === "/horizons", title: "Horizons", subtitle: "Your goals, your momentum." },
+  { match: (p) => p === "/fuel", title: "Fuel", subtitle: "Every session, on the calendar." },
+  { match: (p) => p === "/core", title: "Core", subtitle: "A quiet ten minutes, whenever you need it." },
+  { match: (p) => p === "/settings" || p.startsWith("/settings/"), title: "Settings", subtitle: "Manage your account, integrations, scheduled tasks, usage, and billing." },
+  { match: (p) => p === "/friends", title: "Neighborhood" },
+];
 
 function isActive(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
@@ -318,6 +334,7 @@ export function OpenSkyShell({
 }) {
   const pathname = usePathname();
   const sections = openSkySections(tenant);
+  const legacyTitle = LEGACY_TITLES.find((t) => t.match(pathname.replace(/\/$/, "") || "/"));
 
   return (
     <div className="relative flex h-[100dvh] overflow-hidden text-os-ink" style={{ paddingTop: "env(safe-area-inset-top)" }}>
@@ -335,6 +352,7 @@ export function OpenSkyShell({
           className="min-h-0 flex-1 overflow-y-auto px-4 pb-32 pt-4 sm:px-6 md:px-10 md:pb-12 md:pt-8 lg:px-14"
         >
           <div className="mx-auto w-full max-w-[1100px]">
+            {legacyTitle ? <OpenSkyPageHeader title={legacyTitle.title} subtitle={legacyTitle.subtitle} /> : null}
             <ErrorBoundary
               fallback={
                 <div className="os-hairline-top pt-4">

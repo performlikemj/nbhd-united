@@ -58,7 +58,7 @@ const PillarsTodayCard = dynamic(
 function HorizonsSkeleton() {
   return (
     <div className="space-y-6 sm:space-y-8">
-      <div>
+      <div data-os-legacy-title>
         <h1 className="font-headline text-4xl font-semibold tracking-tight text-ink sm:text-5xl">
           Horizons
         </h1>
@@ -109,7 +109,7 @@ export default function HorizonsPage() {
   if (error) {
     return (
       <div className="space-y-6">
-        <div>
+        <div data-os-legacy-title>
           <h1 className="font-headline text-4xl font-semibold tracking-tight text-ink sm:text-5xl">
             Horizons
           </h1>
@@ -129,7 +129,7 @@ export default function HorizonsPage() {
 
   return (
     <div className="space-y-8 sm:space-y-12">
-      <div className="space-y-2">
+      <div className="space-y-2" data-os-legacy-title>
         <h1 className="font-headline text-4xl font-semibold tracking-tight text-ink sm:text-5xl">
           Horizons
         </h1>

@@ -164,7 +164,7 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
+      <div data-os-legacy-title>
         <h1 className="text-2xl font-semibold text-ink">Settings</h1>
         <p className="mt-1 text-sm text-ink-muted">
           Manage your account, integrations, scheduled tasks, usage, and billing.

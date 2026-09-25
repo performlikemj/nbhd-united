@@ -698,3 +698,22 @@ html.open-sky .glow-purple-hover:hover { box-shadow: none; }
   50% { opacity: calc(var(--os-a, 0.3) * 0.35); }
 }
 .os-twinkle { animation: os-twinkle 6s ease-in-out infinite; }
+
+/* Open Sky: legacy filled-accent buttons (`bg-accent text-white`, 41 sites) become
+   the outline capsule — class-level, no per-page edits. Non-button accent fills
+   (dots, bars) never carry text-white and are untouched. */
+html.open-sky .bg-accent.text-white {
+  background-color: transparent !important;
+  color: var(--os-accent) !important;
+  box-shadow: inset 0 0 0 1px var(--os-accent-line) !important;
+  filter: none !important;
+}
+html.open-sky .bg-accent.text-white:hover { background-color: var(--os-accent-soft) !important; }
+/* Legacy page-level titles are replaced by the shell's serif header. */
+html.open-sky [data-os-legacy-title] { display: none !important; }
+html.open-sky [data-os-journal] {
+  margin: 0 !important;
+  height: calc(100dvh - 11rem);
+  border-top: 1px solid var(--os-hairline);
+}
+html.open-sky nav[aria-label="Journal sidebar"] { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }

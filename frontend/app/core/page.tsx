@@ -232,10 +232,10 @@ export default function CorePage() {
     <div className="mx-auto overflow-x-hidden pb-36 sm:pb-32">
       {/* ── Hero ── */}
       <header className="mb-8 sm:mb-10">
-        <span className="mb-2 block text-[10px] font-bold uppercase tracking-[0.24em] text-signal sm:text-xs">
+        <span data-os-legacy-title className="mb-2 block text-[10px] font-bold uppercase tracking-[0.24em] text-signal sm:text-xs">
           Core · Mindfulness
         </span>
-        <h1 className="font-display text-4xl italic leading-[1.05] text-ink md:text-5xl">
+        <h1 data-os-legacy-title className="font-display text-4xl italic leading-[1.05] text-ink md:text-5xl">
           A quiet ten minutes,
           <br />
           <span className="text-ink-muted">whenever you need it.</span>
