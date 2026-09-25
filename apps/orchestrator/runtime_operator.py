@@ -39,12 +39,24 @@ def _connection(tenant):
     return containers[0], token
 
 
+def _comparison_adapter():
+    """Bundle the same semantic comparator used by offline fixture tests."""
+    digest = Path(__file__).with_name("migration_cron_digest.mjs").read_text()
+    comparator = (
+        Path(__file__)
+        .with_name("migration_cron_compare.mjs")
+        .read_text()
+        .replace("import { normalizedDeclaration, stableJSON } from './migration_cron_digest.mjs';", "")
+    )
+    return (digest + comparator).replace("export ", "")
+
+
 def run_node(tenant, body: str, *, timeout: int = 90):
     """Execute a fixed JS adapter; only its explicit JSON result leaves the replica."""
     container, token = _connection(tenant)
     # Supply the migration comparator without changing the runtime image.
     if "readSignedJobs,sameCron" in body:
-        adapter = Path(__file__).with_name("migration_cron_compare.mjs").read_text().replace("export ", "")
+        adapter = _comparison_adapter()
         body = body.replace(
             "const {readSignedJobs,sameCron,buildAddArgs,atFireMs}=await import('/opt/nbhd/nbhd-cron-sync.mjs');",
             "const {readSignedJobs}=await import('/opt/nbhd/nbhd-cron-sync.mjs');" + adapter,
@@ -99,10 +111,15 @@ def run_node(tenant, body: str, *, timeout: int = 90):
 # Kept payload-free: even names can contain user prose, so callers print counts only.
 _LIST = """
 const doc=JSON.parse(oc(['cron','list','--all','--json']));
-const jobs=Array.isArray(doc)?doc:doc.jobs;
-if(!Array.isArray(jobs)) throw Error('shape');
-if(doc.hasMore===true || Number(doc.total||0)>jobs.length ||
+const allJobs=Array.isArray(doc)?doc:doc.jobs;
+if(!Array.isArray(allJobs)) throw Error('shape');
+if(doc.hasMore===true || Number(doc.total||0)>allJobs.length ||
     (doc.nextOffset!=null && doc.nextOffset!==false)) throw Error('incomplete list');
+// The real CLI reserves these namespaces and refuses removal. These monitor
+// rows are recreated by the gateway itself, not by the signed cron writer.
+const jobs=allJobs.filter(j=>!(['heartbeat:','skill-collection-review:'].some(prefix=>
+    typeof j.agentId==='string' && j.agentId && j.declarationKey===prefix+j.agentId)));
+
 """
 
 
@@ -123,12 +140,10 @@ def inspect_signed_crons(tenant, *, cleanup: bool = False, canonical_digests=Non
     Comparison includes payloads INSIDE the replica via the image's tested adapter.
     Only IDs, declaration keys and match flags cross the console boundary.
     """
-    digest_adapter = Path(__file__).with_name("migration_cron_digest.mjs").read_text().replace("export ", "")
     private_expected = json.dumps(canonical_digests) if canonical_digests is not None else "null"
     return run_node(
         tenant,
-        digest_adapter
-        + "const canonical="
+        "const canonical="
         + private_expected
         + ";"
         + _LIST

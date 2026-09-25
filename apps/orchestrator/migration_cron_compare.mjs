@@ -1,4 +1,5 @@
 // Migration-only declaration comparison; never shipped in the OpenClaw image.
+import { normalizedDeclaration, stableJSON } from './migration_cron_digest.mjs';
 const ALLOWED_PAYLOAD_KINDS = new Set(["agentTurn", "systemEvent"]);
 const DECL_PREFIX = "nbhd:";
 const FIELDS = {
@@ -61,11 +62,18 @@ const FIELDS = {
   "pacing": [
     "min",
     "max"
+  ],
+  "observation": [
+    "configRevision",
+    "effectiveAgentId"
   ]
-}
-;
+};
 export function supportedDeclaration(job) {
-  if (!job || Object.keys(job).some(k=>!FIELDS.job.includes(k))) return false;
+  if (!job || typeof job !== 'object' || Array.isArray(job)) return false;
+  job = {...job};
+  for (const field of FIELDS.observation) delete job[field];
+  if (stableJSON(job.scheduledToolPolicy) === stableJSON({version:1,mode:'trusted'})) delete job.scheduledToolPolicy;
+  if (Object.keys(job).some(k=>!FIELDS.job.includes(k))) return false;
   for (const part of ['payload','delivery','schedule','pacing']) {
     if (Object.keys(job[part]||{}).some(k=>!FIELDS[part].includes(k))) return false;
   }
@@ -202,35 +210,12 @@ function cliList(value) {
   return Array.isArray(value) ? value.join(",") : String(value);
 }
 
-// Compare exactly the fields this adapter can apply, including all agentTurn
-// controls and the enforcement contract in description. Runtime timestamps and
-// schedule anchors are intentionally ignored by the argv projection.
+// Semantic comparison against real CLI rows: instants, empty defaults and
+// canonical timing pins, not serialization of CLI argument strings.
 export function sameCron(current, desired) {
-  if (desired?.schedule?.anchorMs != null && current?.schedule?.anchorMs !== desired.schedule.anchorMs) return false;
-  const normalize = (job) => {
-    if (!job) return null;
-    const copy = structuredClone(job);
-    if (desired?.schedule?.anchorMs == null && copy.schedule) delete copy.schedule.anchorMs;
-    if (desired?.schedule?.staggerMs == null && copy.schedule) delete copy.schedule.staggerMs;
-    // Leave the container's wake mode alone unless the declaration pins it.
-    if (desired?.wakeMode == null) delete copy.wakeMode;
-    else copy.wakeMode ||= "now";
-    // OpenClaw supplies its default tool policy when the declaration omits
-    // toolsAllow: the "all tools" wildcard ["*"], and in some builds a
-    // toolsAllowIsDefault marker. `cron list` echoes ["*"] back WITHOUT the
-    // marker, so a bare cron's current row carries toolsAllow:["*"] while its
-    // declaration has none — match on the wildcard too, or every bare cron
-    // re-adds each poll. A declaration that pins a real (non-wildcard) list
-    // still compares, so removing a pinned policy is still detected.
-    const ct = copy.payload?.toolsAllow;
-    const ctIsDefault =
-      copy.payload?.toolsAllowIsDefault || (Array.isArray(ct) && ct.length === 1 && ct[0] === "*");
-    if (desired?.payload?.toolsAllow == null && ctIsDefault) {
-      delete copy.payload.toolsAllow;
-    }
-    return buildAddArgs(copy);
-  };
-  const a = normalize(current);
-  const b = normalize(desired);
-  return a !== null && b !== null && JSON.stringify(a) === JSON.stringify(b);
+  if (!buildAddArgs(current) || !buildAddArgs(desired)) return false;
+  if (String(current.name || current.declarationKey) !== String(desired.name || desired.declarationKey)) return false;
+  if ((current.displayName || current.name) !== (desired.displayName || desired.name)) return false;
+  const pins = Object.fromEntries(['anchorMs','staggerMs'].map(k=>[k, desired.schedule?.[k] != null]));
+  return stableJSON(normalizedDeclaration(current,pins)) === stableJSON(normalizedDeclaration(desired,pins));
 }

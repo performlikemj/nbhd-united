@@ -28,7 +28,7 @@ from django.test import SimpleTestCase, override_settings
 
 _REGISTRY = "nbhdunited.azurecr.io"
 _REPOSITORY = "nbhd-openclaw"
-_TAG = "canary-abc1234"
+_TAG = "2026.9.4-abc1234"
 _CONTAINER = "oc-148ccf1c-ef13-47f8-a"
 _TARGET_IMAGE = f"{_REGISTRY}/{_REPOSITORY}:{_TAG}"
 
@@ -62,6 +62,31 @@ class CanaryTenantImageMockRefusalTest(SimpleTestCase):
 
 @override_settings(AZURE_ACR_SERVER=_REGISTRY, AZURE_RESOURCE_GROUP="rg-test")
 class CanaryTenantImageReadbackTest(SimpleTestCase):
+    def setUp(self):
+        tenants = patch("apps.orchestrator.management.commands.canary_tenant_image.Tenant.objects.filter")
+        self.tenants = tenants.start()
+        self.addCleanup(tenants.stop)
+        self.tenants.return_value.__getitem__.return_value = [
+            SimpleNamespace(container_image_tag=_TAG, openclaw_version="2026.9.4")
+        ]
+
+    @patch("apps.orchestrator.management.commands.canary_tenant_image.is_mock", return_value=False)
+    @patch("apps.orchestrator.management.commands.canary_tenant_image.update_container_image")
+    def test_unknown_ambiguous_and_cross_family_refused(self, update, mock_mode):
+        legacy = SimpleNamespace(container_image_tag="2026.5.28-abcdef0", openclaw_version="2026.5.28")
+        for matches in (
+            [],
+            [legacy, legacy],
+            [legacy],
+            [SimpleNamespace(container_image_tag="abcdef0", openclaw_version="2026.9.4")],
+        ):
+            with self.subTest(matches=matches):
+                self.tenants.return_value.__getitem__.return_value = matches
+                with self.assertRaisesRegex(CommandError, "migrate_tenant_openclaw"):
+                    _call()
+        update.assert_not_called()
+        self.tenants.assert_called_with(container_id=_CONTAINER)
+
     @patch("apps.orchestrator.management.commands.canary_tenant_image.is_mock", return_value=False)
     @patch("apps.orchestrator.management.commands.canary_tenant_image.get_container_client")
     @patch("apps.orchestrator.management.commands.canary_tenant_image.update_container_image")

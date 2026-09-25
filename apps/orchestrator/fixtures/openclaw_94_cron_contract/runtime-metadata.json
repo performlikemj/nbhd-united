@@ -1,0 +1,19 @@
+{
+  "sources": {
+    "runtime/openclaw/nbhd-cron-sync.mjs": "f3cd36da3f07188f20d58439adda59a1a39157ab1d73c9ab8520ec85b92303b1",
+    "apps/cron/share_cron_sync.py": "6c60643798fbd283fcabdf838992edfc8e432a6cdcbcecec3a2a7034b076a39a",
+    "apps/orchestrator/cron_reconcile.py": "8c2bff293a8a220be5dadb1260ca9d039496a1a814e740714482d958c1987b01"
+  },
+  "synthetic": true,
+  "database": "Mock query results only; real selector, row renderer and HMAC signer",
+  "writerHash": "f3cd36da3f07188f20d58439adda59a1a39157ab1d73c9ab8520ec85b92303b1",
+  "version": {
+    "args": [
+      "--version"
+    ],
+    "exitCode": 0,
+    "stdout": "OpenClaw 2026.9.4 (3a9d69d)\n",
+    "stderr": ""
+  },
+  "isolation": "Docker --network none, no ports or mounts; cron.enabled=false; plugins.enabled=false; throwaway token"
+}

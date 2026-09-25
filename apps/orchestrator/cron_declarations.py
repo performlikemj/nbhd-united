@@ -6,7 +6,22 @@ from pathlib import Path
 FIELDS = json.loads(Path(__file__).with_name("cron-declaration-fields.json").read_text())
 
 
+def declaration_fields(job):
+    """Discard only proven read metadata and the CLI-generated default policy.
+
+    A different scheduled tool policy is an authored execution requirement,
+    not metadata: leave it present so unknown-field validation refuses it.
+    """
+    if not isinstance(job, dict):
+        return job
+    job = {k: v for k, v in job.items() if k not in FIELDS["observation"]}
+    if job.get("scheduledToolPolicy") == {"version": 1, "mode": "trusted"}:
+        job.pop("scheduledToolPolicy")
+    return job
+
+
 def supported_declaration(job):
+    job = declaration_fields(job)
     if not isinstance(job, dict) or set(job) - set(FIELDS["job"]):
         return False
     for part in ("payload", "delivery", "schedule", "pacing"):

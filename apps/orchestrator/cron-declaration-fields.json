@@ -58,5 +58,9 @@
   "pacing": [
     "min",
     "max"
+  ],
+  "observation": [
+    "configRevision",
+    "effectiveAgentId"
   ]
 }

@@ -6,24 +6,25 @@
 - Work only in this worktree; no production calls, deployment or PR merge. No automatic rollback. Stage by path; never stash.
 - User’s rescope supersedes earlier lifecycle/image plans. Keep runtime/openclaw, router/panels and automatic image/wake paths identical to main.
 ## Key decisions
+- Cron contract comes from the exact fleet runtime and unchanged signed writer. Ignore proven observations/reproduced defaults, preserve authored constraints; prepare equivalent ISO instants before cutover.
 - No recurring pause: a fire during cutover may be skipped; only imminent one-shots defer.
 - No private lifecycle store/recovery machinery. Keep migration-only export/checkpoints admin-excluded.
 - Round 4 supersedes wake exception: hibernation, reconciliation and signed selector restored to main.
 - Follow-up: 9.4 lifecycle (croner vs croniter semantics, suspend, idle guards).
 ## State
-- Done: Round 4's eight findings addressed; all automatic paths and runtime image match origin/main. Ruff/format, migration drift, 156 focused tests plus final 26 targeted tests PASS. Final Docker gate PASS: 9347 tests / 53 skipped; frontend lint/build and config/security checks PASS.
-- Now: Round 4 implementation bdae0d81 committed/pushed to draft PR #1650 with requested co-author trailer; ready for review.
-- Next: release orchestrator review, read-only --report sizing and later approved canaries. No production access or PR merge by this task.
+- Done: Round 5's six findings fixed against exact 2026.9.4-8ceb89f runtime; 14 matrix fixtures plus reserved-monitor probes. Ruff/format/migration drift PASS; 129 focused + 18 final adapter tests PASS; Docker gate PASS (9359 tests / 55 skipped, config/security checks, frontend lint/build).
+- Now: Final Round 5 commit/push to draft PR #1650; implementation and validation complete.
+- Next: Release orchestrator review, read-only sizing and separately approved canaries. No production tenant/DB access, deployment or merge by this task.
 ## Task Map
 ```
 CONTINUITY.md
+  ├─ CONTINUITY_openclaw-round-five.md (complete; delivery)
   ├─ CONTINUITY_openclaw-round-four.md (complete; draft review)
   ├─ CONTINUITY_openclaw-rescope.md (complete; draft review)
   └─ CONTINUITY_openclaw_94_migration.md (prior implementation/reviews; scope superseded)
 ```
 ## Active ledgers
-- CONTINUITY_openclaw-round-four.md
-- CONTINUITY_openclaw-rescope.md
+- CONTINUITY_openclaw-round-five.md
 - Existing unrelated ledgers: CONTINUITY_journal_shaping.md; CONTINUITY_cron_feed_redactor_subagent.md (status unconfirmed).
 ## Cross-task blockers / handoffs
 - Release prerequisites: #1651 deployed; actual MI/ACR/console/health canaries and synthetic delivery checks remain release work.

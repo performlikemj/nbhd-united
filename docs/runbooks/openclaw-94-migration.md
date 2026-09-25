@@ -105,12 +105,15 @@ check stops the batch without changing their runtime or migration record. This
 is not a repair command for undocumented image-only upgrades.
 An existing incomplete record always takes precedence over matching image tags.
 A retry reuses the saved revision rather than creating a second revision.
+Every non-PASS resume runs verification again, even when the historical
+`completed` list contains `verify`; only mutation steps are resumable checkpoints.
 
 Before any initial checkpoint/import, and again immediately before image
 submission, the migration checks **all** runtime and canonical declarations
 against the unchanged `share_cron_sync` selector and `nbhd-cron-sync.mjs` writer.
-Unsupported delivery destinations/accounts/threads, anchors, six-field cron,
-stagger, thinking/pacing/session/retention controls, disabled declarations,
+Unsupported delivery destinations/accounts/threads, authored anchors, six-field cron,
+authored stagger, systemEvent declarations (the unchanged writer emits the CLI-rejected
+`--no-deliver` combination), thinking/pacing/session/retention controls, disabled declarations,
 unmanaged recurrences and unknown fields block the tenant. Source cancellations
 that would require creating an unprojectable disabled declaration also block.
 No migration-only selector exemptions or agent re-sync waiver remain.
@@ -185,9 +188,44 @@ reset completed steps, or run a competing image bump to force progress.
   resurrected SMB cron state and duplicates **before** reactivating deliveries.
   There is no implemented inverse migration guaranteeing this recovery.
 
-Operational CLI contracts are checked against the upstream
-[9.4 cron commands](https://github.com/openclaw/openclaw/blob/v2026.9.4/src/cli/cron-cli/register.cron-simple.ts)
-and [config revision response](https://github.com/openclaw/openclaw/blob/v2026.9.4/src/gateway/config-get-response.ts).
+## Runtime-backed cron contract
+
+The cron contract is recorded from the real fleet image
+`nbhdunited.azurecr.io/nbhd-openclaw:2026.9.4-8ceb89f`, manifest
+`sha256:c244ff686863c1e9e4fc9fc55d1fac3b6a746e76039a9632db8ae082a0f21ddc`.
+See [raw fixtures and capture instructions](../../apps/orchestrator/fixtures/openclaw_94_cron_contract/README.md).
+The local capture used `--network none`, no ports/mounts, a throwaway token,
+plugins and scheduled firing disabled, and `NODE_OPTIONS=` for every CLI call.
+The image writer's SHA256 matched the unchanged repository writer.
+
+- List rows include `configRevision`, `effectiveAgentId`, timestamps/state and
+  a generated `scheduledToolPolicy: {version: 1, mode: "trusted"}`. Known
+  observations are ignored. Only that exactly reproduced tool-policy default
+  is accepted; other policies and unknown definition fields still block.
+- Five-field cron/timezone and unpinned intervals are accepted. Top-of-hour
+  cron acquires `staggerMs: 300000`; intervals acquire `anchorMs`. Verify-only
+  ignores those generated fields only with an exact canonical declaration-key
+  match that leaves them unpinned. Source timing requirements still block.
+- ISO offset and UTC one-shots both become UTC with millisecond precision;
+  `tz` disappears. The migration compares instants and prepares canonical
+  one-shots in this representation during capture **before image submission**,
+  then again before signing. The selector and runtime writer remain unchanged.
+  Both prepared forms passed two real writer reconciliation passes with zero
+  mutations and stable IDs. Empty optional delivery values equal absence.
+- Explicit destinations/accounts/threads and interval anchors are silently
+  dropped by the writer; disabled rows are not selected (a direct writer probe
+  creates an enabled job). These remain pre-cutover refusals.
+- Both systemEvent target declarations are rejected with the writer's
+  `--no-deliver`. They block before any capture/checkpoint/image mutation.
+- The runtime automatically lists heartbeat and skill-collection-review
+  monitor rows. Real CLI probes refuse both creating jobs in their reserved
+  namespaces and removing those rows. The 9.4 operator inventory excludes
+  those exact namespace/agent pairs from migration ownership; unknown legacy
+  declarations remain visible and block. No monitor is deleted or recreated.
+
+These fixtures test CLI acceptance, projection and comparison. They do not
+establish production delivery or lifecycle behavior; the release canary checks
+below remain required.
 
 ## Review-round safety checks and read-only verification
 
@@ -249,6 +287,9 @@ version-bump commands take `--tenant UUID` or `--tenants UUID,UUID`.
 `bump_openclaw_version --all` filters only within that supplied scope; `--all`
 alone is refused. Every selected tenant, including single-tenant mode and
 same-tag partial upgrades, must pass the runtime-family guard before mutation.
+`canary_tenant_image --container ...` resolves that container to exactly one
+tenant and applies the same family/ambiguity guard. Unversioned canary tags,
+unknown/duplicate container mappings and alternate repositories are refused.
 Both rollout endpoints accept `tenant_id` or a non-empty `tenant_ids` JSON list.
 Missing, malformed, empty, unknown or mixed-family scope returns HTTP 400 before
 command invocation/publication. Use the migration for 5.x/bare-SHA → 9.x.

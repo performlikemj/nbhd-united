@@ -313,6 +313,7 @@ def capture(tenant, record):
         )
         # Re-capture user edits/cancellations only for rows owned by this import.
         upsert_from_gateway_jobs(tenant, [j for j in jobs if j["name"] in unchanged], delete_missing=False)
+        prepare_writer_declarations(tenant)
         for row in CronJob.objects.filter(tenant=tenant, name__in=owned):
             if row.name not in versions or row.name in unchanged:
                 versions[row.name] = row.updated_at.isoformat()
@@ -507,7 +508,24 @@ def _signed_match(inspection):
     )
 
 
+def prepare_writer_declarations(tenant):
+    """Keep the unchanged signed writer stable after CLI timestamp normalization."""
+    from .migration_preservation import writer_stable_declaration
+
+    with suppress_cronjob_reconcile(), transaction.atomic():
+        for row in CronJob.objects.select_for_update().filter(tenant=tenant, enabled=True):
+            stable = writer_stable_declaration(row.data)
+            if stable != row.data:
+                CronJob.objects.filter(pk=row.pk).update(data=stable, updated_at=timezone.now())
+
+
 def crons_step(tenant, record):
+    from .migration_preservation import reason_counts
+
+    reasons = reason_counts(canonical_inventory(tenant))
+    if reasons:
+        raise PreservationError(reasons)
+    prepare_writer_declarations(tenant)
     count = write_tenant_crons_file(tenant)
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
@@ -584,10 +602,13 @@ HANDLERS = dict(zip(STEPS, (preflight, capture, image_step, version_step, config
 def verify_existing(tenant, record):
     """Read-only canary verification; never replace an already-9.4 image/config."""
     try:
-        from .migration_preservation import preservation_reasons, reason_counts
+        from .migration_preservation import observed_declaration, preservation_reasons, reason_counts
 
-        declarations = canonical_inventory(tenant) + [
-            (j, True) for j in runtime_operator.preservation_inventory(tenant)
+        canonical = canonical_inventory(tenant)
+        by_key = {j["declarationKey"]: j for j, _ in canonical}
+        declarations = canonical + [
+            (observed_declaration(j, by_key.get(j.get("declarationKey"))), True)
+            for j in runtime_operator.preservation_inventory(tenant)
         ]
         reasons = reason_counts(declarations)
         if reasons:
@@ -667,7 +688,7 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False) -> dict:
         if dry_run:
             return {
                 "status": "DRY_RUN",
-                "steps": [s for s in STEPS if s not in record.get("completed", [])],
+                "steps": [s for s in STEPS if s == "verify" or s not in record.get("completed", [])],
                 "note": "No writes or external calls; ACR, live provenance and health checked on execution",
             }
         if not already_current:
@@ -676,6 +697,9 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False) -> dict:
                 raise MigrationError("Migration already running; wait for its 30-minute lease to expire")
             if not record:
                 record = {"tag": tag, "started_at": timezone.now().isoformat(), "completed": [], "evidence": {}}
+            # Verification is a current observation, never a resumable mutation
+            # checkpoint. A crash after verifying must not certify stale state.
+            record["completed"] = [s for s in record.get("completed", []) if s != "verify"]
             record["status"] = "RUNNING"
             _save(tenant, record)
     if already_current:

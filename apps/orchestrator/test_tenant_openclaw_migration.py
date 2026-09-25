@@ -75,6 +75,30 @@ class MigrationOrderingTests(TestCase):
 
         return {s: step(s) for s in migration.STEPS}, calls
 
+    def test_resume_with_historical_verify_always_verifies_fresh(self):
+        for status in ("FAILED", "RUNNING", "BLOCKED_UNSUPPORTED"):
+            for failure in (None, "verify"):
+                with self.subTest(status=status, failure=failure):
+                    Tenant.objects.filter(pk=self.tenant.pk).update(
+                        openclaw_migration={
+                            "tag": TAG,
+                            "status": status,
+                            "completed": list(migration.STEPS),
+                            "evidence": {"verify": {"result": "PASS"}},
+                            "image_submitted": True,
+                        }
+                    )
+                    handlers, calls = self.handlers(fail=failure)
+                    with patch.dict(migration.HANDLERS, handlers):
+                        if failure:
+                            with self.assertRaises(migration.MigrationError):
+                                migration.migrate_tenant(self.tenant.pk, TAG)
+                        else:
+                            self.assertEqual(migration.migrate_tenant(self.tenant.pk, TAG)["status"], "PASS")
+                    self.assertEqual(calls, ["verify"])
+                    self.tenant.refresh_from_db()
+                    self.assertEqual(self.tenant.openclaw_migration["status"], "FAILED" if failure else "PASS")
+
     def test_strict_order_and_noop_after_pass(self):
         handlers, calls = self.handlers()
         with (

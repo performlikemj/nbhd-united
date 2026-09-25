@@ -51,7 +51,7 @@ class PrivateChannelTests(SimpleTestCase):
         ):
             self.assertEqual(operator.run_node(Mock(), "return {ok:true};"), {"ok": True})
             body = (
-                Path("apps/orchestrator/migration_cron_compare.mjs").read_text().replace("export ", "")
+                operator._comparison_adapter()
                 + """
 const d={name:'test',declarationKey:'nbhd:test',schedule:{kind:'cron',expr:'0 9 * * *'},payload:{kind:'agentTurn',message:'private'},delivery:{mode:'announce',to:'a'}};
 return {same:sameCron({...d,status:'idle',schedule:{...d.schedule,staggerMs:0}},d),different:sameCron({...d,delivery:{mode:'announce',to:'b'}},d)};

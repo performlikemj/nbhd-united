@@ -84,11 +84,11 @@ class OperatorConsoleTests(SimpleTestCase):
 
 @skipUnless(shutil.which("node"), "Node is required for offline operator adapter tests")
 class OperatorCronAdapterTests(SimpleTestCase):
-    def run_adapter(self, current, desired, *, cleanup=True, canonical=None):
+    def run_adapter(self, current, desired, *, cleanup=True, canonical=None, now_ms=None):
         with patch.object(operator, "run_node", side_effect=lambda tenant, body: body):
             body = operator.inspect_signed_crons(Mock(), cleanup=cleanup, canonical_digests=canonical)
         module = Path("runtime/openclaw/nbhd-cron-sync.mjs").resolve().as_uri()
-        comparator = Path("apps/orchestrator/migration_cron_compare.mjs").read_text().replace("export ", "")
+        comparator = operator._comparison_adapter()
         body = body.replace(
             "const {readSignedJobs,sameCron,buildAddArgs,atFireMs}=await import('/opt/nbhd/nbhd-cron-sync.mjs');",
             "const {readSignedJobs}=await import(" + json.dumps(module) + ");" + comparator,
@@ -101,7 +101,8 @@ class OperatorCronAdapterTests(SimpleTestCase):
                 json.dumps({"signed": signed, "sig": hmac.new(key.encode(), signed.encode(), sha256).hexdigest()})
             )
             script = (
-                "const crypto=await import('node:crypto'); const mutations=[]; const oc=(args)=>{if(args[1]==='list')return "
+                ("Date.now=()=>" + json.dumps(now_ms) + ";" if now_ms is not None else "")
+                + "const crypto=await import('node:crypto'); const mutations=[]; const oc=(args)=>{if(args[1]==='list')return "
                 + json.dumps(json.dumps({"jobs": current}))
                 + ";mutations.push(args);return '{}';};"
                 "const result=await(async()=>{" + body + "})();console.log(JSON.stringify({result,mutations}));"
