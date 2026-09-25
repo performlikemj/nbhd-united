@@ -717,3 +717,32 @@ html.open-sky [data-os-journal] {
   border-top: 1px solid var(--os-hairline);
 }
 html.open-sky nav[aria-label="Journal sidebar"] { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
+/* Open Sky: legacy display-serif italics become the upright page serif. */
+html.open-sky main .font-display { font-family: var(--font-serif), Georgia, serif; font-style: normal; }
+/* Art canvases fade into the page sky instead of showing their box edge. */
+.os-art-fade {
+  -webkit-mask-image: radial-gradient(closest-side, #000 72%, transparent 100%);
+  mask-image: radial-gradient(closest-side, #000 72%, transparent 100%);
+}
+@media (min-width: 768px) {
+  .os-band-fade {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent), linear-gradient(to bottom, transparent, #000 18%);
+    -webkit-mask-composite: source-in;
+    mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent), linear-gradient(to bottom, transparent, #000 18%);
+    mask-composite: intersect;
+  }
+}
+
+/* Constellation under Open Sky: the legacy graph sits below the sky as a framed panel. */
+html.open-sky [data-os-graph] {
+  margin-top: 0;
+  border-radius: 16px;
+  overflow: hidden;
+}
+/* Full-bleed sky art: soft on every edge (fades into the page sky). */
+.os-sky-fade {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 82%, transparent), linear-gradient(to right, transparent, #000 6%, #000 94%, transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 82%, transparent), linear-gradient(to right, transparent, #000 6%, #000 94%, transparent);
+  mask-composite: intersect;
+}

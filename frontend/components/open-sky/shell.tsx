@@ -19,6 +19,7 @@ import {
 } from "@/components/icons/constellation";
 import { OpenSkyStarfield } from "@/components/open-sky/starfield";
 import { OpenSkyPageHeader } from "@/components/open-sky/primitives";
+import { HorizonsSkyHeader } from "@/components/open-sky/horizons-sky";
 import { useMeQuery } from "@/lib/queries";
 import type { Tenant } from "@/lib/types";
 
@@ -352,7 +353,13 @@ export function OpenSkyShell({
           className="min-h-0 flex-1 overflow-y-auto px-4 pb-32 pt-4 sm:px-6 md:px-10 md:pb-12 md:pt-8 lg:px-14"
         >
           <div className="mx-auto w-full max-w-[1100px]">
-            {legacyTitle ? <OpenSkyPageHeader title={legacyTitle.title} subtitle={legacyTitle.subtitle} /> : null}
+            {legacyTitle ? (
+              legacyTitle.title === "Horizons" ? (
+                <HorizonsSkyHeader title={legacyTitle.title} subtitle={legacyTitle.subtitle} />
+              ) : (
+                <OpenSkyPageHeader title={legacyTitle.title} subtitle={legacyTitle.subtitle} />
+              )
+            ) : null}
             <ErrorBoundary
               fallback={
                 <div className="os-hairline-top pt-4">

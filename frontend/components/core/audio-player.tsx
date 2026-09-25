@@ -21,11 +21,14 @@ export function CoreAudioPlayer({
   playing,
   onTogglePlay,
   onClose,
+  onProgress,
 }: {
   meditation: Meditation;
   playing: boolean;
   onTogglePlay: () => void;
   onClose: () => void;
+  /** Playback position as a 0..1 fraction (drives the Open Sky eclipse art). */
+  onProgress?: (fraction: number) => void;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [cur, setCur] = useState(0);
@@ -113,7 +116,12 @@ export function CoreAudioPlayer({
         <audio
           ref={audioRef}
           preload="none"
-          onTimeUpdate={(e) => setCur(e.currentTarget.currentTime)}
+          onTimeUpdate={(e) => {
+            const el = e.currentTarget;
+            setCur(el.currentTime);
+            const total = el.duration || meditation.durationMin * 60;
+            if (onProgress && total) onProgress(Math.min(1, el.currentTime / total));
+          }}
           onLoadedMetadata={(e) => {
             setDur(e.currentTarget.duration);
             setLoadError(false);
