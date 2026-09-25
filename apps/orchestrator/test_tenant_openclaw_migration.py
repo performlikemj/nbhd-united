@@ -13,7 +13,6 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from apps.cron.models import CronJob
-from apps.cron.share_cron_sync import _desired_jobs
 from apps.orchestrator import openclaw_migration as migration
 from apps.orchestrator.runtime_guard import image_only_update_allowed
 from apps.tenants.models import Tenant
@@ -52,6 +51,12 @@ def record():
 class MigrationOrderingTests(TestCase):
     def setUp(self):
         self.tenant = tenant_fixture()
+        readiness = patch.object(migration, "report_tenant", return_value={"status": "READY", "reasons": {}})
+        readiness.start()
+        self.addCleanup(readiness.stop)
+        inventory = patch.object(migration.runtime_operator, "preservation_inventory", return_value=[])
+        inventory.start()
+        self.addCleanup(inventory.stop)
 
     def handlers(self, fail=None):
         calls = []
@@ -224,14 +229,19 @@ class MigrationOrderingTests(TestCase):
 class MigrationStepTests(TestCase):
     def setUp(self):
         self.tenant = tenant_fixture()
+        readiness = patch.object(migration, "report_tenant", return_value={"status": "READY", "reasons": {}})
+        readiness.start()
+        self.addCleanup(readiness.stop)
+        inventory = patch.object(migration.runtime_operator, "preservation_inventory", return_value=[])
+        inventory.start()
+        self.addCleanup(inventory.stop)
 
     def test_capture_all_jobs_preserves_db_only_and_canonical_values(self):
         existing = CronJob.objects.create(
             tenant=self.tenant, name="reminder", data=job(payload={"kind": "agentTurn", "message": "Postgres wins"})
         )
         CronJob.objects.create(tenant=self.tenant, name="db-only", data=job("db-only"))
-        unmanaged = CronJob.objects.create(tenant=self.tenant, name="unmanaged", managed=False, data=job("unmanaged"))
-        jobs = [job(), job("disabled", enabled=False), job("_sync:agent"), job("unmanaged")]
+        jobs = [job()]
         rec = record()
         with patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"details": {"jobs": jobs}}) as http:
             evidence = migration.capture(self.tenant, rec)
@@ -242,20 +252,13 @@ class MigrationStepTests(TestCase):
         self.assertTrue(CronJob.objects.filter(tenant=self.tenant, name="db-only").exists())
         existing.refresh_from_db()
         self.assertEqual(existing.data["payload"]["message"], "Postgres wins")
-        self.assertFalse(CronJob.objects.get(tenant=self.tenant, name="disabled").enabled)
-        self.assertEqual(rec["needs_agent_resync"], ["_sync:agent-id"])
-        self.assertIn(str(unmanaged.pk), rec["preserved_unmanaged_ids"])
-        desired = {j["name"] for j in _desired_jobs(self.tenant)}
-        self.assertIn("unmanaged", desired)
-        self.assertNotIn("disabled", desired)
-        self.assertNotIn("_sync:agent", desired)
 
     def test_capture_uncertain_or_truncated_aborts_without_import(self):
         for response in ({}, {"jobs": [job()], "hasMore": True}, {"jobs": [job(), job()]}, {"jobs": [{}]}):
             with (
                 self.subTest(response=response),
                 patch("apps.cron.gateway_client.invoke_gateway_tool", return_value=response),
-                self.assertRaisesRegex(migration.MigrationError, "provenance uncertain"),
+                self.assertRaisesRegex(migration.MigrationError, "source_"),
             ):
                 migration.capture(self.tenant, record())
         self.assertFalse(CronJob.objects.filter(tenant=self.tenant).exists())
@@ -398,7 +401,9 @@ class MigrationStepTests(TestCase):
             patch.object(migration, "_desired_jobs", return_value=[{"declarationKey": "nbhd:1"}]),
             patch.object(migration.runtime_operator, "inspect_signed_crons", side_effect=[good, changed]),
             patch.object(migration.time, "sleep"),
-            self.assertRaisesRegex(migration.MigrationError, "IDs changed"),
+            patch.object(migration, "wait_healthy", return_value={}),
+            patch.object(migration.runtime_operator, "console_error_counts", return_value={"errors": {}}),
+            self.assertRaisesRegex(migration.MigrationError, "cron_ids_unstable"),
         ):
             migration.verify(self.tenant, rec)
 
@@ -445,6 +450,12 @@ class RuntimeGuardTests(SimpleTestCase):
 class LifecycleAndDispatchTests(TestCase):
     def setUp(self):
         self.tenant = tenant_fixture()
+        readiness = patch.object(migration, "report_tenant", return_value={"status": "READY", "reasons": {}})
+        readiness.start()
+        self.addCleanup(readiness.stop)
+        inventory = patch.object(migration.runtime_operator, "preservation_inventory", return_value=[])
+        inventory.start()
+        self.addCleanup(inventory.stop)
 
     @override_settings(OPENCLAW_IMAGE_TAG=TAG, AZURE_ACR_SERVER="test.azurecr.io")
     def test_fleet_guard_refuses_before_any_azure_call_even_same_tag_partial(self):
@@ -454,7 +465,7 @@ class LifecycleAndDispatchTests(TestCase):
             patch("apps.orchestrator.management.commands.bump_all_tenant_images.update_container_image") as update,
             self.assertRaisesRegex(CommandError, "migrate_tenant_openclaw"),
         ):
-            call_command("bump_all_tenant_images")
+            call_command("bump_all_tenant_images", tenant=str(self.tenant.pk))
         update.assert_not_called()
 
     @override_settings(OPENCLAW_IMAGE_TAG=TAG, AZURE_ACR_SERVER="test.azurecr.io", DEPLOY_SECRET="test-deploy-secret")
@@ -464,11 +475,14 @@ class LifecycleAndDispatchTests(TestCase):
         from apps.cron.views import rollout_byo_image_bump
 
         request = RequestFactory().post(
-            "/", data="{}", content_type="application/json", HTTP_X_DEPLOY_SECRET="test-deploy-secret"
+            "/",
+            data=json.dumps({"tenant_id": str(self.tenant.pk)}),
+            content_type="application/json",
+            HTTP_X_DEPLOY_SECRET="test-deploy-secret",
         )
         with patch("apps.orchestrator.management.commands.bump_all_tenant_images.update_container_image") as update:
             response = rollout_byo_image_bump(request)
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 400)
         self.assertIn("migrate_tenant_openclaw", response.content.decode())
         update.assert_not_called()
 

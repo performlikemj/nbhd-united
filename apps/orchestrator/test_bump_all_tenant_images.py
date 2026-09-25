@@ -59,7 +59,11 @@ class BumpAllTenantImagesTest(TestCase):
         t1 = _make_tenant(suffix=1)
         t2 = _make_tenant(suffix=2)
 
-        call_command("bump_all_tenant_images")
+        call_command(
+            "bump_all_tenant_images",
+            "--tenants",
+            ",".join(str(pk) for pk in Tenant.objects.values_list("pk", flat=True)),
+        )
 
         # Two tenants, two Azure calls.
         self.assertEqual(mock_update.call_count, 2)
@@ -78,7 +82,11 @@ class BumpAllTenantImagesTest(TestCase):
         already_current = _make_tenant(suffix=3, image_tag=_TARGET_TAG)
         stale = _make_tenant(suffix=4, image_tag=_OLDER_TAG)
 
-        call_command("bump_all_tenant_images")
+        call_command(
+            "bump_all_tenant_images",
+            "--tenants",
+            ",".join(str(pk) for pk in Tenant.objects.values_list("pk", flat=True)),
+        )
 
         # Only the stale tenant should have been hit.
         self.assertEqual(mock_update.call_count, 1)
@@ -93,11 +101,19 @@ class BumpAllTenantImagesTest(TestCase):
         """Running twice in a row only bumps each tenant once."""
         _make_tenant(suffix=5)
 
-        call_command("bump_all_tenant_images")
+        call_command(
+            "bump_all_tenant_images",
+            "--tenants",
+            ",".join(str(pk) for pk in Tenant.objects.values_list("pk", flat=True)),
+        )
         self.assertEqual(mock_update.call_count, 1)
 
         # Second run — every tenant is now on the target tag.
-        call_command("bump_all_tenant_images")
+        call_command(
+            "bump_all_tenant_images",
+            "--tenants",
+            ",".join(str(pk) for pk in Tenant.objects.values_list("pk", flat=True)),
+        )
         # No additional calls.
         self.assertEqual(mock_update.call_count, 1)
 
@@ -107,7 +123,11 @@ class BumpAllTenantImagesTest(TestCase):
         active = _make_tenant(suffix=6)
         hibernated = _make_tenant(suffix=7, hibernated=True)
 
-        call_command("bump_all_tenant_images")
+        call_command(
+            "bump_all_tenant_images",
+            "--tenants",
+            ",".join(str(pk) for pk in Tenant.objects.values_list("pk", flat=True)),
+        )
 
         # Only the active one was bumped.
         self.assertEqual(mock_update.call_count, 1)
@@ -123,7 +143,12 @@ class BumpAllTenantImagesTest(TestCase):
         active = _make_tenant(suffix=8)
         hibernated = _make_tenant(suffix=9, hibernated=True)
 
-        call_command("bump_all_tenant_images", "--include-hibernated")
+        call_command(
+            "bump_all_tenant_images",
+            "--tenants",
+            ",".join(str(pk) for pk in Tenant.objects.values_list("pk", flat=True)),
+            "--include-hibernated",
+        )
 
         self.assertEqual(mock_update.call_count, 2)
         bumped = {call.args[0] for call in mock_update.call_args_list}
@@ -137,7 +162,11 @@ class BumpAllTenantImagesTest(TestCase):
         _make_tenant(suffix=12, status=Tenant.Status.PENDING)
         _make_tenant(suffix=13, status=Tenant.Status.DEPROVISIONING)
 
-        call_command("bump_all_tenant_images")
+        call_command(
+            "bump_all_tenant_images",
+            "--tenants",
+            ",".join(str(pk) for pk in Tenant.objects.values_list("pk", flat=True)),
+        )
 
         self.assertEqual(mock_update.call_count, 1)
         self.assertEqual(mock_update.call_args.args[0], active.container_id)
@@ -147,7 +176,13 @@ class BumpAllTenantImagesTest(TestCase):
         _make_tenant(suffix=14)
 
         out = StringIO()
-        call_command("bump_all_tenant_images", "--dry-run", stdout=out)
+        call_command(
+            "bump_all_tenant_images",
+            "--tenants",
+            ",".join(str(pk) for pk in Tenant.objects.values_list("pk", flat=True)),
+            "--dry-run",
+            stdout=out,
+        )
 
         mock_update.assert_not_called()
         self.assertIn("DRY RUN", out.getvalue())
@@ -166,7 +201,11 @@ class BumpAllTenantImagesTest(TestCase):
         mock_update.side_effect = side_effect
 
         with self.assertRaises(CommandError):
-            call_command("bump_all_tenant_images")
+            call_command(
+                "bump_all_tenant_images",
+                "--tenants",
+                ",".join(str(pk) for pk in Tenant.objects.values_list("pk", flat=True)),
+            )
 
         # Both tenants got hit; only the succeeding one persisted its tag.
         self.assertEqual(mock_update.call_count, 2)
@@ -196,7 +235,13 @@ class BumpAllTenantImagesTest(TestCase):
             "apps.orchestrator.management.commands.bump_all_tenant_images.concurrent.futures.as_completed",
             side_effect=lambda f: list(f.keys()),
         ):
-            call_command("bump_all_tenant_images", "--max-workers", "3")
+            call_command(
+                "bump_all_tenant_images",
+                "--tenants",
+                ",".join(str(pk) for pk in Tenant.objects.values_list("pk", flat=True)),
+                "--max-workers",
+                "3",
+            )
 
         mock_executor_cls.assert_called_once_with(max_workers=3)
 
@@ -205,7 +250,11 @@ class BumpAllTenantImagesTest(TestCase):
         _make_tenant(suffix=18)
 
         with override_settings(OPENCLAW_IMAGE_TAG="latest"), self.assertRaises(CommandError) as ctx:
-            call_command("bump_all_tenant_images")
+            call_command(
+                "bump_all_tenant_images",
+                "--tenants",
+                ",".join(str(pk) for pk in Tenant.objects.values_list("pk", flat=True)),
+            )
 
         self.assertIn("latest", str(ctx.exception))
 
@@ -214,7 +263,13 @@ class BumpAllTenantImagesTest(TestCase):
         explicit_tag = "2026.9.4-explicit-tag-9999"
         _make_tenant(suffix=19)
 
-        call_command("bump_all_tenant_images", "--tag", explicit_tag)
+        call_command(
+            "bump_all_tenant_images",
+            "--tenants",
+            ",".join(str(pk) for pk in Tenant.objects.values_list("pk", flat=True)),
+            "--tag",
+            explicit_tag,
+        )
 
         self.assertEqual(mock_update.call_count, 1)
         # Image string includes the explicit tag, not the settings tag.

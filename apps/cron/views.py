@@ -2138,7 +2138,7 @@ def admin_health_status(request):
 @csrf_exempt
 @require_POST
 def rollout_byo_image_bump(request):
-    """One-shot: bump every active tenant to the current OpenClaw image.
+    """Manually bump an explicit same-family scope to the current image.
 
     URL: /api/cron/rollout-byo-image-bump/
     Auth: X-Deploy-Secret header.
@@ -2148,8 +2148,8 @@ def rollout_byo_image_bump(request):
     ships, then never again — the routine ``apply_pending_configs`` cron
     handles future image rollouts via the per-message bump path.
 
-    POST body (optional):
-      ``{"include_hibernated": true}`` to also bump hibernated tenants.
+    POST body requires ``tenant_id`` or a non-empty ``tenant_ids`` UUID list.
+    Optional ``include_hibernated: true`` also bumps scoped hibernated tenants.
 
     Returns JSON: ``{"succeeded": N, "failed": N, "skipped_idempotent": N}``.
     """
@@ -2161,13 +2161,25 @@ def rollout_byo_image_bump(request):
         logger.warning("Unauthorized rollout_byo_image_bump attempt")
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
-    body = {}
-    if request.body:
-        try:
-            body = json.loads(request.body)
-        except Exception:
-            body = {}
-    include_hibernated = bool(body.get("include_hibernated", False))
+    from apps.orchestrator.manual_scope import tenant_scope
+    from apps.orchestrator.runtime_guard import MIGRATION_REQUIRED, image_only_update_allowed
+
+    try:
+        body = json.loads(request.body)
+        if not isinstance(body, dict) or set(body) - {"tenant_id", "tenant_ids", "include_hibernated"}:
+            raise ValueError
+        ids = tenant_scope(body.get("tenant_id"), body.get("tenant_ids"))
+        if "include_hibernated" in body and not isinstance(body["include_hibernated"], bool):
+            raise ValueError
+    except (ValueError, TypeError):
+        return JsonResponse({"error": "Explicit non-empty UUID scope and valid JSON object required"}, status=400)
+    selected = list(Tenant.objects.filter(pk__in=ids))
+    if len(selected) != len(ids):
+        return JsonResponse({"error": "Unknown tenant in scope"}, status=400)
+    target = getattr(settings, "OPENCLAW_IMAGE_TAG", "")
+    if any(not image_only_update_allowed(t, target) for t in selected):
+        return JsonResponse({"error": MIGRATION_REQUIRED}, status=400)
+    include_hibernated = body.get("include_hibernated", False)
 
     from io import StringIO
 
@@ -2175,7 +2187,7 @@ def rollout_byo_image_bump(request):
 
     out = StringIO()
     err = StringIO()
-    args = []
+    args = ["--tenants", ",".join(ids)]
     if include_hibernated:
         args.append("--include-hibernated")
 
@@ -2285,7 +2297,7 @@ _ATOMIC_BUMP_LOCK_TTL_SECONDS = 60 * 5
 @csrf_exempt
 @require_POST
 def rollout_atomic_bump(request):
-    """Atomic fleet bump: fan out per-tenant config + image + version updates.
+    """Fan out config + image + version updates within an explicit same-family scope.
 
     URL: /api/cron/rollout-atomic-bump/
     Auth: X-Deploy-Secret header.
@@ -2294,10 +2306,9 @@ def rollout_atomic_bump(request):
     relies on the ``apply_pending_configs`` cron to lazily refresh
     configs), this endpoint enqueues a per-tenant QStash task that
     atomically updates the version field, openclaw.json on the file
-    share, and the container image — required when a release crosses an
-    OpenClaw config schema boundary.
+    share, and the container image. Runtime-family jumps require the migration.
 
-    POST body (tenant_id required; other fields optional):
+    POST body (tenant_id or non-empty tenant_ids required; other fields optional):
         {
             "oc_version": "2026.5.7",   // default: settings.OPENCLAW_CURRENT_VERSION
             "image_tag":  "<sha>",       // default: settings.OPENCLAW_IMAGE_TAG
@@ -2329,12 +2340,12 @@ def rollout_atomic_bump(request):
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
     try:
-        body = json.loads(request.body)
-        if not isinstance(body, dict) or not isinstance(body.get("tenant_id"), str):
-            raise ValueError
-        from uuid import UUID
+        from apps.orchestrator.manual_scope import tenant_scope
 
-        tenant_filter = str(UUID(body["tenant_id"].strip()))
+        body = json.loads(request.body)
+        if not isinstance(body, dict) or set(body) - {"tenant_id", "tenant_ids", "oc_version", "image_tag", "dry_run"}:
+            raise ValueError
+        scoped_ids = tenant_scope(body.get("tenant_id"), body.get("tenant_ids"))
         for field in ("oc_version", "image_tag"):
             if field in body and (not isinstance(body[field], str) or not body[field].strip()):
                 raise ValueError
@@ -2380,10 +2391,10 @@ def rollout_atomic_bump(request):
             status=Tenant.Status.ACTIVE,
             container_id__gt="",
         )
-        eligible = eligible.filter(id=tenant_filter)
+        eligible = eligible.filter(id__in=scoped_ids)
         from apps.orchestrator.runtime_guard import MIGRATION_REQUIRED, manual_version_update_allowed
 
-        if not eligible.exists():
+        if eligible.count() != len(scoped_ids):
             return JsonResponse({"error": "Unknown or ineligible tenant_id"}, status=400)
         if any(not manual_version_update_allowed(t, image_tag, oc_version) for t in eligible):
             return JsonResponse({"error": MIGRATION_REQUIRED}, status=400)

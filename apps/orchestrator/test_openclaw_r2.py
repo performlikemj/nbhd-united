@@ -15,7 +15,6 @@ from apps.cron.models import CronJob
 from apps.cron.signals import suppress_cronjob_reconcile
 from apps.orchestrator import hibernation as h
 from apps.orchestrator import openclaw_migration as m
-from apps.orchestrator import runtime_operator as op
 from apps.orchestrator.cron_declarations import supported_declaration
 from apps.orchestrator.test_tenant_openclaw_migration import job, record, tenant_fixture
 from apps.tenants.admin import TenantAdmin
@@ -132,7 +131,8 @@ class RoundTwoTests(TestCase):
                 row.enabled = False
                 row.data["payload"]["message"] = "newer dashboard edit"
                 row.save()
-            m.capture(self.tenant, rec)
+            with self.assertRaisesRegex(m.MigrationError, "disabled_not_projected"):
+                m.capture(self.tenant, rec)
             row.refresh_from_db()
             self.assertFalse(row.enabled)
             self.assertEqual(row.data["payload"]["message"], "newer dashboard edit")
@@ -159,16 +159,15 @@ class RoundTwoTests(TestCase):
         self.assertFalse(CronJob.objects.filter(tenant=self.tenant).exists())
         self.assertNotIn("imported_versions", rec)
 
-    def test_f6_fresh_recapture_audits_cancelled_one_shot(self):
+    def test_f6_fresh_recapture_refuses_unprojectable_source_cancellation(self):
         rec = record()
         source = job(schedule={"kind": "at", "at": (timezone.now() + timedelta(hours=3)).isoformat()})
         with patch("apps.cron.gateway_client.invoke_gateway_tool", side_effect=[{"jobs": [source]}, {"jobs": []}]):
             m.capture(self.tenant, rec)
-            m.capture(self.tenant, rec)
-        with patch.object(op, "list_crons", return_value=[]):
-            m.one_shot_dispositions(self.tenant, rec)
-        self.assertEqual(rec["one_shot_dispositions"][0]["disposition"], "cancelled_at_source")
-        self.assertTrue(rec["source_resolutions"][source["id"]]["observed_at"])
+            before = CronJob.objects.get(tenant=self.tenant).data
+            with self.assertRaisesRegex(m.MigrationError, "source_cancellation_not_projected"):
+                m.capture(self.tenant, rec)
+        self.assertEqual(CronJob.objects.get(tenant=self.tenant).data, before)
 
     def test_f7_admin_excludes_private_payloads(self):
         model_admin = TenantAdmin(Tenant, AdminSite())

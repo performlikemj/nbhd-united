@@ -15,12 +15,12 @@ Usage:
     # Fleet rollout
     python manage.py bump_openclaw_version \\
         --oc-version 2026.4.15 \\
-        --all \\
+        --all --tenants UUID,UUID \\
         --image-tag openclaw-2026.4.15
 
     # Preview without changes
     python manage.py bump_openclaw_version \\
-        --oc-version 2026.4.15 --all --image-tag tag --dry-run
+        --oc-version 2026.4.15 --all --tenants UUID,UUID --image-tag tag --dry-run
 """
 
 from __future__ import annotations
@@ -33,15 +33,15 @@ from apps.tenants.models import Tenant
 
 
 class Command(BaseCommand):
-    help = "Bump OpenClaw version for one or all tenants (config + image, atomic per tenant)"
+    help = "Bump OpenClaw version within an explicit same-family UUID scope"
 
     def add_arguments(self, parser):
         parser.add_argument("--oc-version", required=True, help="Target OpenClaw version (e.g. 2026.4.15)")
         parser.add_argument("--image-tag", required=True, help="ACR image tag to deploy (e.g. openclaw-2026.4.15)")
 
-        target = parser.add_mutually_exclusive_group(required=True)
-        target.add_argument("--tenant", help="Single tenant UUID")
-        target.add_argument("--all", action="store_true", help="All active tenants not already at target version")
+        parser.add_argument("--tenant", help="Single tenant UUID")
+        parser.add_argument("--tenants", help="Explicit comma-separated UUID list")
+        parser.add_argument("--all", action="store_true", help="Skip current versions within explicit scope")
 
         parser.add_argument("--dry-run", action="store_true", help="Show what would happen without making changes")
 
@@ -52,24 +52,20 @@ class Command(BaseCommand):
 
         registry = getattr(settings, "AZURE_ACR_SERVER", "nbhdunited.azurecr.io")
 
-        if options["tenant"]:
-            tenants = Tenant.objects.filter(
-                id=options["tenant"],
-                status=Tenant.Status.ACTIVE,
-                container_id__gt="",
-            )
-        else:
-            tenants = Tenant.objects.filter(
-                status=Tenant.Status.ACTIVE,
-                container_id__gt="",
-            )
+        from apps.orchestrator.manual_scope import command_scope
+        from apps.orchestrator.runtime_guard import MIGRATION_REQUIRED, manual_version_update_allowed
 
-        tenant_list = list(tenants)
+        try:
+            ids = command_scope(options)
+        except ValueError as exc:
+            raise CommandError(str(exc)) from None
+        selected = list(Tenant.objects.filter(pk__in=ids))
+        if len(selected) != len(ids):
+            raise CommandError("Unknown tenant in scope; nothing changed")
+        if any(not manual_version_update_allowed(t, image_tag, target_version) for t in selected):
+            raise CommandError(MIGRATION_REQUIRED)
+        tenant_list = [t for t in selected if t.status == Tenant.Status.ACTIVE and t.container_id]
         if options["all"]:
-            from apps.orchestrator.runtime_guard import MIGRATION_REQUIRED, manual_version_update_allowed
-
-            if any(not manual_version_update_allowed(t, image_tag, target_version) for t in tenant_list):
-                raise CommandError(MIGRATION_REQUIRED)
             tenant_list = [t for t in tenant_list if t.openclaw_version != target_version]
         if not tenant_list:
             self.stdout.write("No eligible tenants found.")

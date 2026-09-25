@@ -82,14 +82,11 @@ def hibernate_idle_tenant(tenant: Tenant) -> bool:
     """
     tid = str(tenant.id)[:8]
 
-    from apps.cron.share_cron_sync import tenant_uses_file_cron_sync
+    # 1. Capture cron schedules before suspending (for cron-aware wake)
+    cron_jobs = _capture_tenant_cron_schedules(tenant)
 
-    file_crons = tenant_uses_file_cron_sync(tenant)
-    # File-cron boot sync reinstalls canonical jobs after scale-to-zero.
-    cron_jobs = _canonical_cron_wake_jobs(tenant) if file_crons else _capture_tenant_cron_schedules(tenant)
-
-    # The 9.4 HTTP cron API is blocked; a stopped app cannot fire jobs.
-    if tenant.container_fqdn and not file_crons:
+    # 2. Suspend crons while container is still up
+    if tenant.container_fqdn:
         try:
             from apps.cron.suspension import suspend_tenant_crons
 
@@ -125,43 +122,6 @@ def hibernate_idle_tenant(tenant: Tenant) -> bool:
     _schedule_next_cron_wake(tenant, cron_jobs)
 
     return True
-
-
-def _canonical_cron_wake_jobs(tenant: Tenant) -> list[dict]:
-    """Use exactly the signed writer's Postgres set; never stale runtime timing."""
-    from apps.cron.models import CronJob
-    from apps.cron.pending_at_views import _at_fires_at_ms
-    from apps.cron.share_cron_sync import _desired_jobs
-
-    jobs = _desired_jobs(tenant)
-    now_ms = int(timezone.now().timestamp() * 1000)
-    for job in jobs:
-        schedule = job.get("schedule") or {}
-        job["state"] = {}
-        if schedule.get("kind") == "at":
-            job["state"]["nextRunAtMs"] = _at_fires_at_ms(job)
-        elif schedule.get("kind") == "every":
-            interval = schedule.get("everyMs", 0)
-            anchor = schedule.get("anchorMs", now_ms)
-            if interval > 0:
-                job["state"]["nextRunAtMs"] = anchor + max(0, (now_ms - anchor) // interval + 1) * interval
-        # Cron expressions use the existing timezone-aware croniter calculation.
-
-    names = {j["name"] for j in jobs}
-    # No runtime capture: count known excluded jobs from Postgres and the last
-    # snapshot. This is an estimate; uncaptured operator jobs are unknown.
-    known = {r.name for r in CronJob.objects.filter(tenant=tenant, enabled=True)}
-    snapshot = tenant.cron_jobs_snapshot or {}
-    snapshot_jobs = snapshot.get("jobs", []) if isinstance(snapshot, dict) else []
-    known.update(
-        j.get("name") for j in snapshot_jobs if isinstance(j, dict) and j.get("enabled", True) and j.get("name")
-    )
-    logger.info(
-        "idle_hibernate: tenant=%s noncanonical_jobs_not_restored=%d count_source=postgres_and_snapshot",
-        str(tenant.pk),
-        len(known - names),
-    )
-    return jobs
 
 
 def _capture_tenant_cron_schedules(tenant: Tenant) -> list[dict]:

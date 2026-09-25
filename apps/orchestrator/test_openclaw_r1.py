@@ -120,7 +120,7 @@ class RecoveryTests(TestCase):
                 "apps.cron.gateway_client.invoke_gateway_tool",
                 return_value={"jobs": [job(delivery={"mode": "webhook", "url": "https://private.invalid"})]},
             ),
-            self.assertRaisesRegex(migration.MigrationError, "unsupported_cron"),
+            self.assertRaisesRegex(migration.MigrationError, "BLOCKED_UNSUPPORTED"),
         ):
             migration.capture(self.tenant, record())
 
@@ -182,13 +182,14 @@ class AdditionalRecoveryTests(RecoveryTests):
         with (
             patch.object(migration, "get_app", return_value=app),
             patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": []}),
-            patch.object(migration.azure_client, "update_container_image"),
+            patch.object(migration.azure_client, "update_container_image") as image,
             patch.object(migration, "wait_healthy"),
+            self.assertRaisesRegex(migration.MigrationError, "source_cancellation_not_projected"),
         ):
             migration.image_step(self.tenant, rec)
-        self.assertEqual(rec["cron_export"], [])
-        self.assertEqual(rec["cron_export_history"][0]["jobs"], [job()])
-        self.assertFalse(CronJob.objects.get(tenant=self.tenant).enabled)
+        image.assert_not_called()
+        self.assertEqual(rec["cron_export"], [job()])
+        self.assertTrue(CronJob.objects.get(tenant=self.tenant).enabled)
 
     def test_r4_all_one_shot_dispositions_accounted_for(self):
         future = (timezone.now() + timedelta(hours=1)).isoformat()

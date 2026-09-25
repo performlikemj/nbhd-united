@@ -38,6 +38,21 @@ the current panel instruction. No image rebuild is required by this rescope.
   python manage.py migrate_tenant_openclaw --tenants "$ID1,$ID2,$ID3" --tag "$TAG" --dry-run
   ```
 
+Read-only fleet sizing (per explicitly listed tenant, with live reads):
+
+```bash
+python manage.py migrate_tenant_openclaw --tenants "$ID1,$ID2,$ID3" --report
+```
+
+`--report` performs no checkpoint, import, canonical flip, image, config or cron
+writes. It prints `READY`, `BLOCKED_UNSUPPORTED` plus reason counts, `DEFER`
+plus fixed reason counts, or `ALREADY_94`. It continues across the complete scope.
+`READY` establishes declaration compatibility at observation time, not registry,
+health or release approval. Source failures and unavailable/hibernated tenants
+report `DEFER`. Use `--verify-only` to inspect preservation on already-9.4 tenants.
+Counts cover captured and canonical declarations separately; the same logical
+job can contribute once from each authority. No reminder payloads are printed.
+
 Dry-run lists remaining steps; it cannot certify remote health or registry
 existence. Execution resolves and pins the target digest, records the source
 image/digest, DB tag/version, awake state and a redacted template, then captures
@@ -71,10 +86,16 @@ The durable checkpoints are:
 6. `crons`: write signed Postgres truth, wait for CLI reconciliation, remove a
    legacy duplicate only after a matching signed job exists. Matching happens
    inside the replica, including payload and scheduling parameters.
-7. `verify`: compare signed/actual jobs and IDs across two operator-CLI polls
-   25 seconds apart, verify health and inspect the last five minutes of console
+7. `verify`: compare private normalized content digests per declaration key
+   against **current canonical Postgres**, including schedule/timezone, payload,
+   delivery mode/channel/to/account/thread and enabled state. Check two CLI polls
+   25 seconds apart, stable IDs, health and the last five minutes of console
    logs for fs-safe/SQLite/config/proxy/signature errors. Persist counts only.
-   An unavailable or saturated log window fails closed.
+   An unavailable or saturated log window fails closed. Re-read canonical truth
+   at the end, including row versions/ownership and time-filtered desired state.
+   If it changed, repeat the comparison once; repeated changes fail with
+   `canonical_changed_during_verification`. Stable content mismatch fails with
+   `canonical_content_mismatch`. Automatic reconciliation remains enabled.
 
 A successful record is `PASS`. Already-9.4 tenants without a partial migration
 receive read-only verification of their current Azure/DB image identity, applied
@@ -85,13 +106,19 @@ is not a repair command for undocumented image-only upgrades.
 An existing incomplete record always takes precedence over matching image tags.
 A retry reuses the saved revision rather than creating a second revision.
 
-Disabled jobs remain disabled in Postgres and in the full source export; the
-signed writer does not schedule them. Non-agent unmanaged rows are explicitly
-included in the signed set through the record's `preserved_unmanaged_ids`.
-Agent-owned recurring jobs are preserved in the export and listed in
-`needs_agent_resync`; the orchestrator must arrange that re-sync before fleet
-expansion. Never delete the migration record: it also identifies preserved
-unmanaged jobs for subsequent signed writes.
+Before any initial checkpoint/import, and again immediately before image
+submission, the migration checks **all** runtime and canonical declarations
+against the unchanged `share_cron_sync` selector and `nbhd-cron-sync.mjs` writer.
+Unsupported delivery destinations/accounts/threads, anchors, six-field cron,
+stagger, thinking/pacing/session/retention controls, disabled declarations,
+unmanaged recurrences and unknown fields block the tenant. Source cancellations
+that would require creating an unprojectable disabled declaration also block.
+No migration-only selector exemptions or agent re-sync waiver remain.
+
+Initial `BLOCKED_UNSUPPORTED` and `DEFER` results are non-mutating. A retry can
+also stop on a newly incompatible declaration; already-completed work remains
+intact. Resolve compatibility in a separately approved change, then report again.
+This tool never widens the deployed writer's capabilities.
 
 ## Read migration records safely
 
@@ -104,7 +131,6 @@ selected metadata, never the full JSON (cron payloads are private):
 from apps.tenants.models import Tenant
 r = Tenant.objects.get(pk=TENANT_ID).openclaw_migration
 print({k: r.get(k) for k in ("tag", "status", "step", "completed", "updated_at", "failure")})
-print("Agent re-sync required:", len(r.get("needs_agent_resync", [])))
 print("Captured jobs:", len(r.get("cron_export", [])))
 ```
 
@@ -122,10 +148,10 @@ The automated command is an infrastructure gate. The orchestrator must also:
   silently replaced; secret references are preserved by the revision update.
 - Send a synthetic chat turn and run a **Brave search**; verify actual responses.
 - Make a controlled scheduled delivery, check no duplicates, then test
-  hibernate → wake → delivery. File-cron tenants compute their next wake from
-  the same Postgres rows as the signed writer and skip blocked HTTP suspension.
-  Boot sync reinstalls signed jobs; disabled jobs stay disabled.
-- Resolve all agent re-sync IDs and review any one-shots whose fire time elapsed
+  hibernate → wake → delivery. Lifecycle behavior is unchanged from main;
+  croner/croniter semantics, HTTP suspend and idle guards remain a separate
+  follow-up and must be assessed by the release orchestrator.
+- Review any one-shots whose fire time elapsed
   during maintenance. Do not blindly replay a reminder that may already have fired.
 - Require stable cron IDs, clean console/error telemetry and no user-visible
   regression during the canary soak; health alone is insufficient.
@@ -149,7 +175,7 @@ reset completed steps, or run a competing image bump to force progress.
 - After version/config: repair the failing config/workspace write or gateway
   pickup, then resume. Failed config writes do not silently pass the checkpoint.
 - After signed cutover: check the signing key, mapping of declaration keys to
-  Postgres rows, agent re-sync requirements and duplicate metadata. Unknown
+  Postgres rows and duplicate metadata. Unknown
   legacy jobs are never deleted by name alone. Fix the mismatch, then resume.
 - If old runtime recovery is unavoidable, stop the tenant under orchestrator
   control; independently identify its old binary version (especially bare SHA),
@@ -173,7 +199,11 @@ python manage.py migrate_tenant_openclaw --tenant <uuid> --verify-only
 ```
 
 This performs no tenant, image, config, cron, or migration-record writes.
-Output is `PASS verified` or `FAIL <reason_code>`; failure exits nonzero and stops
+It also inspects current canonical and runtime declarations for fields the
+unchanged image cannot preserve. Unsupported declarations report
+`BLOCKED_UNSUPPORTED`, reason counts and declaration keys/runtime IDs (no names
+or payloads), then exit nonzero. Otherwise output is `PASS verified` or
+`FAIL <reason_code>`; failure exits nonzero and stops
 the explicit batch. It checks the tenant's existing image, regardless of the
 configured fleet target. Use this for the MJ and `1c77c8c1` health checks.
 
@@ -184,18 +214,18 @@ configured fleet target. Use this for the MJ and `1c77c8c1` health checks.
   Earlier exports remain in private `cron_export_history`; only unchanged
   import-owned rows are refreshed. Newer canonical edits and dashboard deletions
   win over stale runtime exports; retries never resurrect deleted imported rows.
-- Only enabled **one-shot** jobs running, lacking a parseable due time, or due
+- Enabled canonical Postgres **and** runtime one-shots running, lacking a parseable due time, or due
   within 20 minutes defer cutover (`cron_running`, `cron_next_fire_unknown`,
-  `cron_imminent`). Eligibility runs before import or canonical changes.
+  `cron_imminent`). Eligibility runs before import, enabled/time filtering or canonical changes.
 - Recurring jobs are not paused and do not trigger the imminence guard. A fire
   during the approximately five-minute cutover may be skipped; missed recurring
   fires are not replayed. Image/config failures can extend this interruption.
-- Unsupported declarations fail closed. The migration-only comparator checks
-  delivery destinations (`delivery.to`) and other execution fields inside the
-  replica. It does not change the image's signed poller. If the deployed image
-  cannot reproduce a captured declaration, verification stops; resolve that
-  image compatibility separately before expansion.
-- Every captured one-shot is audited, including historical exports. Absence
+- Unsupported declarations are refused **before image submission**, with
+  payload-free reason codes and counts. Verification is an additional check,
+  never a substitute for the preservation precheck.
+- Every captured and canonical one-shot is audited, including historical exports
+  and canonical obligations that later expire during cutover. Historical source
+  resolutions are hints only: acceptance rechecks both current authorities. Absence
   from both current Postgres truth (including deleted/tombstoned rows) and the
   live runtime at verification is `cancelled`, with an observation timestamp.
   A remaining canonical row with missing runtime delivery still fails as
@@ -209,21 +239,22 @@ wake, suspension/resume, runtime capture and delayed restore retain main behavio
 Keep the image rollout allowlist empty during migration. The storage retrofit
 is explicitly enabled only by the migration, never ordinary image updates.
 
-The sole new lifecycle behavior is in hibernation for `tenant_uses_file_cron_sync`
-tenants: compute cron wake from the signed writer's canonical Postgres set and
-skip HTTP suspend. Scale-to-zero stops firing and boot sync restores the signed
-set. The payload-free `noncanonical_jobs_not_restored` count uses Postgres plus
-the last snapshot: it is an estimate, not a fresh runtime inventory. Uncaptured
-native/operator jobs are unknown and may be lost on scale-to-zero.
+Hibernation, cron reconciliation, signed selection, image tasks, router image
+updates, suspension and all runtime image files match main. No lifecycle
+exception remains. Concurrent canonical edits/reconciliation are detected by
+verification; migration never suppresses automatic reconciliation.
 
-Manual fleet tools are the approved exception: `bump_all_tenant_images`, its
-`rollout-byo-image-bump` endpoint, `rollout-atomic-bump`, and
-`bump_openclaw_version --all` refuse family crossings or ambiguous image tags.
-The atomic endpoint requires a valid explicit `tenant_id`; empty/malformed JSON,
-empty/unknown scope, and mismatched image/version families are rejected before
-publication. Use the migration command for 5.x/bare-SHA → 9.x.
+Manual tools require an explicit non-empty UUID scope. Both image-bump and
+version-bump commands take `--tenant UUID` or `--tenants UUID,UUID`.
+`bump_openclaw_version --all` filters only within that supplied scope; `--all`
+alone is refused. Every selected tenant, including single-tenant mode and
+same-tag partial upgrades, must pass the runtime-family guard before mutation.
+Both rollout endpoints accept `tenant_id` or a non-empty `tenant_ids` JSON list.
+Missing, malformed, empty, unknown or mixed-family scope returns HTTP 400 before
+command invocation/publication. Use the migration for 5.x/bare-SHA → 9.x.
 
 Follow-ups, outside this PR:
+- 9.4 lifecycle (croner vs croniter semantics, suspend, idle guards).
 - Poller error logging can expose reminder names/argv (pre-existing REVIEW3 #8).
   Replace it with fixed reason codes and safe counts in a separate image change.
 - Persist noncanonical jobs by making every creator canonical or defining a
@@ -265,7 +296,7 @@ Inside that console:
 cd /app
 python manage.py showmigrations tenants
 python manage.py check
-# Confirm 0168/0169 are applied, and command help includes --verify-only.
+# Confirm 0168/0169 are applied, and command help includes --verify-only and --report.
 python manage.py migrate_tenant_openclaw --help
 TAG='2026.9.4-<approved-build-sha>'
 TENANT_ID=4e13ec0e-08d8-4999-8070-d446475f29e4
@@ -311,6 +342,5 @@ Raw migration JSON is excluded from Django admin forms and public serializers.
 No private lifecycle declarations or temporary cron transfer files are created.
 Retain failed exports while recovery remains unresolved. After successful canary
 soak and 7 days, an authorized operator should remove `cron_export` and
-`cron_export_history` while retaining metadata, `preserved_unmanaged_ids`,
+`cron_export_history` and `canonical_one_shots` while retaining metadata,
 dispositions and audit timestamps; apply the retention policy to backups too.
-Never delete preserved unmanaged IDs while those jobs remain in the signed set.

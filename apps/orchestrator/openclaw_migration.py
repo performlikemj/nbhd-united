@@ -167,26 +167,99 @@ def preflight(tenant, record):
     }
 
 
-def capture(tenant, record):
+class PreservationError(MigrationError):
+    def __init__(self, reasons):
+        self.reasons = reasons
+        super().__init__("BLOCKED_UNSUPPORTED " + ",".join(f"{k}={v}" for k, v in sorted(reasons.items())))
+
+
+def canonical_inventory(tenant):
+    """All canonical declarations, BEFORE enabled/time/ownership filtering."""
+    from .cron_reconcile import _row_to_cron_dict
+
+    declarations = []
+    for row in CronJob.objects.filter(tenant=tenant).order_by("id"):
+        job = _row_to_cron_dict(row)
+        job["declarationKey"] = f"nbhd:{row.pk}"
+        job["id"] = f"nbhd:{row.pk}"
+        declarations.append((job, row.managed))
+    return declarations
+
+
+def preservation_precheck(tenant, jobs, *, record=None):
+    from .migration_preservation import reason_counts
+
+    canonical = canonical_inventory(tenant)
+    # Imminent obligations take priority and cannot disappear through filtering.
+    assert_cutover_safe(jobs + [j for j, _ in canonical])
+    reasons = reason_counts([(j, True) for j in jobs] + canonical)
+    versions = (record if record is not None else tenant.openclaw_migration or {}).get("imported_versions", {})
+    names = {j["name"] for j in jobs}
+    missing_owned = sum(
+        1
+        for row in CronJob.objects.filter(tenant=tenant, enabled=True)
+        if versions.get(row.name) == row.updated_at.isoformat() and row.name not in names
+    )
+    if missing_owned:
+        reasons["source_cancellation_not_projected"] = missing_owned
+    if reasons:
+        raise PreservationError(reasons)
+    return canonical
+
+
+def live_source_jobs(tenant):
     from apps.cron.gateway_client import invoke_gateway_tool
-    from apps.cron.postgres_canonical import upsert_from_gateway_jobs
-    from apps.orchestrator.cron_reconcile import _complete_cron_observation, _is_unmanaged_cron
 
-    from .cron_declarations import supported_declaration
+    from .cron_reconcile import _complete_cron_observation
 
-    # The source stays writable until cutover. Every retry obtains fresh truth.
     response = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
     jobs = _complete_cron_observation(response)
     if jobs is None or not isinstance(jobs, list):
-        raise MigrationError("Cron provenance uncertain: incomplete live export")
+        raise MigrationError("source_observation_incomplete")
     if any(not isinstance(j, dict) or not j.get("name") or not (j.get("id") or j.get("jobId")) for j in jobs):
-        raise MigrationError("Cron provenance uncertain: unnamed or unidentified jobs")
+        raise MigrationError("source_identity_missing")
     if len({j["name"] for j in jobs}) != len(jobs):
-        raise MigrationError("Cron provenance uncertain: duplicate names")
-    if any(not supported_declaration(j) for j in jobs):
-        raise MigrationError("unsupported_cron")
-    # Eligibility is read-only and precedes export, imports and canonical flip.
-    assert_cutover_safe(jobs)
+        raise MigrationError("source_names_duplicated")
+    return jobs
+
+
+def report_tenant(tenant):
+    """Inventory only: no checkpoint, canonical flip, import or Azure write."""
+    if tenant.openclaw_version == VERSION:
+        return {"status": "ALREADY_94", "reasons": {}}
+    if (
+        tenant.hibernated_at
+        or tenant.status != Tenant.Status.ACTIVE
+        or not tenant.container_id
+        or not tenant.container_fqdn
+    ):
+        return {"status": "DEFER", "reasons": {"tenant_unavailable": 1}}
+    try:
+        if not tenant.postgres_cron_canonical and CronJob.objects.filter(tenant=tenant, creation_path="typed").exists():
+            raise MigrationError("canonical_ownership_uncertain")
+        preservation_precheck(tenant, live_source_jobs(tenant))
+        return {"status": "READY", "reasons": {}}
+    except PreservationError as exc:
+        return {"status": "BLOCKED_UNSUPPORTED", "reasons": exc.reasons}
+    except Exception as exc:
+        reason = (
+            str(exc) if isinstance(exc, MigrationError) and re.fullmatch(r"[a-z_]+", str(exc)) else "source_unavailable"
+        )
+        return {"status": "DEFER", "reasons": {reason: 1}}
+
+
+def capture(tenant, record):
+    from apps.cron.postgres_canonical import upsert_from_gateway_jobs
+
+    jobs = live_source_jobs(tenant)
+    canonical = preservation_precheck(tenant, jobs, record=record)
+    # Keep obligations from all captures; current time filtering is never an audit.
+    history = record.setdefault("canonical_one_shots", {})
+    for declaration, _ in canonical:
+        if (declaration.get("schedule") or {}).get("kind") == "at":
+            from .migration_preservation import declaration_digest
+
+            history[declaration["id"] + ":" + declaration_digest(declaration)] = declaration
     previous = record.get("cron_export")
     if previous is not None and previous != jobs:
         record.setdefault("cron_export_history", []).append({"at": record.get("cron_export_at"), "jobs": previous})
@@ -240,7 +313,6 @@ def capture(tenant, record):
         )
         # Re-capture user edits/cancellations only for rows owned by this import.
         upsert_from_gateway_jobs(tenant, [j for j in jobs if j["name"] in unchanged], delete_missing=False)
-        CronJob.objects.filter(tenant=tenant, name__in=unchanged - {j["name"] for j in jobs}).update(enabled=False)
         for row in CronJob.objects.filter(tenant=tenant, name__in=owned):
             if row.name not in versions or row.name in unchanged:
                 versions[row.name] = row.updated_at.isoformat()
@@ -251,27 +323,14 @@ def capture(tenant, record):
     # Do not leak rolled-back ownership into the caller's failure checkpoint.
     record["imported_versions"] = versions
     tenant.postgres_cron_canonical = True
-    # Keep non-agent unmanaged rows in the signed desired set permanently. Agent
-    # recurring jobs are explicitly handed back to their owner for re-sync.
-    rows = list(CronJob.objects.filter(tenant=tenant))
-    preserved = [r.pk for r in rows if r.source != "agent" and (not r.managed or _is_unmanaged_cron(r.name))]
-    agent_names = {r.name for r in rows if r.source == "agent"}
-    needs_resync = [
-        j.get("id") or j.get("jobId")
-        for j in jobs
-        if j["name"] in agent_names and (j.get("schedule") or {}).get("kind") != "at"
-    ]
-    record["preserved_unmanaged_ids"] = [str(pk) for pk in preserved]
-    record["needs_agent_resync"] = needs_resync
-    from .cron_declarations import supported_declaration
-
-    if any(not supported_declaration(j) for j in _desired_jobs(tenant)):
-        raise MigrationError("unsupported_cron")
+    # Automatic signed selection is unchanged. Unsupported exclusions were
+    # refused before import; no migration-specific exemptions or resync waiver.
+    record["needs_agent_resync"] = []
     _save(tenant, record)
     return {
         **result,
         "captured": len(jobs),
-        "needs_agent_resync": needs_resync,
+        "needs_agent_resync": [],
         "disabled_retained": CronJob.objects.filter(tenant=tenant, enabled=False).count(),
     }
 
@@ -296,26 +355,31 @@ def assert_cutover_safe(jobs):
 def one_shot_dispositions(tenant, record):
     from apps.cron.pending_at_views import _at_fires_at_ms
 
+    from .migration_preservation import declaration_digest
+
     exports = [h["jobs"] for h in record.get("cron_export_history", [])] + [record.get("cron_export", [])]
     captured_by_id = {
-        j.get("id") or j.get("jobId"): j
+        (j.get("id") or j.get("jobId"), declaration_digest(j)): j
         for jobs in exports
         for j in jobs
         if (j.get("schedule") or {}).get("kind") == "at"
     }
     captured = list(captured_by_id.values())
+    canonical = dict(record.get("canonical_one_shots", {}))
+
+    for declaration, _ in canonical_inventory(tenant):
+        if (declaration.get("schedule") or {}).get("kind") == "at":
+            canonical[declaration["id"] + ":" + declaration_digest(declaration)] = declaration
+    captured += list(canonical.values())
     if not captured:
         return
     observed = runtime_operator.list_crons(tenant)
     rows = {r.name: str(r.pk) for r in CronJob.objects.filter(tenant=tenant)}
     now = int(timezone.now().timestamp() * 1000)
     dispositions = []
-    delivered_ids = {d["id"] for d in record.get("one_shot_dispositions", []) if d["disposition"] == "delivered"}
     for job in captured:
-        resolution = record.get("source_resolutions", {}).get(job.get("id") or job.get("jobId"))
-        if resolution:
-            dispositions.append({"id": job.get("id") or job.get("jobId"), "disposition": resolution["disposition"]})
-            continue
+        # Historical source resolutions are hints only. Both current authorities
+        # and delivery evidence below must independently justify the disposition.
         due = _at_fires_at_ms(job)
         matches = [
             j
@@ -325,7 +389,8 @@ def one_shot_dispositions(tenant, record):
             or j.get("declarationKey") == "nbhd:" + rows.get(job["name"], "missing")
         ]
         delivered = any(
-            (j.get("state") or {}).get("lastDelivered") is True
+            _at_fires_at_ms(j) == due
+            and (j.get("state") or {}).get("lastDelivered") is True
             and (j.get("state") or {}).get("lastRunAtMs", 0) >= (due or now)
             for j in matches
         )
@@ -333,9 +398,15 @@ def one_shot_dispositions(tenant, record):
             disposition = "cancelled"
         elif not job.get("enabled", True):
             disposition = "disabled_retained"
-        elif delivered or (job.get("id") or job.get("jobId")) in delivered_ids:
+        elif delivered:
             disposition = "delivered"
-        elif due and due > now and len(matches) == 1 and matches[0].get("enabled", True):
+        elif (
+            due
+            and due > now
+            and len(matches) == 1
+            and matches[0].get("enabled", True)
+            and _at_fires_at_ms(matches[0]) == due
+        ):
             disposition = "pending_runtime"
         elif due and due <= now:
             disposition = "expired_undelivered"
@@ -384,7 +455,7 @@ def image_step(tenant, record):
         if VERSION in _image(app):
             raise MigrationError("unexpected_target_revision")
         record["evidence"]["capture"] = capture(tenant, record)
-        assert_cutover_safe(record["cron_export"])
+        preservation_precheck(tenant, record["cron_export"])
         record["image_submitted"] = True
         _save(tenant, record)
         azure_client.update_container_image(
@@ -451,29 +522,59 @@ def crons_step(tenant, record):
     raise MigrationError("Signed cron sync did not converge within 180 seconds")
 
 
+def canonical_revision(tenant):
+    import hashlib
+    import json
+
+    rows = list(
+        CronJob.objects.filter(tenant=tenant)
+        .order_by("id")
+        .values("id", "updated_at", "name", "enabled", "managed", "source", "data")
+    )
+    return hashlib.sha256(json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest()
+
+
 def verify(tenant, record):
-    expected_keys = {j["declarationKey"] for j in _desired_jobs(tenant)}
-    polls = []
-    for index in range(2):
-        if index:
-            time.sleep(25)
-        one_shot_dispositions(tenant, record)
-        inspection = runtime_operator.inspect_signed_crons(tenant)
-        if not _signed_match(inspection) or {m["key"] for m in inspection["matches"]} != expected_keys:
-            record["verification_failure"] = {"inspection": inspection, "expected_keys": sorted(expected_keys)}
-            raise MigrationError("Operator cron metadata does not match Postgres desired set")
-        if set(inspection.get("legacy", [])) - set(record.get("needs_agent_resync", [])):
-            record["verification_failure"] = {"inspection": inspection}
-            raise MigrationError("Unmatched enabled legacy cron remains; duplicate cleanup requires operator review")
-        polls.append({m["key"]: m["id"] for m in inspection["matches"]})
-    if polls[0] != polls[1]:
-        record["verification_failure"] = {"polls": polls}
-        raise MigrationError("Cron IDs changed across two polls 25 seconds apart")
-    health = wait_healthy(tenant, image=record["evidence"]["preflight"]["target_image"], timeout=30)
-    logs = runtime_operator.console_error_counts(tenant, since=timezone.now() - timedelta(minutes=5))
-    if any(logs["errors"].values()):
-        record["verification_failure"] = {"console": logs}
-        raise MigrationError("Recent console logs contain migration/runtime errors")
+    from .migration_preservation import canonical_digests, reason_counts
+
+    for attempt in range(2):
+        snapshot = canonical_revision(tenant)
+        expected = canonical_digests(_desired_jobs(tenant))
+        polls = []
+        mismatch = False
+        audit_error = None
+        for index in range(2):
+            if index:
+                time.sleep(25)
+            try:
+                one_shot_dispositions(tenant, record)
+            except MigrationError as exc:
+                audit_error = exc
+            inspection = runtime_operator.inspect_signed_crons(tenant, canonical_digests=expected)
+            mismatch |= not _signed_match(inspection) or {m["key"] for m in inspection["matches"]} != set(expected)
+            mismatch |= bool(inspection.get("legacy", []))
+            polls.append({m["key"]: m["id"] for m in inspection["matches"]})
+        health = wait_healthy(tenant, image=record["evidence"]["preflight"]["target_image"], timeout=30)
+        logs = runtime_operator.console_error_counts(tenant, since=timezone.now() - timedelta(minutes=5))
+        if any(logs["errors"].values()):
+            record["verification_failure"] = {"console": logs}
+            raise MigrationError("Recent console logs contain migration/runtime errors")
+        reasons = reason_counts(canonical_inventory(tenant))
+        current_desired = canonical_digests(_desired_jobs(tenant))
+        current = canonical_revision(tenant)
+        if snapshot != current or expected != current_desired:
+            if attempt == 0:
+                continue
+            raise MigrationError("canonical_changed_during_verification")
+        if reasons:
+            raise PreservationError(reasons)
+        if audit_error:
+            raise audit_error
+        if mismatch:
+            raise MigrationError("canonical_content_mismatch")
+        if polls[0] != polls[1]:
+            raise MigrationError("cron_ids_unstable")
+        break
     return {"result": "PASS", "polls": polls, "poll_interval_seconds": 25, "health": health, "console": logs}
 
 
@@ -483,6 +584,24 @@ HANDLERS = dict(zip(STEPS, (preflight, capture, image_step, version_step, config
 def verify_existing(tenant, record):
     """Read-only canary verification; never replace an already-9.4 image/config."""
     try:
+        from .migration_preservation import preservation_reasons, reason_counts
+
+        declarations = canonical_inventory(tenant) + [
+            (j, True) for j in runtime_operator.preservation_inventory(tenant)
+        ]
+        reasons = reason_counts(declarations)
+        if reasons:
+            import hashlib
+
+            findings = []
+            for job, managed in declarations:
+                codes = sorted(preservation_reasons(job, managed=managed))
+                if codes:
+                    key = str(job.get("declarationKey") or job.get("id") or job.get("jobId") or "unknown")
+                    if not re.fullmatch(r"[A-Za-z0-9:_-]{1,100}", key):
+                        key = "runtime:" + hashlib.sha256(key.encode()).hexdigest()[:16]
+                    findings.append({"key": key, "reasons": codes})
+            return {"status": "BLOCKED_UNSUPPORTED", "steps": [], "reasons": reasons, "declarations": findings}
         current_image = _image(get_app(tenant))
         expected = f"{settings.AZURE_ACR_SERVER}/nbhd-openclaw:{tenant.container_image_tag}"
         if tenant.openclaw_version != VERSION or current_image.split("@", 1)[0] != expected:
@@ -513,6 +632,15 @@ def verify_existing(tenant, record):
 def migrate_tenant(tenant_id, tag: str, *, dry_run=False) -> dict:
     if not re.fullmatch(r"2026\.9\.4-[0-9a-f]{7,40}", tag or ""):
         raise MigrationError("Target must be an immutable 2026.9.4-<sha> tag")
+    candidate = Tenant.objects.get(pk=tenant_id)
+    prior = candidate.openclaw_migration or {}
+    lease = parse_datetime(prior.get("lease_until", ""))
+    if not dry_run and prior.get("status") == "RUNNING" and lease and lease > timezone.now():
+        raise MigrationError("Migration already running; wait for its 30-minute lease to expire")
+    if not dry_run and candidate.openclaw_version != VERSION and not prior.get("image_submitted"):
+        readiness = report_tenant(candidate)
+        if readiness["status"] != "READY":
+            return {**readiness, "steps": []}
     with transaction.atomic():
         tenant = Tenant.objects.select_for_update().select_related("user").get(pk=tenant_id)
         record = copy.deepcopy(tenant.openclaw_migration or {})
@@ -581,7 +709,7 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False) -> dict:
             "needs_agent_resync": len(record.get("needs_agent_resync", [])),
         }
     except Exception as exc:
-        record["status"] = "FAILED"
+        record["status"] = "BLOCKED_UNSUPPORTED" if isinstance(exc, PreservationError) else "FAILED"
         if not record.get("image_submitted") and str(exc) in {
             "cron_imminent",
             "cron_running",

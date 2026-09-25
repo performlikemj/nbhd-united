@@ -21,6 +21,7 @@ class Command(BaseCommand):
         mode = parser.add_mutually_exclusive_group()
         mode.add_argument("--dry-run", action="store_true")
         mode.add_argument("--verify-only", action="store_true")
+        mode.add_argument("--report", action="store_true", help="Read-only per-tenant preservation readiness")
 
     def handle(self, *args, **options):
         raw = options["tenant"] or options["tenants"]
@@ -32,10 +33,23 @@ class Command(BaseCommand):
             raise CommandError("Unknown tenant in batch; nothing changed")
         tag = options["tag"] or settings.OPENCLAW_IMAGE_TAG
         for tenant_id in ids:
+            if options["report"]:
+                result = openclaw_migration.report_tenant(Tenant.objects.get(pk=tenant_id))
+                counts = ",".join(f"{k}={v}" for k, v in result["reasons"].items())
+                self.stdout.write(f"{tenant_id}: {result['status']} {counts}".rstrip())
+                continue
             if options["verify_only"]:
                 tenant = Tenant.objects.get(pk=tenant_id)
                 try:
-                    openclaw_migration.verify_existing(tenant, tenant.openclaw_migration or {})
+                    result = openclaw_migration.verify_existing(tenant, tenant.openclaw_migration or {})
+                    if result.get("status") == "BLOCKED_UNSUPPORTED":
+                        counts = ",".join(f"{k}={v}" for k, v in result["reasons"].items())
+                        self.stdout.write(f"{tenant_id}: BLOCKED_UNSUPPORTED {counts}")
+                        for declaration in result.get("declarations", []):
+                            self.stdout.write(f"  {declaration['key']}: {','.join(declaration['reasons'])}")
+                        raise CommandError("Batch stopped: BLOCKED_UNSUPPORTED")
+                except CommandError:
+                    raise
                 except openclaw_migration.VerificationError as exc:
                     raise CommandError(f"FAIL {exc.code}") from None
                 except Exception:
@@ -47,6 +61,10 @@ class Command(BaseCommand):
             except MigrationError as exc:
                 raise CommandError(f"{tenant_id}: {exc}") from None
             self.stdout.write(f"{tenant_id}: {result['status']} steps={','.join(result['steps'])}")
+            if result.get("reasons"):
+                self.stdout.write(",".join(f"{k}={v}" for k, v in result["reasons"].items()))
+            if result["status"] in {"BLOCKED_UNSUPPORTED", "DEFER"}:
+                raise CommandError("Batch stopped: " + result["status"])
             if result.get("note"):
                 self.stdout.write(result["note"])
             if result.get("needs_agent_resync"):

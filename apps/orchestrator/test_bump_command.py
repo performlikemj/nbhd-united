@@ -11,8 +11,8 @@ from apps.tenants.services import create_tenant
 
 # Synthetic future version — clearly ahead of OPENCLAW_CURRENT_VERSION so the
 # bump command always has work to do regardless of the real fleet version.
-_BUMP_TARGET = "2026.99.0"
-_BUMP_IMAGE = "openclaw-2026.99.0"
+_BUMP_TARGET = "2026.9.99"
+_BUMP_IMAGE = "openclaw-2026.9.99"
 
 
 class BumpOpenclawVersionTest(TestCase):
@@ -25,6 +25,7 @@ class BumpOpenclawVersionTest(TestCase):
         self.tenant.container_id = "oc-bump-test"
         self.tenant.container_fqdn = "oc-bump-test.internal"
         self.tenant.openclaw_version = OPENCLAW_CURRENT_VERSION
+        self.tenant.container_image_tag = "2026.9.4-old"
         self.tenant.save()
 
     @patch("apps.orchestrator.services.update_container_image")
@@ -57,6 +58,7 @@ class BumpOpenclawVersionTest(TestCase):
             "bump_openclaw_version",
             oc_version=_BUMP_TARGET,
             all=True,
+            tenants=str(self.tenant.pk),
             image_tag=_BUMP_IMAGE,
         )
         mock_config.assert_not_called()
@@ -144,7 +146,7 @@ class BumpOpenclawVersionTest(TestCase):
         from django.utils import timezone
 
         self.tenant.hibernated_at = timezone.now()
-        self.tenant.container_image_tag = "old-sha"
+        self.tenant.container_image_tag = "2026.9.4-old"
         self.tenant.save(update_fields=["hibernated_at", "container_image_tag"])
 
         call_command(

@@ -84,9 +84,9 @@ class OperatorConsoleTests(SimpleTestCase):
 
 @skipUnless(shutil.which("node"), "Node is required for offline operator adapter tests")
 class OperatorCronAdapterTests(SimpleTestCase):
-    def run_adapter(self, current, desired, *, cleanup=True):
+    def run_adapter(self, current, desired, *, cleanup=True, canonical=None):
         with patch.object(operator, "run_node", side_effect=lambda tenant, body: body):
-            body = operator.inspect_signed_crons(Mock(), cleanup=cleanup)
+            body = operator.inspect_signed_crons(Mock(), cleanup=cleanup, canonical_digests=canonical)
         module = Path("runtime/openclaw/nbhd-cron-sync.mjs").resolve().as_uri()
         comparator = Path("apps/orchestrator/migration_cron_compare.mjs").read_text().replace("export ", "")
         body = body.replace(
@@ -101,7 +101,7 @@ class OperatorCronAdapterTests(SimpleTestCase):
                 json.dumps({"signed": signed, "sig": hmac.new(key.encode(), signed.encode(), sha256).hexdigest()})
             )
             script = (
-                "const mutations=[]; const oc=(args)=>{if(args[1]==='list')return "
+                "const crypto=await import('node:crypto'); const mutations=[]; const oc=(args)=>{if(args[1]==='list')return "
                 + json.dumps(json.dumps({"jobs": current}))
                 + ";mutations.push(args);return '{}';};"
                 "const result=await(async()=>{" + body + "})();console.log(JSON.stringify({result,mutations}));"
@@ -157,6 +157,36 @@ class OperatorCronAdapterTests(SimpleTestCase):
         desired = self.job()
         result = self.run_adapter([desired, self.job(id="duplicate")], [desired])
         self.assertFalse(result["result"]["matches"][0]["match"])
+
+    def test_current_postgres_content_overrides_stale_signed_file(self):
+        from apps.orchestrator.migration_preservation import canonical_digests
+
+        original = self.job()
+        changes = [
+            {"payload": {"kind": "agentTurn", "message": "changed"}},
+            {"schedule": {"kind": "cron", "expr": "0 10 * * *"}},
+            {"schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "Asia/Tokyo"}},
+            {
+                "delivery": {
+                    "mode": "announce",
+                    "channel": "telegram",
+                    "to": "changed",
+                    "accountId": "a",
+                    "threadId": "t",
+                }
+            },
+            {"enabled": False},
+        ]
+        good = self.run_adapter([original], [original], cleanup=False, canonical=canonical_digests([original]))
+        self.assertTrue(good["result"]["matches"][0]["match"])
+        for fields in changes:
+            with self.subTest(fields=list(fields)):
+                result = self.run_adapter(
+                    [original], [original], cleanup=False, canonical=canonical_digests([original | fields])
+                )
+                self.assertFalse(result["result"]["matches"][0]["match"])
+                self.assertEqual(result["mutations"], [])
+                self.assertNotIn("private-reminder", json.dumps(result))
 
     def test_config_observation_compares_opaque_applied_revision(self):
         with patch.object(operator, "run_node", side_effect=lambda tenant, body: body):

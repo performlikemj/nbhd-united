@@ -117,15 +117,21 @@ return jobs.map(j=>({id:j.id||j.jobId,name:j.name,declarationKey:j.declarationKe
     )
 
 
-def inspect_signed_crons(tenant, *, cleanup: bool = False) -> dict:
+def inspect_signed_crons(tenant, *, cleanup: bool = False, canonical_digests=None) -> dict:
     """Compare in-container desired jobs, remove only proven legacy duplicates.
 
     Comparison includes payloads INSIDE the replica via the image's tested adapter.
     Only IDs, declaration keys and match flags cross the console boundary.
     """
+    digest_adapter = Path(__file__).with_name("migration_cron_digest.mjs").read_text().replace("export ", "")
+    private_expected = json.dumps(canonical_digests) if canonical_digests is not None else "null"
     return run_node(
         tenant,
-        _LIST
+        digest_adapter
+        + "const canonical="
+        + private_expected
+        + ";"
+        + _LIST
         + """
 const {readSignedJobs,sameCron,buildAddArgs,atFireMs}=await import('/opt/nbhd/nbhd-cron-sync.mjs');
 const signed=await readSignedJobs();
@@ -136,7 +142,11 @@ if(desired.some(j=>!buildAddArgs(j))) throw Error('unmappable');
 const removed=[];
 const matches=desired.map(d=>{
     const found=jobs.filter(j=>j.declarationKey===d.declarationKey);
-    const valid=found.length===1 && found[0].enabled!==false && sameCron(found[0],d);
+    let valid=found.length===1 && found[0].enabled!==false && sameCron(found[0],d);
+    if(canonical!==null) {
+        const expected=canonical[d.declarationKey];
+        valid=valid && !!expected && crypto.createHash('sha256').update(stableJSON(normalizedDeclaration(found[0],expected.pins))).digest('hex')===expected.digest;
+    }
     if(valid && CLEANUP){
         for(const legacy of jobs.filter(j=>!String(j.declarationKey||'').startsWith('nbhd:'))){
             if(legacy.enabled!==false && sameCron({...legacy,declarationKey:d.declarationKey},d)){
@@ -203,3 +213,23 @@ def console_error_counts(tenant, *, since) -> dict:
     recent = [str(row.get("Log", "")) for row, stamp in zip(rows, timestamps) if stamp >= since]
     counts = {key: sum(bool(re.search(pattern, line, re.I)) for line in recent) for key, pattern in patterns.items()}
     return {"since": since.isoformat(), "lines": len(recent), "errors": counts}
+
+
+def preservation_inventory(tenant):
+    """Read declaration structure; redact prose/destinations inside the replica."""
+    return run_node(
+        tenant,
+        _LIST
+        + r"""
+return jobs.map(j=>{
+    const copy=structuredClone(j);
+    const deny=/"(command|commandArgv|command_argv|commandInput|commandCwd|commandEnv|script)"\s*:/i.test(JSON.stringify(j));
+    for(const key of ['description','sessionKey','agentId']) if(copy[key]) copy[key]='present';
+    if(copy.displayName) copy.displayName=copy.displayName===j.name?copy.name:'different';
+    if(copy.payload) for(const key of ['message','text','event','model','thinking']) if(copy.payload[key]!=null) copy.payload[key]=String(copy.payload[key]).trim()?'present':'';
+    if(copy.delivery) for(const key of ['to','accountId','threadId']) if(copy.delivery[key]) copy.delivery[key]='present';
+    if(deny) copy.unsupportedWriterKey=true;
+    return copy;
+});
+""",
+    )
