@@ -271,7 +271,13 @@ def console_error_counts(tenant, *, since) -> dict:
     timestamps = [t if t is None or t.tzinfo else t.replace(tzinfo=UTC) for t in timestamps]
     if not rows or any(t is None for t in timestamps):
         raise OperatorError("Console log window unavailable")
-    if len(rows) >= 300 and min(timestamps) > since:
+    # The API caps the tail at 300 lines, and a 9.4 gateway under stdout
+    # redaction emits ~300 lines every ~2 minutes even when idle (E2E canary
+    # 2026-09-25), so a saturated tail rarely spans the whole window. Recurring
+    # runtime errors repeat within minutes: scan what the tail covers when it
+    # spans at least a minute, and report the coverage actually inspected.
+    covered_from = max(since, min(timestamps))
+    if len(rows) >= 300 and (max(timestamps) - covered_from).total_seconds() < 60:
         raise OperatorError("Console log tail does not cover verification window")
     patterns = {
         "fs_safe": r"FsSafeError|fs-safe.*(?:error|fail)",
@@ -282,7 +288,13 @@ def console_error_counts(tenant, *, since) -> dict:
     }
     recent = [str(row.get("Log", "")) for row, stamp in zip(rows, timestamps) if stamp >= since]
     counts = {key: sum(bool(re.search(pattern, line, re.I)) for line in recent) for key, pattern in patterns.items()}
-    return {"since": since.isoformat(), "lines": len(recent), "errors": counts}
+    return {
+        "since": since.isoformat(),
+        "covered_from": covered_from.isoformat(),
+        "partial_window": covered_from > since,
+        "lines": len(recent),
+        "errors": counts,
+    }
 
 
 def preservation_inventory(tenant, *, canonical_pins=None):

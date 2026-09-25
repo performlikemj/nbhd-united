@@ -360,3 +360,32 @@ class ConsoleLogWindowTests(SimpleTestCase):
             result = operator.console_error_counts(Mock(), since=now - timedelta(minutes=5))
         self.assertEqual(result["lines"], 2)
         self.assertEqual(result["errors"]["sqlite"], 1)
+
+
+class ConsoleLogSaturationTests(SimpleTestCase):
+    def counts(self, stamps, *, since):
+        lines = "\n".join(
+            json.dumps({"TimeStamp": t, "Log": "[nbhd:redact] non-operational line dropped"}) for t in stamps
+        )
+        with (
+            patch.object(operator, "_connection", return_value=(Mock(log_stream_endpoint="https://logs"), "t")),
+            patch.object(operator.requests, "get", return_value=Mock(text=lines)),
+        ):
+            return operator.console_error_counts(Mock(), since=since)
+
+    def test_saturated_tail_spanning_two_minutes_is_scanned_as_a_partial_window(self):
+        from datetime import UTC, datetime, timedelta
+
+        start = datetime(2026, 9, 25, 20, 50, tzinfo=UTC)
+        stamps = [(start + timedelta(seconds=i * 0.46)).strftime("%Y-%m-%dT%H:%M:%S.%f") for i in range(300)]
+        result = self.counts(stamps, since=start - timedelta(minutes=3))
+        self.assertTrue(result["partial_window"])
+        self.assertEqual(result["lines"], 300)
+
+    def test_saturated_tail_spanning_under_a_minute_still_refuses(self):
+        from datetime import UTC, datetime, timedelta
+
+        start = datetime(2026, 9, 25, 20, 50, tzinfo=UTC)
+        stamps = [(start + timedelta(seconds=i * 0.1)).strftime("%Y-%m-%dT%H:%M:%S.%f") for i in range(300)]
+        with self.assertRaisesRegex(operator.OperatorError, "does not cover"):
+            self.counts(stamps, since=start - timedelta(minutes=5))
