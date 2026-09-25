@@ -6,6 +6,7 @@ import { useEffect, useMemo } from "react";
 
 import { SleepBars, WeightLine, type SleepNight } from "@/components/open-sky/charts";
 import { OpenSkyPageHeader, OpenSkySection } from "@/components/open-sky/primitives";
+import { ThisWeekCard } from "@/components/open-sky/this-week";
 import type { AssistantCardRow, AssistantPanelRef } from "@/lib/api";
 import {
   useAssistantCardsQuery,
@@ -254,11 +255,7 @@ export default function OverviewPage() {
           )}
         </OpenSkySection>
 
-        <OpenSkySection id="this-week" label="This week">
-          <p className="py-2 text-[0.9375rem] text-os-muted">
-            Your calendar lands here soon. It will show what your iPhone has synced, and say when it last did.
-          </p>
-        </OpenSkySection>
+        <ThisWeekCard enabled={enabled} />
 
         <OpenSkySection
           label={`Training · ${doneCount} of ${workouts.length} done`}
