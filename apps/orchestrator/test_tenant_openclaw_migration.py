@@ -546,6 +546,42 @@ class MigrationStepTests(TestCase):
         ):
             migration.verify(self.tenant, rec)
 
+    def test_verify_waits_for_the_writer_to_settle_after_restart(self):
+        rec = record()
+        rec["evidence"]["preflight"] = {"target_image": "image"}
+        good = {"extras": [], "matches": [{"key": "nbhd:1", "id": "job1", "match": True}], "expected": 1}
+        syncing = {"extras": [], "matches": [{"key": "nbhd:1", "id": "job1", "match": False}], "expected": 1}
+        with (
+            patch.object(migration, "_desired_jobs", return_value=[{"declarationKey": "nbhd:1"}]),
+            patch.object(migration.runtime_operator, "inspect_signed_crons", side_effect=[syncing, good, good]),
+            patch.object(migration.runtime_operator, "console_error_counts", return_value={"errors": {}}),
+            patch.object(migration, "wait_healthy", return_value={}),
+            patch.object(migration.time, "sleep") as sleep,
+        ):
+            self.assertEqual(migration.verify(self.tenant, rec)["result"], "PASS")
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [30, 25])
+
+    def test_verify_fails_when_a_mismatch_or_legacy_row_persists(self):
+        rec = record()
+        rec["evidence"]["preflight"] = {"target_image": "image"}
+        legacy = {
+            "extras": [],
+            "matches": [{"key": "nbhd:1", "id": "job1", "match": True}],
+            "expected": 1,
+            "legacy": ["old-job"],
+        }
+        clock = iter(range(0, 10_000, 60))
+        with (
+            patch.object(migration, "_desired_jobs", return_value=[{"declarationKey": "nbhd:1"}]),
+            patch.object(migration.runtime_operator, "inspect_signed_crons", return_value=legacy),
+            patch.object(migration.runtime_operator, "console_error_counts", return_value={"errors": {}}),
+            patch.object(migration, "wait_healthy", return_value={}),
+            patch.object(migration.time, "sleep"),
+            patch.object(migration.time, "monotonic", side_effect=lambda: next(clock)),
+            self.assertRaisesRegex(migration.MigrationError, "canonical_content_mismatch"),
+        ):
+            migration.verify(self.tenant, rec)
+
     def test_verify_records_log_failures(self):
         rec = record()
         rec["evidence"]["preflight"] = {"target_image": "image"}
