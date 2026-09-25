@@ -308,6 +308,10 @@ CHAT_SHAPE_PANELS = env(
 # Talk routing: explicit tenant UUID allowlist, no wildcard; dark by default.
 TALK_ROUTE_TENANT_IDS = env("TALK_ROUTE_TENANT_IDS", default="")
 
+# Web redesign ("Open Sky" logged-in console): tenant UUID allowlist, fail-closed
+# (empty = nobody, exact "*" = everyone). Container App env var name MUST match.
+WEB_REDESIGN_TENANT_IDS = env("WEB_REDESIGN_TENANT_IDS", default="")
+
 # Human-review gate for agent-authored scheduled tasks. Comma-separated tenant
 # UUIDs open individual tenants; the literal "*" opens the gate fleet-wide.
 # Empty/unset means nobody so every non-explicit configuration fails closed.

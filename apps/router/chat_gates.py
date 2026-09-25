@@ -44,3 +44,8 @@ def chat_panels_tool_enabled(tenant) -> bool:
 def talk_route_enabled(tenant) -> bool:
     """Talk-mode ack/quick-read router (Django-only; image-independent)."""
     return _tenant_allowed(tenant, "TALK_ROUTE_TENANT_IDS")
+
+
+def web_redesign_enabled(tenant) -> bool:
+    """Open Sky web console (read by the frontend via /tenants/me/)."""
+    return _tenant_allowed(tenant, "WEB_REDESIGN_TENANT_IDS")
