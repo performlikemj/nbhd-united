@@ -43,7 +43,9 @@ class Command(BaseCommand):
         tag = options["tag"] or settings.OPENCLAW_IMAGE_TAG
         for tenant_id in ids:
             if options["report"]:
-                result = openclaw_migration.report_tenant(Tenant.objects.get(pk=tenant_id))
+                tenant = Tenant.objects.get(pk=tenant_id)
+                result = openclaw_migration.report_tenant(tenant)
+                self.stdout.write(f"cron_edits_fenced={tenant.openclaw_migration_cron_fenced}")
                 counts = ",".join(f"{k}={v}" for k, v in result["reasons"].items())
                 self.stdout.write(
                     f"{tenant_id}: {result['status']} {counts} quarantined_cache={result.get('quarantined_cache', 0)}".rstrip()

@@ -13,6 +13,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.orchestrator.migration_cron_fence import cron_edits_fenced, cron_fenced_response
 from apps.tenants.models import Tenant
 
 from .cache import (
@@ -279,6 +280,8 @@ class CronJobListCreateView(APIView):
 
     def post(self, request):
         tenant = _get_tenant_for_user(request.user)
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response()
 
         data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
         try:
@@ -407,6 +410,8 @@ class CronJobDetailView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
         tenant = _get_tenant_for_user(request.user)
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response()
         data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
         if "schedule" in data:
             try:
@@ -601,6 +606,8 @@ class CronJobDetailView(APIView):
 
     def delete(self, request, job_name: str):
         tenant = _get_tenant_for_user(request.user)
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response()
         if tenant.postgres_cron_canonical:
             if _is_hidden_cron(job_name):
                 return Response(
@@ -636,6 +643,8 @@ class CronJobToggleView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
         tenant = _get_tenant_for_user(request.user)
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response()
 
         enabled = request.data.get("enabled")
         if enabled is None:
@@ -697,6 +706,8 @@ class CronJobBulkDeleteView(APIView):
 
     def post(self, request):
         tenant = _get_tenant_for_user(request.user)
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response()
 
         ids = request.data.get("ids")
         if not ids or not isinstance(ids, list):
@@ -847,6 +858,8 @@ class CronJobBulkUpdateForegroundView(APIView):
 
     def post(self, request):
         tenant = _get_tenant_for_user(request.user)
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response()
 
         ids = request.data.get("ids")
         if not ids or not isinstance(ids, list):

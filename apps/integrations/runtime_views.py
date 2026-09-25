@@ -53,6 +53,7 @@ from apps.journal.session_models import Session
 from apps.lessons.models import Lesson
 from apps.lessons.serializers import LessonSerializer
 from apps.lessons.services import search_lessons
+from apps.orchestrator.migration_cron_fence import cron_edits_fenced, cron_fenced_response
 from apps.orchestrator.personas import get_persona
 from apps.orchestrator.tour_guide import places_search_delivery_ready, tour_guide_delivery_ready
 from apps.pii.egress import KnownValueResponseGuardMixin
@@ -3481,6 +3482,8 @@ class RuntimeProfileUpdateView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        if "timezone" in request.data and cron_edits_fenced(tenant):
+            return cron_fenced_response(assistant=True)
         record_runtime_write_activity(tenant)
 
         user = tenant.user
@@ -4306,6 +4309,8 @@ class RuntimeCronPhase2SummaryView(KnownValueResponseGuardMixin, APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response(assistant=True)
         record_runtime_write_activity(tenant)
 
         data = request.data or {}
@@ -5615,6 +5620,8 @@ class _RuntimeCronCreateBase(KnownValueResponseGuardMixin, APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response(assistant=True)
 
         blocked = assert_write_allowed_for_document_turn(tenant)
         if blocked is not None:
@@ -6013,6 +6020,8 @@ class RuntimeDocumentForgetView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response(assistant=True)
         record_runtime_write_activity(tenant)
 
         result = forget_ingestion(tenant, ingestion_id)

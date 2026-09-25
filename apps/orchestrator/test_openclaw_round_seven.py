@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from unittest import skipUnless
 from unittest.mock import patch
 
-from django.db import DatabaseError, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
@@ -177,6 +176,7 @@ class PrestagingTests(TestCase):
     def setUp(self):
         self.tenant = tenant_fixture(949407)
         self.files = {}
+        self.enterContext(patch.object(m.time, "sleep"))
         for target, kwargs in (
             # Full-suite environment probes can unset AZURE_MOCK. Pin this
             # synthetic storage fixture and forbid credential acquisition.
@@ -220,8 +220,10 @@ class PrestagingTests(TestCase):
             )
             self.assertEqual(self.tenant.openclaw_version, "2026.5.28")
             self.assertTrue(self.tenant.openclaw_migration_cron_fenced)
-            with self.assertRaises(DatabaseError), transaction.atomic():
-                CronJob.objects.filter(tenant=self.tenant).delete()
+            from apps.orchestrator.migration_cron_fence import cron_edits_fenced
+
+            with self.assertNumQueries(0):
+                self.assertTrue(cron_edits_fenced(self.tenant))
             app.template.containers[0].image = target
             app.template.revision_suffix = "m94-saved"
             raise SystemExit("simulated process death after Azure apply")

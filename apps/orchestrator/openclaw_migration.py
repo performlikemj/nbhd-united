@@ -539,6 +539,16 @@ def wait_healthy(tenant, *, image=None, suffix=None, timeout=300):
     raise MigrationError("Bounded revision/proxy-health/healthz wait expired")
 
 
+def fence_and_drain(tenant, record):
+    # No transaction or row lock spans the drain or any external operation.
+    # Repeat the drain on pre-submit recovery: a crash may have interrupted it.
+    if _owned_query(tenant, record).update(openclaw_migration_cron_fenced=True) != 1:
+        raise MigrationError("migration_owner_fenced")
+    tenant.openclaw_migration_cron_fenced = True
+    time.sleep(30)
+    _assert_owner(tenant, record)
+
+
 def image_step(tenant, record):
     _assert_owner(tenant, record)
     evidence = record["evidence"]["preflight"]
@@ -547,13 +557,9 @@ def image_step(tenant, record):
     if _image(app) != image or app.template.revision_suffix != suffix:
         if VERSION in _image(app):
             raise MigrationError("unexpected_target_revision")
-        if not tenant.openclaw_migration_cron_fenced:
-            record["evidence"]["capture"] = capture(tenant, record)
-        # This row update waits for previously admitted DB/transport writers.
-        # Persist BEFORE publishing, and retain across ordinary/hard failures.
-        if _owned_query(tenant, record).update(openclaw_migration_cron_fenced=True) != 1:
-            raise MigrationError("migration_owner_fenced")
-        tenant.openclaw_migration_cron_fenced = True
+        fence_and_drain(tenant, record)
+        # Final source/canonical snapshot includes edits admitted before the fence.
+        record["evidence"]["capture"] = capture(tenant, record)
         preservation_precheck(tenant, record["cron_export"])
         stage_signed_crons(tenant, record, checkpoint="signed_prestaged")
         record["recovery"] = {
@@ -578,9 +584,7 @@ def image_step(tenant, record):
     # Records created before the fence field existed can already point at the
     # submitted revision. Recovery must fence this path before health/staging too.
     if not tenant.openclaw_migration_cron_fenced:
-        if _owned_query(tenant, record).update(openclaw_migration_cron_fenced=True) != 1:
-            raise MigrationError("migration_owner_fenced")
-        tenant.openclaw_migration_cron_fenced = True
+        fence_and_drain(tenant, record)
     health = wait_healthy(tenant, image=image, suffix=suffix)
     stage_signed_crons(tenant, record, checkpoint="signed_after_health")
     return health
@@ -641,6 +645,7 @@ def version_step(tenant, record):
     ):
         raise MigrationError("migration_owner_fenced")
     tenant.container_image_tag, tenant.openclaw_version = record["tag"], VERSION
+    tenant.openclaw_migration_cron_fenced = False
     return {"tag": record["tag"], "version": VERSION}
 
 

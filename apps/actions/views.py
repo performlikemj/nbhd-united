@@ -410,6 +410,10 @@ class GateRespondView(APIView):
                 if destination_override is not None or set_default not in (False, None):
                     return action, {"error": "destination_options_not_supported"}, status.HTTP_400_BAD_REQUEST
                 if response_action == "approve":
+                    from apps.orchestrator.migration_cron_fence import cron_edits_fenced
+
+                    if cron_edits_fenced(action.tenant):
+                        return action, {"error": "assistant_updating", "retry_after": 60}, status.HTTP_409_CONFLICT
                     data = approve_cron_action(action, responded_at=now)
                 else:
                     data = deny_cron_action(action, responded_at=now)

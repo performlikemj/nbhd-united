@@ -29,7 +29,6 @@ from apps.cron.services import (
     create_validated_typed_cron,
     validate_typed_cron_request,
 )
-from apps.orchestrator.migration_cron_fence import cron_mutation
 from apps.pii.store_authoring import author_store_fields, owner_store_representation
 from apps.tenants.models import Tenant
 
@@ -283,7 +282,7 @@ def request_cron_action(
         return {**cron_action_state(existing), "_created": False}
 
     try:
-        with transaction.atomic(), cron_mutation(tenant.pk):
+        with transaction.atomic():
             locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
             existing = _existing_request(locked_tenant, request_id, canonical_hash)
             if existing is not None:

@@ -3,7 +3,6 @@
 import copy
 import json
 import shutil
-import threading
 from datetime import timedelta
 from io import StringIO
 from types import SimpleNamespace
@@ -12,8 +11,8 @@ from unittest.mock import Mock, patch
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import DatabaseError, close_old_connections, connection, transaction
-from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
+from django.db import connection, transaction
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -23,7 +22,7 @@ from apps.cron.share_cron_sync import write_tenant_crons_file
 from apps.cron.signals import suppress_cronjob_reconcile
 from apps.orchestrator import openclaw_migration as m
 from apps.orchestrator import test_openclaw_round_seven as round_seven
-from apps.orchestrator.migration_cron_fence import AssistantUpdating, cron_mutation
+from apps.orchestrator.migration_cron_fence import cron_edits_fenced
 from apps.orchestrator.migration_preservation import preservation_reasons, scalar_types_valid
 from apps.orchestrator.migration_signed_file import publish_signed_file
 from apps.orchestrator.test_openclaw_round_seven import fixture, inventory_result
@@ -37,6 +36,7 @@ def fence(tenant, status="RUNNING"):
         openclaw_migration={"status": status, "owner_token": "owner", "tag": TAG},
         openclaw_migration_cron_fenced=True,
     )
+    tenant.refresh_from_db()
 
 
 class FenceTests(TestCase):
@@ -47,37 +47,21 @@ class FenceTests(TestCase):
             self.row = CronJob.objects.create(tenant=self.tenant, name="reminder", data=job())
         fence(self.tenant)
 
-    def test_all_database_mutation_forms_refused_even_with_stale_tenant(self):
-        for status in ("RUNNING", "FAILED", "BLOCKED_UNSUPPORTED", "DEFERRED"):
-            fence(self.tenant, status)
-            mutations = [
-                lambda: CronJob.objects.create(tenant=self.tenant, name="new", data=job("new")),
-                lambda: self.row.save(),
-                lambda: CronJob.objects.filter(pk=self.row.pk).update(enabled=False),
-                lambda: CronJob.objects.bulk_create([CronJob(tenant=self.tenant, name="bulk", data=job("bulk"))]),
-                lambda: CronJob.objects.bulk_update([self.row], ["enabled"]),
-                lambda: CronJob.objects.filter(pk=self.row.pk).delete(),
-                lambda: self.row.delete(),
-            ]
-            for mutate in mutations:
-                with self.subTest(status=status, mutation=mutate), self.assertRaises(DatabaseError):  # noqa: SIM117
-                    with transaction.atomic(), suppress_cronjob_reconcile():
-                        mutate()
-            self.assertEqual(CronJob.objects.filter(tenant=self.tenant).count(), 1)
-            self.assertTrue(CronJob.objects.get(pk=self.row.pk).enabled)
-
-    def test_all_cron_tools_and_file_writer_refused_before_external_io(self):
-        with (
-            patch("apps.cron.gateway_client.requests.post") as http,
-            patch.object(m.azure_client, "_put_share_file") as put,
-        ):
-            for tool in ("cron.add", "cron.update", "cron.remove", "cron.run", "cron.enable", "cron.disable"):
-                with self.subTest(tool=tool), self.assertRaisesMessage(AssistantUpdating, "one minute"):
-                    invoke_gateway_tool(self.tenant, tool, {})
-            with self.assertRaises(AssistantUpdating):
-                write_tenant_crons_file(self.tenant)
-            http.assert_not_called()
-            put.assert_not_called()
+    def test_background_database_and_transport_writes_are_not_fenced(self):
+        self.tenant.refresh_from_db()
+        with self.assertNumQueries(0):
+            self.assertTrue(cron_edits_fenced(self.tenant))
+        with suppress_cronjob_reconcile():
+            CronJob.objects.filter(pk=self.row.pk).update(enabled=False)
+        with patch("apps.cron.gateway_client.requests.post") as post:
+            post.return_value.status_code = 200
+            post.return_value.json.return_value = {"ok": True, "result": {}}
+            with self.assertNumQueries(0):
+                invoke_gateway_tool(self.tenant, "cron.remove", {"jobId": "original"})
+            post.assert_called_once()
+        with patch.object(m.azure_client, "_put_share_file") as put:
+            write_tenant_crons_file(self.tenant)
+            put.assert_called_once()
 
     def test_no_active_record_takes_original_transport_and_database_path(self):
         for record in ({}, {"status": "PASS"}):
@@ -160,21 +144,6 @@ class FenceTests(TestCase):
         self.assertEqual(response.json()["error"], "assistant_updating")
         self.assertIn("one minute", response.json()["detail"])
 
-    def test_queued_cron_action_is_refused_before_proposal(self):
-        from apps.cron.gate import request_cron_action
-
-        with self.assertRaises(AssistantUpdating):
-            request_cron_action(
-                self.tenant,
-                cron_request_id="new",
-                pattern="pure_reminder",
-                name="new",
-                schedule={"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"},
-                typed_payload={"text": "test"},
-                reason="test",
-                origin_stamp=None,
-            )
-
     def test_unfenced_proposal_survives_notification_failure_as_on_main(self):
         from apps.actions.models import PendingAction
         from apps.cron.gate import request_cron_action
@@ -198,35 +167,6 @@ class FenceTests(TestCase):
             self.assertTrue(
                 PendingAction.objects.filter(tenant=self.tenant, cron_request_id=f"parity-{index}").exists()
             )
-
-
-class DrainTests(TransactionTestCase):
-    def test_fence_waits_for_previously_admitted_transport(self):
-        tenant = tenant_fixture(9494081)
-        started, finished = threading.Event(), threading.Event()
-        errors = []
-
-        def activate():
-            close_old_connections()
-            try:
-                started.set()
-                fence(tenant)
-            except Exception as exc:
-                errors.append(exc)
-            finally:
-                finished.set()
-                connection.close()
-
-        with cron_mutation(tenant.pk):
-            worker = threading.Thread(target=activate)
-            worker.start()
-            self.assertTrue(started.wait(5))
-            self.assertFalse(finished.wait(0.15))
-        worker.join(5)
-        self.assertTrue(finished.is_set())
-        self.assertEqual(errors, [])
-        with self.assertRaises(AssistantUpdating), cron_mutation(tenant.pk):
-            self.fail("fenced writer admitted")
 
 
 class TakeoverTests(TestCase):
@@ -389,6 +329,7 @@ class ImageBoundaryTests(TestCase):
             self.assertTrue(self.tenant.openclaw_migration_cron_fenced)
 
         with (
+            patch.object(m.time, "sleep"),
             patch.object(m, "get_app", return_value=app),
             patch.object(m, "live_source_jobs", return_value=[job()]),
             patch.object(m, "_save", side_effect=save),
@@ -398,12 +339,12 @@ class ImageBoundaryTests(TestCase):
             m.image_step(self.tenant, record)
             update.assert_called_once()
 
-    def test_active_post_version_reconcile_uses_atomic_publication(self):
+    def test_migration_post_version_reconcile_uses_atomic_publication(self):
         fence(self.tenant)
         self.tenant.refresh_from_db()
         m.version_step(self.tenant, self.tenant.openclaw_migration)
-        with patch("apps.orchestrator.migration_signed_file.publish_signed_file") as publish:
-            write_tenant_crons_file(self.tenant)
+        with patch("apps.orchestrator.migration_signed_file.publish_signed_file", wraps=publish_signed_file) as publish:
+            m.stage_signed_crons(self.tenant, self.tenant.openclaw_migration, checkpoint="signed_crons")
             publish.assert_called_once()
 
     def test_already_submitted_revision_is_fenced_before_recovery_health_check(self):
@@ -423,11 +364,12 @@ class ImageBoundaryTests(TestCase):
         def health(*args, **kwargs):
             self.tenant.refresh_from_db()
             self.assertTrue(self.tenant.openclaw_migration_cron_fenced)
-            with self.assertRaises(DatabaseError), transaction.atomic():
-                CronJob.objects.create(tenant=self.tenant, name="late", data=job("late"))
+            with self.assertNumQueries(0):
+                self.assertTrue(cron_edits_fenced(self.tenant))
             return {}
 
         with (
+            patch.object(m.time, "sleep"),
             patch.object(m, "get_app", return_value=app),
             patch.object(m, "wait_healthy", side_effect=health),
             patch.object(m.azure_client, "update_container_image") as update,

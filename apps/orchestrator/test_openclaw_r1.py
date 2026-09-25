@@ -105,6 +105,7 @@ class RecoveryTests(TestCase):
             template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old")
         )
         with (
+            patch.object(migration.time, "sleep"),
             patch.object(migration, "get_app", return_value=app),
             patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": [imminent]}),
             patch.object(migration.azure_client, "update_container_image") as update,
@@ -180,6 +181,7 @@ class AdditionalRecoveryTests(RecoveryTests):
             template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old")
         )
         with (
+            patch.object(migration.time, "sleep"),
             patch.object(migration, "get_app", return_value=app),
             patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": []}),
             patch.object(migration.azure_client, "update_container_image") as image,

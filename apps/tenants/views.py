@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 from apps.common.cache import tenant_cache
 from apps.cron.publish import publish_task
 from apps.orchestrator.config_generator import TIER_MODEL_CONFIGS
+from apps.orchestrator.migration_cron_fence import cron_edits_fenced, cron_fenced_response
 
 from .models import Tenant
 from .serializers import HeartbeatConfigSerializer, TenantRegistrationSerializer, TenantSerializer, UserSerializer
@@ -368,6 +369,9 @@ class HeartbeatConfigView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        if cron_edits_fenced(tenant):
+            return cron_fenced_response()
+
         serializer = HeartbeatConfigSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -528,6 +532,12 @@ class ProfileView(APIView):
         return Response(UserSerializer(request.user).data)
 
     def patch(self, request):
+        if (
+            "timezone" in request.data
+            and (tenant := getattr(request.user, "tenant", None)) is not None
+            and cron_edits_fenced(tenant)
+        ):
+            return cron_fenced_response()
         original_timezone = request.user.timezone
         serializer = UserSerializer(request.user, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)

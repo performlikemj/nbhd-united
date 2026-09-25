@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from contextlib import nullcontext
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 from unittest.mock import call, patch
@@ -352,9 +351,6 @@ class GhostSweepOrchestrationTest(SimpleTestCase):
 
 class GatewayClientErrorLogLevelTest(SimpleTestCase):
     def setUp(self):
-        self.enterContext(
-            patch("apps.orchestrator.migration_cron_fence.cron_mutation", return_value=nullcontext(False))
-        )
         self.tenant = SimpleNamespace(
             id=UUID("33333333-3333-3333-3333-333333333333"),
             container_fqdn="oc-log-level.example.com",

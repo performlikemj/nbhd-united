@@ -130,7 +130,6 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "apps.tenants.middleware.TenantContextMiddleware",
     "apps.tenants.middleware.UserTimezoneMiddleware",
-    "apps.orchestrator.migration_cron_fence.CronFenceMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"

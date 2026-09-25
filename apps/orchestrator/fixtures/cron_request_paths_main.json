@@ -1,0 +1,9 @@
+{
+  "apps/cron/tenant_views.py": "68a10d27f4ffa2f73cf8a3c1d0b26f0d4a4845ea779ce28a673ad05d5f62f9ee",
+  "apps/cron/pending_at_views.py": "8ef3b548898ea4bc37d235bc5c8a21e7f4c4ef3c49314c0f1e023080b43ea227",
+  "apps/integrations/runtime_views.py": "f1ecfa38fd4ab3dba66cbd34e4d04a33108a376546909754dcb10879a3067ad3",
+  "apps/actions/views.py": "aadd86426c4e9b3f8a6a8454ce318c04d0090ae7e9715fe6eb576b4d199c664e",
+  "apps/cron/views.py#delete_registry_cron": "b3efbded368e68c628b547b7905e1aec557cd9259d8b598ac71f309b976c41a3",
+  "apps/fuel/runtime_views.py": "db1b380ae2b46db80675478230d00b7c807a53cc90916dc615af642fdc3ec999",
+  "apps/tenants/views.py": "fa6cf3c813b5715ad0bb198f0bc4dba796619270d4c8b866cd5aeb7369baa5df"
+}

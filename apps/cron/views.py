@@ -1726,6 +1726,11 @@ def delete_registry_cron(request):
     except (Tenant.DoesNotExist, ValueError, TypeError):
         return JsonResponse({"error": "Cron job not found"}, status=404)
 
+    from apps.orchestrator.migration_cron_fence import cron_edits_fenced
+
+    if cron_edits_fenced(tenant):
+        return JsonResponse({"error": "assistant_updating", "retry_after": 60}, status=409)
+
     from apps.cron import postgres_canonical as pg
     from apps.cron.gateway_client import GatewayError, cron_remove
     from apps.cron.models import CronJob

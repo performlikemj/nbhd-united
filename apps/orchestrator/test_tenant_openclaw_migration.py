@@ -192,6 +192,7 @@ class MigrationOrderingTests(TestCase):
         image = f"registry.invalid/nbhd-openclaw:{TAG}"
         app = SimpleNamespace(template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image=image)]))
         with (
+            patch.object(migration.time, "sleep"),
             patch.object(migration, "get_app", return_value=app),
             patch.object(migration.runtime_operator, "config_observed") as config,
             patch.object(migration, "verify", return_value={"result": "PASS"}) as verify,
@@ -353,6 +354,7 @@ class MigrationStepTests(TestCase):
         }
         with (
             patch.object(migration.azure_client, "is_mock", return_value=False),
+            patch.object(migration.time, "sleep"),
             patch.object(migration, "get_app", return_value=app),
             patch.object(migration, "registry_digest", return_value=DIGEST),
         ):
@@ -383,6 +385,7 @@ class MigrationStepTests(TestCase):
             )
         )
         with (
+            patch.object(migration.time, "sleep"),
             patch.object(migration, "get_app", return_value=app),
             patch.object(migration.azure_client, "update_container_image") as update,
             patch.object(migration, "wait_healthy", return_value={}) as health,
@@ -400,6 +403,7 @@ class MigrationStepTests(TestCase):
         calls = []
         with (
             patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": []}),
+            patch.object(migration.time, "sleep"),
             patch.object(migration, "get_app", return_value=app),
             patch.object(
                 migration.azure_client, "update_container_image", side_effect=lambda *a, **k: calls.append("image")

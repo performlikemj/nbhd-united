@@ -21,8 +21,6 @@ import json
 import logging
 from hashlib import sha256
 
-from apps.orchestrator.migration_cron_fence import guard_transport
-
 logger = logging.getLogger(__name__)
 
 _CRONS_FILE = "nbhd-crons.json"
@@ -94,7 +92,6 @@ def build_signed_crons_doc(tenant) -> tuple[bytes, int]:
     return doc.encode("utf-8"), len(jobs)
 
 
-@guard_transport
 def write_tenant_crons_file(tenant) -> int:
     """Write the signed ``nbhd-crons.json`` to the tenant's share. Returns the
     number of managed crons written. Uploaded as ``data=`` (not ``text=``) so the

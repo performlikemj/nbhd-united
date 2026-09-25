@@ -83,9 +83,11 @@ The durable checkpoints are:
 1. `preflight`: registry digests, original template and a fresh revision suffix.
 2. `capture`: complete live cron export; canonical additive import or noncanonical
    cache reconciliation/quarantine, then promotion and equivalent timestamp preparation.
-3. `image`: fresh recapture/import/preparation, then persist the tenant's cron
-   edit fence **before pre-staging or image submission**. Fence activation drains
-   previously admitted writers. Write and read back `nbhd-crons.json` from the unchanged canonical selector.
+3. `image`: persist the tenant's cron edit fence, then **wait 30 seconds** for
+   already-admitted requests to drain (no open transaction/row lock). Take the final
+   live/canonical capture/import/preparation after the drain. Rebuild and verify
+   the pre-staged digest against current canonical truth and actual share bytes;
+   re-stage changed/missing bytes before image submission using the unchanged selector.
    Persist `signed_prestaged` with the file SHA256, exact canonical content digests,
    row revision and count; persist recovery instructions and owner identity.
    5.28 ignores this file; the 9.4 entrypoint installs these jobs even if the
@@ -169,7 +171,8 @@ print("Captured jobs:", len(r.get("cron_export", [])))
 `owner_token`. **Expiry never authorizes automatic takeover.** Hard death (SIGKILL,
 host loss, killed container exec) leaves the record RUNNING, not FAILED, and leaves
 an active cutover fence in place. `--report` returns RUNNING, owner token, seconds
-since the last lease renewal, and lease-expired status without runtime/Azure calls.
+since the last lease renewal, lease-expired status, and `cron_edits_fenced=True/False`
+without runtime/Azure calls. The flag is printed in every report status.
 
 All checkpoints compare ownership, including the stale-connection retry. A stale
 owner cannot save or start a later mutation; the atomic publisher rechecks ownership
@@ -499,29 +502,53 @@ soak and 7 days, an authorized operator should remove `cron_export` and
 dispositions and audit timestamps; apply the retention policy to backups too.
 
 
-## Round 8 cron edit fence and signed-file publication
+## Round 9 lightweight cron edit fence and signed-file publication
 
 Apply schema migration `tenants.0170_openclaw_migration_cron_fence` before running
-this command. It also fences older non-PASS pre-staged records whose version has
-not committed; recovery reasserts the fence on an already-submitted revision. The central `nbhd_migration_cron_guard` reads the indexed tenant key
-and indexed `openclaw_migration_cron_fenced` field; it refuses only when the private
-record exists, is non-PASS, and its cutover fence is set. The CronJob database trigger
-covers insert/update/delete, ORM saves, bulk operations and raw SQL. The same guard
-surrounds gateway mutations, signed-file reconciliation and queued cron proposals.
-It holds the tenant row lock through admitted transport writes, so pre-staging
-cannot race a writer that passed the check earlier. No owner bypass permits cron
-edits under the fence. Failed and hard-dead migrations retain it until version commit.
+this command. This branch-only migration adds the indexed boolean field and a
+small recovery backfill for older non-PASS pre-staged records whose version has
+not committed. It installs no SQL functions or triggers.
 
-Dashboard/API callers receive HTTP 409 with `{"error":"assistant_updating","retry_after":60}`.
+`cron_edits_fenced(tenant)` reads only the already-loaded boolean. Request handlers
+check it after authentication/tenant loading and before reminder mutations. There
+is no global middleware, transport wrapper, extra tenant lookup, or new transaction.
+A false flag takes main's existing path, regardless of migration-record status.
+Background reconcilers, direct ORM writers and shared gateway/file transports retain
+main behavior; the migration handles its own cutover publication and verification.
+
+Fenced entry points (all return 409 before mutation):
+- Dashboard/API: `CronJobListCreateView.post`, `CronJobDetailView.patch/delete`,
+  `CronJobToggleView.post`, `CronJobBulkDeleteView.post`,
+  `CronJobBulkUpdateForegroundView.post`, and `PendingAtCronCancelView.delete`.
+- Typed assistant/plugin creation: `_RuntimeCronCreateBase.post`, covering
+  `pure_reminder`, `quote_user_intent`, and `domain_summary`.
+- Assistant cron tool endpoints: `RuntimeCronPhase2SummaryView.post` (creates a
+  sync cron), and `RuntimeProfileUpdateView.patch` when timezone is supplied
+  (rewrites reminder schedules).
+- Cron proposal approval: `GateRespondView.resolve_action`, shared by internal
+  HTTP, dashboard and Telegram/LINE callbacks; denies/reads stay available.
+- Other request-driven reminder changes: `HeartbeatConfigView.patch`,
+  `ProfileView.patch` when timezone is supplied, `RuntimeDocumentForgetView.post`
+  (may remove saved reminders), `RuntimeFuelProfileView.patch` for preferred time,
+  `RuntimeWorkoutPlanListCreateView.post`, and `RuntimeWorkoutPlanDetailView.patch/delete`
+  (patch only for name/status/schedule/week/repeat changes). Background workout signals
+  and cron reconcilers keep main behavior.
+- Manual registry deletion: `delete_registry_cron` (deploy-secret authenticated).
+
+Dashboard/API callers receive `{"error":"assistant_updating","retry_after":60}`.
 Assistant runtime callers also receive a friendly `detail` asking them to retry in
-one minute. The HTTP adapter retains this result even if a legacy handler catches
-the underlying refusal. Read-only cron tools remain available; a read path which
-also updates canonical cache rows is refused at its write boundary. Absent/PASS
-migration records retain main's database and transport behavior, tested explicitly.
-Unrelated tenants remain editable. The deployed runtime and automatic image/wake
-paths remain unchanged.
+one minute. Read-only reminder endpoints remain available.
 
-For active migrations, signed publication compares SHA256 first and skips identical
+The migration sets the flag, waits 30 seconds, takes its final snapshot and verifies
+or re-stages the canonical signed digest before image submission. Pre-submission
+recovery repeats the drain, because the previous process may have died during it.
+No lock or transaction spans the drain or external I/O. The version update commits
+`openclaw_version=2026.9.4` and clears the flag together, immediately allowing edits
+on the file transport. Failed/hard-dead cutovers retain the flag; `--report` exposes
+it. Exact-token, confirmed-dead `--takeover` does not clear it on acquisition: it
+resumes recovery through the version commit. Automatic image/wake paths are unchanged.
+
+For the migration's own steps, signed publication compares SHA256 first and skips identical
 bytes. Changed bytes go to a unique sibling `nbhd-crons.json.migration-<uuid>.tmp`,
 are read back, then published with Azure Files `rename_file(..., overwrite=True)`.
 See the [Azure SDK rename contract](https://learn.microsoft.com/en-us/python/api/azure-storage-file-share/azure.storage.fileshare.sharefileclient?view=azure-python#azure-storage-fileshare-sharefileclient-rename-file).
@@ -530,7 +557,7 @@ file; successful rename exposes the completed replacement. Hard death may leave 
 inert unique temp file. After confirming the owner is dead and stopping concurrent
 reconciliation writers, an operator may remove abandoned temp files by exact name;
 never delete the live signed file.
-This applies to migration steps and reconciliation while the migration is active.
-After PASS, ordinary publication follows main. Python declaration integers now
+This applies to migration pre-staging, post-health staging and its cron reconciliation
+step. Ordinary/background publication follows main throughout. Python declaration integers now
 require JavaScript safe-integer bounds before shape matching; unproven values
 remain DEFAULT-DENY.
