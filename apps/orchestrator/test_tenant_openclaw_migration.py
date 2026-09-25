@@ -481,7 +481,9 @@ class MigrationStepTests(TestCase):
     def test_config_strict_write_stamp_restart_then_observe(self):
         order = []
         with (
-            patch("apps.orchestrator.services.update_tenant_config", side_effect=lambda *a, **k: order.append("write")) as update,
+            patch(
+                "apps.orchestrator.services.update_tenant_config", side_effect=lambda *a, **k: order.append("write")
+            ) as update,
             patch.object(migration, "get_app", return_value=SimpleNamespace(latest_ready_revision_name="rev-1")),
             patch.object(
                 migration.azure_client, "restart_revision", side_effect=lambda *a: order.append(("restart",) + a)
