@@ -13,7 +13,7 @@ Owner: codex
 - Real CLI contract; unchanged selector and writer supply inputs.
 ## State
 - Done: Six findings fixed with exact-runtime fixtures; gates passed; local containers/owned volumes removed.
-- Now: Final commit/push to draft PR #1650.
+- Now: Implementation d72a4db0 pushed; PR #1650 remains draft/open with runtime-backed description.
 - Next: Release orchestrator review; no production execution or merge by this task.
 ## Links
 - Upstream: CONTINUITY.md
@@ -57,3 +57,9 @@ Owner: codex
 - Both owned 64-hex volumes removed, as were runtime/test/gate containers. Machine-wide gate lock released. No broad cleanup/prune.
 - Disk 18 GB free after gate; pulled image retained (>=8 GB). Source writer, signed selector and automatic paths still equal refreshed origin/main bd8abe4ea79196cf19eb44c3422b84309cb1b34c.
 - No production database or tenant container accessed/changed; ACR authentication/pull was the only Azure operation. No deploy or merge.
+
+## Delivery
+- d72a4db0 committed and pushed to feat/openclaw-94-tenant-migration with the requested co-author trailer.
+- PR #1650 description updated to final implementation, exact-runtime evidence and gate results; remains draft/unmerged.
+- Final local container list empty; disk 18 GB free; exact image retained. No production DB/tenant changes.
+- Tracked implementation clean after push; supplied directive/recon/review files remain untouched and untracked. Final ledger receipt follows on the same branch.

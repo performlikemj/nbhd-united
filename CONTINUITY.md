@@ -13,12 +13,12 @@
 - Follow-up: 9.4 lifecycle (croner vs croniter semantics, suspend, idle guards).
 ## State
 - Done: Round 5's six findings fixed against exact 2026.9.4-8ceb89f runtime; 14 matrix fixtures plus reserved-monitor probes. Ruff/format/migration drift PASS; 129 focused + 18 final adapter tests PASS; Docker gate PASS (9359 tests / 55 skipped, config/security checks, frontend lint/build).
-- Now: Final Round 5 commit/push to draft PR #1650; implementation and validation complete.
+- Now: Round 5 implementation d72a4db0 committed/pushed to draft PR #1650; PR description updated; ready for review.
 - Next: Release orchestrator review, read-only sizing and separately approved canaries. No production tenant/DB access, deployment or merge by this task.
 ## Task Map
 ```
 CONTINUITY.md
-  ├─ CONTINUITY_openclaw-round-five.md (complete; delivery)
+  ├─ CONTINUITY_openclaw-round-five.md (complete; draft review)
   ├─ CONTINUITY_openclaw-round-four.md (complete; draft review)
   ├─ CONTINUITY_openclaw-rescope.md (complete; draft review)
   └─ CONTINUITY_openclaw_94_migration.md (prior implementation/reviews; scope superseded)
