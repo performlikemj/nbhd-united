@@ -250,21 +250,15 @@ class OperatorCronAdapterTests(SimpleTestCase):
                 self.assertEqual(result["mutations"], [])
                 self.assertNotIn("private-reminder", json.dumps(result))
 
-    def test_config_observation_compares_opaque_applied_revision(self):
+    def test_config_observation_requires_cli_validation_and_health(self):
         with patch.object(operator, "run_node", side_effect=lambda tenant, body: body):
             body = operator.config_observed(Mock())
         prefix = "const fs={readFileSync:()=>'{\"x\":1}'};const crypto=await import('node:crypto');"
-        for applied, succeeds in (("hmac-sha256:v1:current", True), ("hmac-sha256:v1:old", False)):
-            remote = {
-                "valid": True,
-                "hash": "opaque-raw-hash",
-                "configRevisionHash": "hmac-sha256:v1:current",
-                "appliedConfigHash": applied,
-            }
+        for validate, succeeds in (("Config valid: ~/.openclaw/openclaw.json", True), ("Config invalid", False)):
             script = (
                 prefix
                 + "const oc=(args)=>args[0]==='health'?'{}':"
-                + json.dumps(json.dumps(remote))
+                + json.dumps(validate)
                 + ";try{const result=await(async()=>{"
                 + body
                 + "})();console.log(JSON.stringify(result));}catch{process.exit(3);}"

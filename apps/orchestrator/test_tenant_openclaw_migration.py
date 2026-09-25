@@ -478,15 +478,27 @@ class MigrationStepTests(TestCase):
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.config_version, 0)
 
-    def test_config_strict_write_stamp_and_observe(self):
+    def test_config_strict_write_stamp_restart_then_observe(self):
+        order = []
         with (
-            patch("apps.orchestrator.services.update_tenant_config") as update,
-            patch.object(migration.runtime_operator, "config_observed", return_value={"valid": True}),
+            patch(
+                "apps.orchestrator.services.update_tenant_config", side_effect=lambda *a, **k: order.append("write")
+            ) as update,
+            patch.object(migration, "get_app", return_value=SimpleNamespace(latest_ready_revision_name="rev-1")),
+            patch.object(
+                migration.azure_client, "restart_revision", side_effect=lambda *a: order.append(("restart",) + a)
+            ),
+            patch.object(
+                migration.runtime_operator,
+                "config_observed",
+                side_effect=lambda t: order.append("observe") or {"valid": True},
+            ),
             patch.object(migration, "wait_healthy"),
             patch.object(migration.time, "sleep"),
         ):
             result = migration.config_step(self.tenant, record())
         update.assert_called_once_with(str(self.tenant.pk), strict=True, refresh_crons=False)
+        self.assertEqual(order, ["write", ("restart", self.tenant.container_id, "rev-1"), "observe"])
         self.assertEqual(result["config_version"], 1)
 
     def test_config_stamp_does_not_consume_concurrent_pending_bump(self):
@@ -499,6 +511,8 @@ class MigrationStepTests(TestCase):
 
         with (
             patch("apps.orchestrator.services.update_tenant_config", side_effect=concurrent_change),
+            patch.object(migration, "get_app", return_value=SimpleNamespace(latest_ready_revision_name="rev-1")),
+            patch.object(migration.azure_client, "restart_revision"),
             patch.object(migration.runtime_operator, "config_observed", return_value={"valid": True}),
             patch.object(migration, "wait_healthy"),
             patch.object(migration.time, "sleep"),

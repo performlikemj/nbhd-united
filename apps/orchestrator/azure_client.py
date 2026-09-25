@@ -998,6 +998,15 @@ def copy_revision(container_name: str, from_revision: str, revision_suffix: str,
     client.container_apps.begin_update(group, container_name, app).result(timeout=operation_timeout)
 
 
+def restart_revision(container_name: str, revision_name: str) -> None:
+    """Restart a revision's replicas in place (no new revision)."""
+    if _is_mock():
+        return
+    get_container_client().container_apps_revisions.restart_revision(
+        settings.AZURE_RESOURCE_GROUP, container_name, revision_name
+    )
+
+
 def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
     """Upload openclaw.json to the tenant's Azure File Share.
 
