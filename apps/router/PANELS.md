@@ -18,25 +18,49 @@ first six valid references survive. Telegram and LINE receive prose, while the
 stored proactive row retains panels for subsequent iOS sync. Panel-only sends
 persist through the app-feed branch without text transport, including for
 Telegram/LINE-linked tenants without app devices. Eval sends stay isolated.
-The send serializer strips fallback fences before quick-reply parsing on every
-channel. An explicit `panels` key wins, including an empty/null/invalid value;
-fallback blocks are always stripped. Non-gated tenants' panels are dropped with
-content-free logs at validation and persistence boundaries.
+The send serializer strips fallback fences and `[[panel:...]]` markers before
+quick-reply parsing on every channel. An explicit `panels` key wins, including
+an empty/null/invalid value; fallback blocks and markers are always stripped.
+Non-gated tenants' panels are dropped with content-free logs at validation and
+persistence boundaries.
 
 Optional titles are guarded in placeholder space at rest, truncated at a token
 boundary within 60 characters, and rehydrated before applying the 60-character
 owner display limit. Truncation never stores a partial PII placeholder.
 
-Normal iOS replies may end with one fenced `nbhd-panels` JSON list. Finalization
-strips all such blocks and attaches the first valid list to the last row of a
+Normal iOS replies may end with one fenced `nbhd-panels` JSON list. As a recovery
+fallback, whole-line `[[panel:<kind>|<key>=<value>|...]]` references are also
+accepted, including several markers on a line, surrounding whitespace and an
+optional `title=`. They use the same Pydantic vocabulary, per-candidate validation
+and six-panel limit; unknown fields, kinds, ranges and nested brackets are not
+accepted. Timer `duration_seconds` is decoded as an integer before validation.
+The first valid fenced list (including an empty list) takes precedence over
+bracket references. Inline markers are stripped while preserving prose, but
+only whole marker lines supply references. Finalization strips all such blocks and attaches the first valid list to the last row of a
 coalesced batch, atomically with the reply. A valid empty list also wins. An
 all-invalid list allows a later valid block to win. Malformed and unclosed
 blocks are removed and dropped, without logging their content. A block in the
 middle is removed while surrounding prose remains. Telegram poller/queue and
-LINE relays strip the blocks, as does conversation-history capture. App partial
-text hides in-progress blocks without logging normal incomplete JSON as errors.
+LINE relays strip the blocks and bracket markers, as does conversation-history
+capture. App partial text hides in-progress blocks without logging normal incomplete JSON as errors.
 Trailing partial openers (including a single backtick, ` ```n ` and ` ```nbhd `)
 are withheld; cumulative text releases them if they prove to be ordinary content.
+Unclosed trailing `[[panel:` markers are removed from final text and withheld
+from partial text; split bracket opener prefixes are also withheld. All stripping is unconditional, independent of channel or tenant gate.
+Prompts require the `panels` tool argument or the chat fence, never textual markers.
+
+To repair existing rows, run the following (dry-run by default), then add
+`--apply` to write:
+
+```sh
+python manage.py repair_panel_markers --tenant <uuid> --since <ISO-timestamp>
+```
+
+The command reports counts only, scopes both `ProactiveOutbound.message_text`
+and `AppChatMessage.reply_text` by tenant and inclusive creation timestamp,
+strips markers, and fills empty panels only when the tenant's **tool** gate is
+on. Existing panels are preserved; proactive parsed items are refreshed. Naive
+timestamps use UTC. Repeating an applied repair makes no further changes.
 
 The independent rollout gates are owned by `chat_gates.py`. Both settings are
 comma-separated, case-insensitive tenant UUID allowlists, default empty, with
