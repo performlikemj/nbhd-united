@@ -389,3 +389,8 @@ class ConsoleLogSaturationTests(SimpleTestCase):
         stamps = [(start + timedelta(seconds=i * 0.1)).strftime("%Y-%m-%dT%H:%M:%S.%f") for i in range(300)]
         with self.assertRaisesRegex(operator.OperatorError, "does not cover"):
             self.counts(stamps, since=start - timedelta(minutes=5))
+
+
+class RuntimeOwnedJobTests(SimpleTestCase):
+    def test_memory_core_dreaming_job_is_not_listed_as_ours(self):
+        self.assertIn("memory-core:memory-dreaming-promotion", operator._LIST)

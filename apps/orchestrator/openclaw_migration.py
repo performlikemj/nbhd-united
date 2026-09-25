@@ -858,6 +858,14 @@ def config_step(tenant, record):
     raise MigrationError("Regenerated config was not observed by the gateway within 180 seconds")
 
 
+def _inspection_clean(inspection, expected):
+    return (
+        _signed_match(inspection)
+        and {m["key"] for m in inspection["matches"]} == set(expected)
+        and not inspection.get("legacy", [])
+    )
+
+
 def _signed_match(inspection):
     return (
         not inspection["extras"]
@@ -936,8 +944,15 @@ def verify(tenant, record):
             except MigrationError as exc:
                 audit_error = exc
             inspection = runtime_operator.inspect_signed_crons(tenant, canonical_digests=expected)
-            mismatch |= not _signed_match(inspection) or {m["key"] for m in inspection["matches"]} != set(expected)
-            mismatch |= bool(inspection.get("legacy", []))
+            if not index:
+                # Right after the config restart the in-container writer is
+                # still re-syncing (E2E canary: every job briefly mismatched,
+                # then matched). Let it settle before the stability pair.
+                deadline = time.monotonic() + 180
+                while not _inspection_clean(inspection, expected) and time.monotonic() < deadline:
+                    time.sleep(30)
+                    inspection = runtime_operator.inspect_signed_crons(tenant, canonical_digests=expected)
+            mismatch |= not _inspection_clean(inspection, expected)
             polls.append({m["key"]: m["id"] for m in inspection["matches"]})
         health = wait_healthy(tenant, image=record["evidence"]["preflight"]["target_image"], timeout=30)
         logs = runtime_operator.console_error_counts(tenant, since=timezone.now() - timedelta(minutes=5))

@@ -170,7 +170,10 @@ if(doc.hasMore===true || Number(doc.total||0)>allJobs.length ||
 // The real CLI reserves these namespaces and refuses removal. These monitor
 // rows are recreated by the gateway itself, not by the signed cron writer.
 const jobs=allJobs.filter(j=>!(['heartbeat:','skill-collection-review:'].some(prefix=>
-    typeof j.agentId==='string' && j.agentId && j.declarationKey===prefix+j.agentId)));
+    typeof j.agentId==='string' && j.agentId && j.declarationKey===prefix+j.agentId)) &&
+    // memory-core creates and owns its dreaming job at boot (seen on MJ's and
+    // the E2E canary's 9.4 runtime); it is never a legacy cron to clean up.
+    j.declarationKey!=='memory-core:memory-dreaming-promotion');
 
 """
 
