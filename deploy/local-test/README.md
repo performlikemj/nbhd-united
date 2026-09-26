@@ -41,21 +41,26 @@ refuses if the process list contains a loanarmy process. It never uses `--force`
 installs a personal daemon, or restarts Ollama. Keep GPU scheduling coordinated
 with the loanarmy lane for the whole inference run.
 
-## MJ creates the account
+## Throwaway account and tenant preparation
 
-1. After the orchestrator starts Django, visit
-   **http://127.0.0.1:18080/local-test/signup/**. This small local page POSTs to the
-   normal `/api/v1/auth/signup/` endpoint. MJ enters a dedicated email/password.
-   The page discards the returned JWTs and clears the form; no browser storage.
-2. MJ runs `python3 deploy/local-test/run.py password-help`, then runs the printed
-   command locally: `security add-generic-password -s org.nbhd.yuki-test -a nbhd -w`.
-   Type the password only at its interactive prompt. Codex does not create,
-   retrieve, print or store it. Django stores its normal password hash.
-3. Prepare the tenant using the email MJ chose:
+MJ approved agent-created throwaway accounts on this loopback stack on
+2026-09-20. The scoped exception allows `yuki_local signup` to generate a
+`secrets.token_urlsafe(24)` password and store it **only** in the ignored
+`deploy/local-test/.state/yuki-account.json` (0600), alongside `yuki@example.com`.
+The normal signup view accepts this synthetic address and uses Django password
+validation. Never pass the password in argv, print it, log it, or copy it to
+another file. Django retains its normal password hash.
+
+Bootstrap order: `yuki_local signup` (bootstrap guard: DEBUG, AZURE_MOCK,
+LOCAL_TEST_ROOT, NBHD_TENANT_ID, no foreign tenant) →
+`prepare_local_test_tenant --email yuki@example.com --persona-file deploy/local-test/.state/yuki-v3.json` →
+start the gateway → `link` / `chat-plan` / `tonight` (strict tenant guard).
+
+Prepare the designated tenant after normal account creation:
 
    ```sh
    python3 deploy/local-test/run.py manage prepare_local_test_tenant \
-     --email '<MJ-created email>' \
+     --email yuki@example.com \
      --persona-file /Users/mjjones/worktrees/sautai-yuki-lane/sim/persona/yuki.json
    ```
 
@@ -102,6 +107,62 @@ There is no container proxy: the gateway itself listens on 19443.
 lock location into the worktree via a process-local Node loader hook. It refuses
 an unrecognized runtime source shape and does not modify the shared binary.
 
+## Yuki helper
+
+Run from this worktree with `HARNESS_ROOT` unset. Each subcommand ends stdout
+with exactly one JSON object and exits zero only on success. HTTP is fixed to
+`http://127.0.0.1:18080`, ignoring proxy environment variables and redirects.
+The account file is never deleted or overwritten; a failed signup can be retried
+with its saved credentials. An existing file must already have mode 0600.
+
+```sh
+unset HARNESS_ROOT
+python3 deploy/local-test/run.py manage yuki_local signup
+python3 deploy/local-test/run.py manage yuki_local link
+python3 deploy/local-test/run.py manage yuki_local chat-plan --week YYYY-MM-DD
+python3 deploy/local-test/run.py manage yuki_local tonight
+```
+
+- `signup`: no stdin. Returns `{"account":"created"}` or
+  `{"account":"exists"}` after verified login. Requires the local tenant guard
+  described above; never overwrites an existing credential file.
+- `link`: supply one connect-key line on stdin (never argv or a file). Logs in,
+  verifies the tenant gate, POSTs the real console endpoint, then reads the
+  Integration row. Returns `linked`, `sautai_user_id`, `linked_at`.
+  Failure returns `{"linked":false,"reason":"<short code>"}` and exit 1.
+- `chat-plan --week YYYY-MM-DD`: requires an ISO Monday and one stdin message
+  of at most 400 characters. Include the desired calendar date in the message;
+  `--week` is the expected result, not a hidden instruction to the assistant.
+  Creates a non-main thread titled `Yuki weekly plan <week>`, polls each reply
+  up to 900 seconds, sends `Yes, please go ahead.` at most twice when confirmation
+  is requested or the expected job does not exist, then waits at most 1800
+  seconds for a ready job. Only the assistant invokes the plugin and uses its
+  preview/confirm token. Wrong-week jobs created during the run fail with both
+  `week` and `job_week`. Ready jobs must have a linked identity, result and no
+  error. Returns `proof`, `status`, `week`, `turns` (user/assistant exchanges),
+  `confirm_turns`, `job_id`, `addressed_by`, `meal_count` (or null), `transcript`,
+  `reply_excerpts` (first 160 characters of each assistant reply).
+  Threads remain as evidence. Timestamped messages/replies, including partial
+  evidence on failure, are saved in `.state/proof/chat-plan-<week>-<UTC>.json`
+  (0600); failures include `reason` and, when available, `transcript`.
+- `tonight`: no stdin. Reads console link status and Fuel's Tonight endpoint.
+  Returns `linked`, `meals_today`, `meal_names`, `week_start`. The Fuel response
+  supplies the actual Monday it queried (also preserved in cached responses).
+  Empty results add `empty_reason`: `no_meal_today` for a valid plan with no
+  displayed meals today, `not_linked`, or `plan_unavailable` for degraded reads.
+  An empty day does not fail the link. Other helper failures return a short
+  `reason` with `account:"failed"` or `proof`/`status:"failed"` as applicable.
+
+**S3 means the real console link:** while the sibling sim is alive, first hand
+off only `base_url` and `platform_secret` over the private socket below (omit
+`sautai_user_id` or send null). This stores the secret only in Django settings
+and writes nothing to Integration. Mint a fresh connect key in sautai and pipe
+it in memory to `yuki_local link`; nbhd resolves it server-side and stores the
+returned identity. Then invoke `chat-plan` and `tonight` before the sim tears
+down. Never pre-resolve/burn that key in the sibling lane. A hand-off supplying
+a positive integer ID still supports the legacy S2 fixture path, but it is not
+S3 console-link evidence. Never commit `.state/`.
+
 ## Local sautai hand-off — no invented token or sim result
 
 The Django launcher opens the owner-only Unix socket
@@ -117,7 +178,9 @@ Source inspection located the real values in the sibling lane:
   awaited inside that managed lifetime. A successful runner exit leaves no sim
   backend running and cannot be used for later proof.
 
-The sautai lane must integrate this adapter immediately after its successful
+The following legacy S2 adapter is retained for reference. For S3, omit the ID
+and hand off before resolving any key, as described above. For S2, the sautai
+lane integrates this adapter immediately after its successful
 `nbhd-link-resolve` step, using those actual in-scope values. This worktree does
 not modify the other lane. For S2, replace that step's random NBHD tenant UUID
 with this install's `NBHD_TENANT_ID` (non-secret), so the sim also records the
@@ -158,9 +221,9 @@ of a real model-generated plan. Alternatively the lane can pipe the same JSON
 in memory to `python3 deploy/local-test/run.py sautai-handoff`; never put it in
 argv or a file. No adapter invocation or genuine hand-off has occurred yet.
 
-The listener requires the exact local sim URL, stores the token only in the
-running Django settings, and links the supplied sim user ID on the designated
-synthetic tenant. This is explicit local fixture setup, not a fabricated OAuth
+The listener requires the exact local sim URL and stores the token only in the
+running Django settings. Absent/null `sautai_user_id` leaves Integration untouched;
+a supplied positive integer links that fixture ID on the designated tenant. This is explicit local fixture setup, not a fabricated OAuth
 link. The token is neither put in the DB nor persisted to `.env.local-test`.
 Re-send after either process restarts. An accepted hand-off proves transfer,
 not successful plan generation.
@@ -178,7 +241,7 @@ single-tenant maintenance explicitly when needed.
 ```sh
 # Read the tenant UUID from NBHD_TENANT_ID locally, without dumping the env file.
 python3 deploy/local-test/run.py manage check_gateway_health --tenant-id '<tenant UUID>' --gateway-only
-.venv/bin/python deploy/local-test/proof.py --email '<MJ-created email>'
+.venv/bin/python deploy/local-test/proof.py --email 'yuki@example.com'
 # Operator expressly confirms this unused synthetic Monday; no regeneration.
 python3 deploy/local-test/run.py manage prove_local_sautai --confirmed-week YYYY-MM-DD
 ```

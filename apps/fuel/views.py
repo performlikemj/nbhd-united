@@ -708,12 +708,13 @@ class FuelMealsTodayView(APIView):
         # The Fuel surface is linked-account only. sautai_identity's email
         # fallback remains valid for assistant plan generation, but must not
         # auto-create or reveal a meal surface for an unlinked console user.
-        identity, integration = sautai_client.sautai_identity(tenant)
-        if integration is None or not integration.sautai_user_id:
-            return Response({"meals": [], "linked": False})
-
         today = tenant_today(tenant)
         week_start = today - timedelta(days=today.weekday())
+        metadata = {"week_start": week_start.isoformat()}
+        identity, integration = sautai_client.sautai_identity(tenant)
+        if integration is None or not integration.sautai_user_id:
+            return Response({"meals": [], "linked": False, "empty_reason": "not_linked", **metadata})
+
         try:
             result = sautai_client.fetch_sautai_current_plan(
                 identity=identity,
@@ -724,11 +725,22 @@ class FuelMealsTodayView(APIView):
             # Partner failures are expected degradation. Do not include the
             # exception or response content: either may contain user content.
             _logger.warning("fuel meals: Sautai read failed for tenant %s", str(tenant.id)[:8])
-            return Response({"meals": [], "linked": True})
+            return Response({"meals": [], "linked": True, "empty_reason": "plan_unavailable", **metadata})
 
         if not isinstance(result, dict) or result.get("outcome") != "ok":
-            return Response({"meals": [], "linked": True})
-        return Response({"meals": _today_meals_from_sautai_plan(result.get("plan"), today), "linked": True})
+            return Response({"meals": [], "linked": True, "empty_reason": "plan_unavailable", **metadata})
+        plan = result.get("plan")
+        meals = _today_meals_from_sautai_plan(plan, today)
+        payload = {"meals": meals, "linked": True, **metadata}
+        if not meals:
+            valid_plan = (
+                isinstance(plan, dict)
+                and plan.get("week_start") == week_start.isoformat()
+                and isinstance(plan.get("days"), list)
+                and all(isinstance(day, dict) and isinstance(day.get("meals"), list) for day in plan["days"])
+            )
+            payload["empty_reason"] = "no_meal_today" if valid_plan else "plan_unavailable"
+        return Response(payload)
 
 
 class WorkoutProgressView(APIView):

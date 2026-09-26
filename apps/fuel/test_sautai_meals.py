@@ -128,6 +128,53 @@ class FuelMealsTodayViewTests(TestCase):
             "days": [{"day": day.strftime("%A"), "meals": meals}],
         }
 
+    def assert_empty_payload(self, response, *, linked, reason):
+        from apps.common.tenant_tz import tenant_today
+
+        today = tenant_today(self.tenant)
+        monday = today - timedelta(days=today.weekday())
+        self.assertEqual(
+            response.json(),
+            {
+                "meals": [],
+                "linked": linked,
+                "week_start": monday.isoformat(),
+                "empty_reason": reason,
+            },
+        )
+
+    @patch("apps.integrations.sautai_client.fetch_sautai_current_plan")
+    @patch("apps.fuel.views.tenant_today", return_value=date(2026, 7, 22))
+    def test_valid_plan_without_todays_meals_reports_empty_day(self, mock_today, mock_fetch):
+        self._link()
+        mock_fetch.return_value = {"outcome": "ok", "plan": self._plan_for(date(2026, 7, 20), [])}
+        response = self.client.get(self.url)
+        self.assertEqual(
+            response.json(),
+            {
+                "meals": [],
+                "linked": True,
+                "week_start": "2026-07-20",
+                "empty_reason": "no_meal_today",
+            },
+        )
+
+    @patch("apps.integrations.sautai_client.fetch_sautai_current_plan")
+    @patch("apps.fuel.views.tenant_today", return_value=date(2026, 7, 22))
+    def test_wrong_week_is_unavailable_not_empty_day(self, mock_today, mock_fetch):
+        self._link()
+        mock_fetch.return_value = {"outcome": "ok", "plan": self._plan_for(date(2026, 7, 13), [])}
+        response = self.client.get(self.url)
+        self.assertEqual(
+            response.json(),
+            {
+                "meals": [],
+                "linked": True,
+                "week_start": "2026-07-20",
+                "empty_reason": "plan_unavailable",
+            },
+        )
+
     def test_requires_authentication(self):
         self.client.credentials()
         response = self.client.get(self.url)
@@ -169,6 +216,7 @@ class FuelMealsTodayViewTests(TestCase):
                     },
                 ],
                 "linked": True,
+                "week_start": "2026-07-20",
             },
         )
         mock_fetch.assert_called_once_with(
@@ -181,7 +229,7 @@ class FuelMealsTodayViewTests(TestCase):
     def test_unlinked_tenant_returns_empty_without_calling_sautai(self, mock_fetch):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": [], "linked": False})
+        self.assert_empty_payload(response, linked=False, reason="not_linked")
         mock_fetch.assert_not_called()
 
     @patch("apps.integrations.sautai_client.fetch_sautai_current_plan")
@@ -191,7 +239,7 @@ class FuelMealsTodayViewTests(TestCase):
         response = self.client.get(self.url)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": [], "linked": False})
+        self.assert_empty_payload(response, linked=False, reason="not_linked")
         mock_fetch.assert_not_called()
 
     @patch("apps.integrations.sautai_client.fetch_sautai_current_plan", return_value={"outcome": "not_found"})
@@ -199,7 +247,7 @@ class FuelMealsTodayViewTests(TestCase):
         self._link()
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": [], "linked": True})
+        self.assert_empty_payload(response, linked=True, reason="plan_unavailable")
         mock_fetch.assert_called_once()
 
     @patch(
@@ -210,7 +258,7 @@ class FuelMealsTodayViewTests(TestCase):
         self._link()
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": [], "linked": True})
+        self.assert_empty_payload(response, linked=True, reason="plan_unavailable")
         mock_fetch.assert_called_once()
 
     @patch(
@@ -223,7 +271,7 @@ class FuelMealsTodayViewTests(TestCase):
         response = self.client.get(self.url)
         elapsed = monotonic() - started
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": [], "linked": True})
+        self.assert_empty_payload(response, linked=True, reason="plan_unavailable")
         self.assertLess(elapsed, 1.0)
         self.assertEqual(mock_fetch.call_args.kwargs["timeout_seconds"], 3.0)
 
@@ -279,7 +327,7 @@ class FuelMealsTodayViewTests(TestCase):
             response = self.client.get(self.url)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": [], "linked": True})
+        self.assert_empty_payload(response, linked=True, reason="plan_unavailable")
         self.assertNotIn("Miso-glazed salmon", "\n".join(captured.output))
         mock_fetch.assert_called_once()
 
@@ -318,5 +366,5 @@ class FuelMealsTodayViewTests(TestCase):
         response = self.client.get(self.url)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": [], "linked": False})
+        self.assert_empty_payload(response, linked=False, reason="not_linked")
         mock_fetch.assert_not_called()

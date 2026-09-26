@@ -8,6 +8,38 @@ import threading
 MAX_BYTES = 8192
 
 
+def accept_payload(handoff):
+    """Validate before changing either RAM settings or the optional fixture link."""
+    from django.conf import settings
+    from django.utils import timezone
+
+    from apps.integrations.models import Integration
+    from apps.orchestrator.local_test import local_root
+
+    if not isinstance(handoff, dict) or handoff.get("base_url") != "http://127.0.0.1:8000":
+        raise ValueError("host")
+    secret = handoff.get("platform_secret")
+    user_id = handoff.get("sautai_user_id")
+    if not isinstance(secret, str) or not secret:
+        raise ValueError("secret")
+    if user_id is not None and (type(user_id) is not int or user_id <= 0):
+        raise ValueError("identity")
+    tid = os.environ["NBHD_TENANT_ID"]
+    if local_root(tid) is None:
+        raise ValueError("local_stack_required")
+    if user_id is not None:
+        Integration.objects.update_or_create(
+            tenant_id=tid,
+            provider=Integration.Provider.SAUTAI,
+            defaults={
+                "sautai_user_id": user_id,
+                "linked_at": timezone.now(),
+                "status": Integration.Status.ACTIVE,
+            },
+        )
+    settings.SAUTAI_PLATFORM_SECRET = secret
+
+
 def start_listener(state):
     path = state / "sautai-handoff.sock"
     if path.exists():
@@ -27,12 +59,7 @@ def start_listener(state):
     listener.listen(2)
 
     def serve():
-        from django.conf import settings
         from django.db import close_old_connections
-        from django.utils import timezone
-
-        from apps.integrations.models import Integration
-        from apps.orchestrator.local_test import local_root
 
         while True:
             try:
@@ -51,26 +78,8 @@ def start_listener(state):
                         payload += chunk
                     if len(payload) > MAX_BYTES:
                         raise ValueError("oversized")
-                    handoff = json.loads(payload)
-                    if handoff.get("base_url") != "http://127.0.0.1:8000":
-                        raise ValueError("host")
-                    secret = handoff.get("platform_secret")
-                    user_id = handoff.get("sautai_user_id")
-                    if not isinstance(secret, str) or not secret or type(user_id) is not int or user_id <= 0:
-                        raise ValueError("fields")
                     close_old_connections()
-                    tid = os.environ["NBHD_TENANT_ID"]
-                    local_root(tid)
-                    Integration.objects.update_or_create(
-                        tenant_id=tid,
-                        provider=Integration.Provider.SAUTAI,
-                        defaults={
-                            "sautai_user_id": user_id,
-                            "linked_at": timezone.now(),
-                            "status": Integration.Status.ACTIVE,
-                        },
-                    )
-                    settings.SAUTAI_PLATFORM_SECRET = secret
+                    accept_payload(json.loads(payload))
                     accepted = True
                 except Exception:
                     pass  # Never expose a token or database exception in diagnostics.

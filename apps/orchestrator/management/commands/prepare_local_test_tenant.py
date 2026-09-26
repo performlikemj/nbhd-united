@@ -53,7 +53,7 @@ class Command(BaseCommand):
             user = User.objects.get(email__iexact=options["email"])
         except User.DoesNotExist:
             raise CommandError(
-                "MJ must first create the account at http://127.0.0.1:18080/local-test/signup/"
+                "Run `yuki_local signup` first (or the local signup page at http://127.0.0.1:18080/local-test/signup/)"
             ) from None
         tid = os.environ["NBHD_TENANT_ID"]
         if Tenant.objects.exclude(id=tid).exists():

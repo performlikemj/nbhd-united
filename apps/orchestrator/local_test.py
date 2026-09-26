@@ -8,7 +8,7 @@ from pathlib import Path
 from django.conf import settings
 
 
-def local_root(tenant_id):
+def local_root(tenant_id, *, require_tenant=True):
     root = getattr(settings, "LOCAL_TEST_ROOT", "")
     if not root:
         return None
@@ -18,7 +18,7 @@ def local_root(tenant_id):
         raise ValueError("Not the designated local test tenant")
     from apps.tenants.models import Tenant
 
-    if not Tenant.objects.filter(id=tenant_id, is_synthetic=True, is_eval_sink=False).exists():
+    if require_tenant and not Tenant.objects.filter(id=tenant_id, is_synthetic=True, is_eval_sink=False).exists():
         raise ValueError("Local storage requires a synthetic non-sink tenant")
     return Path(root).resolve()
 
