@@ -233,6 +233,14 @@ def projected_canonical(canonical):
     return [(job, managed) for job, managed in canonical if job.get("enabled", True) and not _fuel_owned(job)]
 
 
+def _runtime_owned(job):
+    """memory-core creates and owns its dreaming job (5.28 and 9.4 alike) and
+    recreates it on the 9.4 runtime; it is never imported or preserved."""
+    return str(job.get("declarationKey") or "").startswith("memory-core:") or job.get("name") == (
+        "Memory Dreaming Promotion"
+    )
+
+
 def _fuel_owned(job):
     """``_fuel:*`` rows/jobs mirror the Fuel models, which own the desired set.
 
@@ -259,7 +267,7 @@ def preservation_precheck(tenant, jobs, *, record=None):
         if versions.get(row.name) == row.updated_at.isoformat()
     }
     protected = {j["name"] for j, _ in canonical} - recaptured
-    written = [j for j in jobs if j["name"] not in protected and not _fuel_owned(j)]
+    written = [j for j in jobs if j["name"] not in protected and not _fuel_owned(j) and not _runtime_owned(j)]
     reasons = reason_counts([(j, True) for j in written] + projected_canonical(canonical))
     names = {j["name"] for j in jobs}
     missing_owned = sum(
@@ -777,7 +785,8 @@ def stage_signed_crons(tenant, record, *, checkpoint):
     _assert_owner(tenant, record)
     for _ in range(2):
         inventory = canonical_inventory(tenant)
-        reasons = reason_counts(inventory)
+        # Disabled rows stay in Postgres and are never signed (projected_canonical).
+        reasons = reason_counts(projected_canonical(inventory))
         if reasons:
             raise PreservationError(reasons)
         if checkpoint == "signed_prestaged":

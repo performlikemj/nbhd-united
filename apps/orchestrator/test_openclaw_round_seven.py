@@ -284,6 +284,20 @@ class PrestagingTests(TestCase):
         self.files["nbhd-crons.json"] = b"corrupt"
         self.assertTrue(m.stage_signed_crons(self.tenant, record, checkpoint="signed_after_health")["rewritten"])
 
+    def test_disabled_rows_do_not_block_signed_staging(self):
+        # eval-journey canary 2026-09-25: 83 disabled rows blocked the image step here.
+        with suppress_cronjob_reconcile():
+            CronJob.objects.create(tenant=self.tenant, name="reminder", data=job(), managed=True)
+            CronJob.objects.create(
+                tenant=self.tenant,
+                name="paused",
+                data=job("paused", delivery={"mode": "announce", "to": "private"}),
+                managed=True,
+                enabled=False,
+            )
+        result = m.stage_signed_crons(self.tenant, {}, checkpoint="signed_prestaged")
+        self.assertEqual(result["count"], 1)
+
     def test_unverified_prestage_prevents_image_submission(self):
         app = SimpleNamespace(
             template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old"),
