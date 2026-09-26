@@ -320,6 +320,9 @@ TASK_MAP = {
     # Cron-aware wake — wake hibernated containers for scheduled crons
     "wake_for_cron": "apps.orchestrator.hibernation.wake_for_cron_task",
     "check_cron_wake_idle": "apps.orchestrator.hibernation.check_cron_wake_idle_task",
+    # OpenClaw 5.28 -> 9.4 auto-upgrade at idle time (enqueued by the idle
+    # sweep; phases re-publish themselves with delays). Default off.
+    "auto_upgrade_openclaw": "apps.orchestrator.openclaw_auto_upgrade.auto_upgrade_openclaw_task",
     # Cleanup delivered message buffers
     "cleanup_delivered_buffers": "apps.orchestrator.hibernation.cleanup_delivered_buffers_task",
     # Nightly extraction — goals/tasks/lessons from daily notes

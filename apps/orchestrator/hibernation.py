@@ -836,6 +836,14 @@ def check_cron_wake_idle_task(tenant_id: str) -> dict:
         )
         return {"status": "already_hibernated"}
 
+    # An OpenClaw auto-upgrade holds this tenant awake and hibernates it
+    # itself once the run is safe; a mid-run hibernate would strand it.
+    from apps.orchestrator.openclaw_auto_upgrade import in_flight
+
+    if in_flight(tenant.id):
+        logger.info("check_cron_wake_idle: tenant %s is auto-upgrading, skipping", tenant_id[:8])
+        return {"status": "auto_upgrade_in_flight"}
+
     # Did the user send any messages since the cron wake?
     user_messaged = tenant.last_message_at and tenant.last_message_at > tenant.cron_wake_at
 

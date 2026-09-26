@@ -43,6 +43,19 @@ class MigrationError(RuntimeError):
     pass
 
 
+class MigrationFailed(MigrationError):
+    """A claimed run stopped; carries the checkpointed outcome for callers.
+
+    The message is the operator-facing text the CLI prints. ``status``,
+    ``step`` and ``reason`` mirror ``record["failure"]`` so automatic callers
+    never parse message strings.
+    """
+
+    def __init__(self, message, *, status, step, reason):
+        self.status, self.step, self.reason = status, step, reason
+        super().__init__(message)
+
+
 class VerificationError(MigrationError):
     def __init__(self, code):
         self.code = code
@@ -757,6 +770,35 @@ def rollback_tenant(tenant_id) -> dict:
     return {"status": "ROLLED_BACK", "revision": health["revision"], **restored}
 
 
+def reset_unsubmitted_migration(tenant_id) -> dict:
+    """Undo for a run that stopped before any Azure write (no undo point).
+
+    Such a run can only have fenced cron edits and imported Postgres rows,
+    which stay canonical. The record becomes ``ROLLED_BACK`` with the attempt
+    kept under ``previous`` (a later run starts fresh) and the fence lifts.
+    """
+    tenant = Tenant.objects.get(pk=tenant_id)
+    record = dict(tenant.openclaw_migration or {})
+    if record.get("undo"):
+        raise MigrationError("undo_point_exists")
+    if record.get("status") == "RUNNING":
+        lease = parse_datetime(record.get("lease_until") or "")
+        if lease and lease > timezone.now():
+            raise MigrationError("migration_running")
+    if tenant.openclaw_version == VERSION or (
+        tenant.container_id and not azure_client.is_mock() and VERSION in _image(get_app(tenant))
+    ):
+        raise MigrationError("unexpected_target_revision")
+    rolled_back = {
+        "status": "ROLLED_BACK",
+        "rolled_back_at": timezone.now().isoformat(),
+        "rollback": {"kind": "reset_before_image_submit"},
+        "previous": record,
+    }
+    Tenant.objects.filter(pk=tenant.pk).update(openclaw_migration=rolled_back, openclaw_migration_cron_fenced=False)
+    return {"status": "ROLLED_BACK", "kind": "reset_before_image_submit"}
+
+
 def stage_94_config(tenant, record):
     """Put a 9.4-rendered openclaw.json on the share before 9.4 boots from it.
 
@@ -1048,7 +1090,9 @@ def verify_existing(tenant, record):
         raise VerificationError(code) from None
 
 
-def migrate_tenant(tenant_id, tag: str, *, dry_run=False, takeover=None, confirm_owner_dead=False) -> dict:
+def migrate_tenant(
+    tenant_id, tag: str, *, dry_run=False, takeover=None, confirm_owner_dead=False, owner_token=None
+) -> dict:
     if not re.fullmatch(r"2026\.9\.4-[0-9a-f]{7,40}", tag or ""):
         raise MigrationError("Target must be an immutable 2026.9.4-<sha> tag")
     candidate = Tenant.objects.get(pk=tenant_id)
@@ -1109,7 +1153,8 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False, takeover=None, confirm
                         "termination_confirmed_by_operator": True,
                     }
                 )
-            record["owner_token"] = uuid.uuid4().hex
+            # Automatic callers pass their token so crash recovery can prove ownership.
+            record["owner_token"] = owner_token or uuid.uuid4().hex
             record["owner"] = {"host": socket.gethostname(), "pid": os.getpid()}
             record["status"] = "RUNNING"
             # Claim under SELECT FOR UPDATE. Later saves compare this fencing token.
@@ -1158,4 +1203,6 @@ def migrate_tenant(tenant_id, tag: str, *, dry_run=False, takeover=None, confirm
         reason = str(exc) if isinstance(exc, (MigrationError, runtime_operator.OperatorError)) else type(exc).__name__
         record["failure"] = {"step": step, "reason": reason, "at": timezone.now().isoformat()}
         _save(tenant, record)
-        raise MigrationError(f"FAILED at {step}: {reason}. {RECOVERY}") from None
+        raise MigrationFailed(
+            f"FAILED at {step}: {reason}. {RECOVERY}", status=record["status"], step=step, reason=reason
+        ) from None
