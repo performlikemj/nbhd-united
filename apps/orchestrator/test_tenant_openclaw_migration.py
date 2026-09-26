@@ -424,7 +424,7 @@ class MigrationStepTests(TestCase):
             self.tenant.container_id, "image", revision_suffix="m94-fresh", operation_timeout=300, retrofit_storage=True
         )
 
-    def test_undo_point_before_swap_and_94_config_right_after(self):
+    def test_undo_point_then_94_config_before_the_swap(self):
         rec = record()
         rec["evidence"]["preflight"] = {"target_image": "image", "revision_suffix": "m94-fresh"}
         app = SimpleNamespace(
@@ -456,13 +456,41 @@ class MigrationStepTests(TestCase):
             patch.object(migration, "wait_healthy", side_effect=lambda *a, **k: calls.append("health")),
         ):
             migration.image_step(self.tenant, rec)
-        # 5.28 cannot read a 9.4 config: stage it only once the swap is submitted.
-        self.assertEqual(calls, ["snapshot", "image", "config", "health"])
+        # The first 9.4 boot must read a 9.4 config: staged before the swap
+        # (and re-staged idempotently before the health wait).
+        self.assertEqual(calls, ["snapshot", "config", "image", "config", "health"])
         self.assertEqual(rec["undo"]["share_snapshot"], "snap-1")
         self.assertEqual(rec["undo"]["source_revision"], "old-rev")
         self.assertEqual(set(rendered), {(migration.VERSION, TAG)})
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.openclaw_version, "2026.5.28")  # version step owns the flip
+
+    def test_failed_submission_restores_the_source_config(self):
+        rec = record()
+        rec["evidence"]["preflight"] = {"target_image": "image", "revision_suffix": "m94-fresh"}
+        app = SimpleNamespace(
+            template=SimpleNamespace(containers=[SimpleNamespace(name="openclaw", image="old")], revision_suffix="old"),
+            latest_ready_revision_name="old-rev",
+        )
+        rendered = []
+
+        def render(tenant):
+            rendered.append(tenant.openclaw_version)
+            return {"v": tenant.openclaw_version}
+
+        with (
+            patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": []}),
+            patch.object(migration.time, "sleep"),
+            patch.object(migration, "get_app", return_value=app),
+            patch("apps.orchestrator.config_generator.generate_openclaw_config", side_effect=render),
+            patch("apps.orchestrator.azure_client.upload_config_to_file_share"),
+            patch("apps.orchestrator.azure_client.snapshot_tenant_share", return_value="snap-1"),
+            patch.object(migration.azure_client, "update_container_image", side_effect=RuntimeError("azure down")),
+            self.assertRaises(RuntimeError),
+        ):
+            migration.image_step(self.tenant, rec)
+        # Staged 9.4, then restored the tenant's own (5.28) render.
+        self.assertEqual(rendered, [migration.VERSION, "2026.5.28"])
 
     def test_version_and_tag_written_together(self):
         migration.version_step(self.tenant, record())

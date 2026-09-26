@@ -699,20 +699,28 @@ def image_step(tenant, record):
         stage_signed_crons(tenant, record, checkpoint="signed_prestaged")
         assert_cutover_safe([j for j, _ in canonical_inventory(tenant)] + record.get("cron_export", []))
         capture_undo_point(tenant, record, app)
-        azure_client.update_container_image(
-            tenant.container_id, image, revision_suffix=suffix, operation_timeout=300, retrofit_storage=True
-        )
+        # 9.4 reads the share config at its FIRST boot. Staged after submission it
+        # raced the new replica, which then hung on the 5.28 config for a whole
+        # readiness budget (99352b56, 2026-09-26). Stage it first: 5.28 reads the
+        # file only at startup, and a failed submit restores the 5.28 render.
+        stage_94_config(tenant, record)
+        try:
+            azure_client.update_container_image(
+                tenant.container_id, image, revision_suffix=suffix, operation_timeout=300, retrofit_storage=True
+            )
+        except Exception:
+            restore_source_config(tenant)
+            raise
     # If a process died after the Azure write, re-use that revision instead of
     # creating another revision and losing the just-restored ephemeral state.
     # Records created before the fence field existed can already point at the
     # submitted revision. Recovery must fence this path before health/staging too.
     if not tenant.openclaw_migration_cron_fenced:
         fence_and_drain(tenant, record)
-    # Only after submission: 5.28 cannot read a 9.4 config, so a failed submit
-    # must leave the 5.28 file in place. A 9.4 boot that raced this write
-    # restarts and picks it up (the revision restart-loops until healthy).
+    # Idempotent re-stage for resumed runs; a first 9.4 boot plus one restart
+    # (3-min gateway readiness budget each) must fit in the health wait.
     stage_94_config(tenant, record)
-    health = wait_healthy(tenant, image=image, suffix=suffix)
+    health = wait_healthy(tenant, image=image, suffix=suffix, timeout=600)
     stage_signed_crons(tenant, record, checkpoint="signed_after_health")
     return health
 
@@ -797,6 +805,15 @@ def reset_unsubmitted_migration(tenant_id) -> dict:
     }
     Tenant.objects.filter(pk=tenant.pk).update(openclaw_migration=rolled_back, openclaw_migration_cron_fenced=False)
     return {"status": "ROLLED_BACK", "kind": "reset_before_image_submit"}
+
+
+def restore_source_config(tenant):
+    """Put the 5.28 render back after a failed image submission (5.28 rejects 9.4's)."""
+    from .azure_client import upload_config_to_file_share
+    from .config_generator import config_to_json, generate_openclaw_config
+
+    source = Tenant.objects.select_related("user").get(pk=tenant.pk)  # DB version is still the source
+    upload_config_to_file_share(str(source.id), config_to_json(generate_openclaw_config(source)))
 
 
 def stage_94_config(tenant, record):
