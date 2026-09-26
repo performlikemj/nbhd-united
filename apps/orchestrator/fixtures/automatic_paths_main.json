@@ -10,7 +10,7 @@
     "runtime/openclaw/chmod-audit-baseline.txt": "0a60a19c4764b8505d1be2a0f0d479463597200a67e2e1ea43600f2c3dc22ed1",
     "runtime/openclaw/claude-settings.json": "614e293f08fb4da96c49ef51b2e7eb9fcd2ee59e0af36c234128445797100a9f",
     "runtime/openclaw/claude-with-token.sh": "50406b15276f3c17ae11c6b543f70bd98ce302d3c6a714c867df4e56cbb4ab08",
-    "runtime/openclaw/entrypoint.sh": "2bc1a27a6cdf8d40263046830e8a8b65c9968d9b10e152291895fc6f156d9834",
+    "runtime/openclaw/entrypoint.sh": "cd669b9b416ca8bdf2cf9eda77af5bd9d0f304fcde2872253a5465be77c70358",
     "runtime/openclaw/evals/upload_security_corpus.test.js": "525b669803160f4c85fa62516cc5b6f04ec80a25416e3638aeca29501aa97b43",
     "runtime/openclaw/external-content-wrap.js": "b8272be20fbbd13d78a2e6dc19fff85e9360291cd8c9660466c50d1b4ab234ee",
     "runtime/openclaw/external-content-wrap.test.js": "8987e0bb6e4a9bdfb90ae34a9669bea61a19c28074da5f58f9cdbf1d76055870",
