@@ -266,3 +266,43 @@ class SpentSyncNoticeTests(TestCase):
         spent = sync_notice("_sync:A", age_ms=3 * HOUR)
         with self.listing(spent), self.assertRaisesRegex(m.MigrationError, "sync_notice_cleanup_failed"):
             m.remove_spent_sync_notices(self.tenant, [spent])
+
+
+class OwnedJobsAreNeverCapturedTests(TestCase):
+    """kihomizuno canary 2026-09-26: capture imported memory-core's job as a row."""
+
+    def setUp(self):
+        self.tenant = tenant_fixture(951003)
+        self.tenant.postgres_cron_canonical = True
+        self.tenant.save(update_fields=["postgres_cron_canonical"])
+        with suppress_cronjob_reconcile():
+            CronJob.objects.create(tenant=self.tenant, name="Morning Briefing", data=system_row(), managed=True)
+
+    def test_capture_imports_neither_memory_core_nor_fuel_jobs(self):
+        dreaming = {
+            **live_copy("Memory Dreaming Promotion"),
+            "payload": {"kind": "agentTurn", "message": "Synthetic", "lightContext": True},
+        }
+        fuel = {**live_copy("_fuel:welcome"), "schedule": {"kind": "cron", "expr": "55 1 7 7 *", "tz": "UTC"}}
+        with patch(
+            "apps.cron.gateway_client.invoke_gateway_tool", return_value={"jobs": [live_copy(), dreaming, fuel]}
+        ):
+            self.assertEqual([j["name"] for j in m.live_source_jobs(self.tenant)], ["Morning Briefing"])
+            m.capture(self.tenant, {"completed": [], "evidence": {}})
+        self.assertEqual(
+            set(CronJob.objects.filter(tenant=self.tenant).values_list("name", flat=True)), {"Morning Briefing"}
+        )
+        m.preservation_precheck(self.tenant, [live_copy()])
+
+    def test_an_already_imported_memory_core_row_does_not_block(self):
+        with suppress_cronjob_reconcile():
+            CronJob.objects.create(
+                tenant=self.tenant,
+                name="Memory Dreaming Promotion",
+                data={
+                    **system_row("Memory Dreaming Promotion"),
+                    "payload": {"kind": "agentTurn", "message": "x", "lightContext": True},
+                },
+                managed=True,
+            )
+        m.preservation_precheck(self.tenant, [live_copy()])

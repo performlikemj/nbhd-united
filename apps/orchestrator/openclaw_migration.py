@@ -230,7 +230,11 @@ def projected_canonical(canonical):
     Postgres unchanged, so enabling one later goes through the ordinary 9.4
     path. Nothing about them is lost by the image swap.
     """
-    return [(job, managed) for job, managed in canonical if job.get("enabled", True) and not _fuel_owned(job)]
+    return [
+        (job, managed)
+        for job, managed in canonical
+        if job.get("enabled", True) and not _fuel_owned(job) and not _runtime_owned(job)
+    ]
 
 
 def _runtime_owned(job):
@@ -303,6 +307,10 @@ def live_source_jobs(tenant, *, spent=None):
     if spent is not None:
         spent.extend(notices)
     jobs = [job for job in jobs if not any(job is notice for notice in notices)]
+    # Jobs other owners rebuild on 9.4 are never captured or imported: the
+    # memory-core dreaming job (kihomizuno canary: capture imported it as a
+    # managed row, which then blocked the image step) and the _fuel mirror.
+    jobs = [job for job in jobs if not _runtime_owned(job) and not _fuel_owned(job)]
     if len({j["name"] for j in jobs}) != len(jobs):
         raise MigrationError("source_names_duplicated")
     return jobs
