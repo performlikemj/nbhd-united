@@ -144,6 +144,15 @@ class CanonicalPrecedenceTests(TestCase):
         self.row(system_row("Old Paused", delivery={"mode": "announce", "to": "private"}), enabled=False)
         m.preservation_precheck(self.tenant, [live_copy()])
 
+    def test_memory_core_dreaming_job_is_not_an_import(self):
+        # kihomizuno canary 2026-09-26: memory-core created it on 5.28 at wake.
+        self.row(system_row())
+        dreaming = {
+            **live_copy("Memory Dreaming Promotion"),
+            "payload": {"kind": "agentTurn", "message": "Synthetic", "lightContext": True},
+        }
+        m.preservation_precheck(self.tenant, [live_copy(), dreaming])
+
     def test_recaptured_import_owned_row_still_needs_proof(self):
         row = self.row(system_row("Imported Earlier"))
         versions = {"Imported Earlier": row.updated_at.isoformat()}
