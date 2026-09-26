@@ -299,8 +299,13 @@ trap 'kill $GATEWAY_PID $PROXY_PID $CRON_SYNC_PID 2>/dev/null; wait' SIGTERM SIG
 # proof that this container can serve traffic. Refuse to announce readiness (or
 # remain alive for TCP-only platform probes) unless the gateway's own health
 # endpoint becomes reachable.
+#
+# 90 x 2s = 3 minutes. A 5.28 tenant's first 9.4 boot on a 0.5-vCPU replica
+# with the workspace on Azure Files takes ~60-85 s after doctor (measured on
+# the 2026-09-26 fleet canary); the old 60 s budget restart-looped some of
+# them forever. Readiness probes still keep traffic away until it is up.
 GATEWAY_READY=0
-for _gateway_attempt in $(seq 1 30); do
+for _gateway_attempt in $(seq 1 90); do
     if curl -sS -f -m 2 "http://127.0.0.1:18789/healthz" >/dev/null 2>&1; then
         GATEWAY_READY=1
         break
@@ -309,7 +314,7 @@ for _gateway_attempt in $(seq 1 30); do
 done
 
 if [ "$GATEWAY_READY" -ne 1 ]; then
-    echo "[entrypoint] FATAL: gateway health check failed after 30 attempts; exiting for restart" >&2
+    echo "[entrypoint] FATAL: gateway health check failed after 90 attempts (3 min); exiting for restart" >&2
     kill "$GATEWAY_PID" "$PROXY_PID" 2>/dev/null || true
     wait || true
     exit 1
