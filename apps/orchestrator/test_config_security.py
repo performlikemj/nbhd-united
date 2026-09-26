@@ -75,6 +75,13 @@ class ConfigSecurityAuditTest(TestCase):
         findings = audit_config_security(config)
         self.assertTrue(any(f.check == "env_secret_leak" for f in findings))
 
+    def test_env_vars_secret_pattern_flagged(self):
+        # 9.4 nests env under env.vars; the leak scan must still see it.
+        config = generate_openclaw_config(self.tenant)
+        config.setdefault("env", {}).setdefault("vars", {})["LEAKED_KEY"] = "sk-ant-api03-leaked-key-here"
+        findings = audit_config_security(config)
+        self.assertTrue(any(f.check == "env_secret_leak" for f in findings))
+
     def test_env_vault_ref_passes(self):
         config = generate_openclaw_config(self.tenant)
         config.setdefault("env", {})["SAFE_KEY"] = "${MY_VAULT_SECRET}"

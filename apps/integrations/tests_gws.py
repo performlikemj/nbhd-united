@@ -243,11 +243,15 @@ class GWSConfigGeneratorTest(TestCase):
 
         config = generate_config(tenant)
 
-        # Check env var
+        # Check env var: 9.4 (the default) takes it under env.vars; flat env
+        # keys are "Unrecognized keys" there.
+        self.assertEqual(tenant.openclaw_version, "2026.9.4")
+        env = config.get("env", {})
         self.assertEqual(
-            config.get("env", {}).get("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"),
-            "/workspace/gws-credentials.json",
+            env.get("vars", {}).get("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"), "/workspace/gws-credentials.json"
         )
+        self.assertEqual(env["vars"]["NBHD_TENANT_ID"], str(tenant.id))
+        self.assertEqual(set(env), {"vars"})
 
         # Check skills loaded
         skills = config.get("skills", {})
@@ -255,6 +259,18 @@ class GWSConfigGeneratorTest(TestCase):
         self.assertIn("/opt/nbhd/skills/gws-shared", extra_dirs)
         self.assertIn("/opt/nbhd/skills/gws-gmail-triage", extra_dirs)
         self.assertIn("/opt/nbhd/skills/gws-calendar-agenda", extra_dirs)
+
+    def test_config_keeps_flat_env_for_5_28(self):
+        from apps.integrations.models import Integration
+        from apps.orchestrator.config_generator import generate_openclaw_config as generate_config
+
+        tenant = _make_tenant(_make_user(), model_tier="starter")
+        tenant.openclaw_version = "2026.5.28"
+        tenant.save(update_fields=["openclaw_version"])
+        Integration.objects.create(tenant=tenant, provider="google", status=Integration.Status.ACTIVE)
+        env = generate_config(tenant).get("env", {})
+        self.assertEqual(env.get("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"), "/workspace/gws-credentials.json")
+        self.assertNotIn("vars", env)
 
     def test_config_no_gws_without_connection(self):
         from apps.orchestrator.config_generator import generate_openclaw_config as generate_config

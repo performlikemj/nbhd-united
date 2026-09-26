@@ -89,7 +89,8 @@ class GateEnvVarsConfigTest(TestCase):
         _make_google_integration(tenant)
 
         config = generate_openclaw_config(tenant)
-        env = config.get("env", {})
+        # 9.4 (the default) takes env vars under env.vars; flat keys are invalid.
+        env = config.get("env", {}).get("vars", {})
 
         self.assertEqual(env.get("NBHD_TENANT_ID"), str(tenant.id))
         self.assertIn("NBHD_API_BASE_URL", env)

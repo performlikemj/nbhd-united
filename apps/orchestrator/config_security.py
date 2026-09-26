@@ -93,7 +93,9 @@ def audit_config_security(config: dict[str, Any]) -> list[SecurityFinding]:
 
     # ── Scan env block for leaked secrets ──
     env = config.get("env", {})
-    for key, value in env.items():
+    # 9.4 nests env vars under env.vars; scan both shapes.
+    nested = env.get("vars") if isinstance(env.get("vars"), dict) else {}
+    for key, value in [*((k, v) for k, v in env.items() if k != "vars"), *nested.items()]:
         if isinstance(value, str) and not value.startswith("${") and _SECRET_RE.search(value):
             findings.append(
                 SecurityFinding(
