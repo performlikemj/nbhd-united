@@ -777,7 +777,8 @@ def stage_signed_crons(tenant, record, *, checkpoint):
     _assert_owner(tenant, record)
     for _ in range(2):
         inventory = canonical_inventory(tenant)
-        reasons = reason_counts(inventory)
+        # Disabled rows stay in Postgres and are never signed (projected_canonical).
+        reasons = reason_counts(projected_canonical(inventory))
         if reasons:
             raise PreservationError(reasons)
         if checkpoint == "signed_prestaged":
