@@ -158,6 +158,17 @@ USER_MD_SKIP_UNCHANGED_TENANT_IDS = env("USER_MD_SKIP_UNCHANGED_TENANT_IDS", def
 # UUIDs) or if "*". Staged rollout for 2026.9.4: set the canary UUID, then widen.
 OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS = env("OPENCLAW_IMAGE_ROLLOUT_TENANT_IDS", default="")
 
+# Automatic 5.28 -> 9.4 upgrade at idle time (apps/orchestrator/openclaw_auto_upgrade.py).
+# OFF unless OPENCLAW_AUTO_UPGRADE_ENABLED is true. The allowlist works like the
+# image rollout one: EMPTY MEANS NOBODY, "*" means every 5.28 tenant. The tag
+# defaults to OPENCLAW_IMAGE_TAG and must be an immutable 2026.9.4-<sha>. Jev
+# only breaks ties on unrecognised failures, behind its own flag. Container App
+# env var names MUST match.
+OPENCLAW_AUTO_UPGRADE_ENABLED = env.bool("OPENCLAW_AUTO_UPGRADE_ENABLED", default=False)
+OPENCLAW_AUTO_UPGRADE_TENANT_IDS = env("OPENCLAW_AUTO_UPGRADE_TENANT_IDS", default="")
+OPENCLAW_AUTO_UPGRADE_TAG = env("OPENCLAW_AUTO_UPGRADE_TAG", default="")
+OPENCLAW_AUTO_UPGRADE_JEV_ENABLED = env.bool("OPENCLAW_AUTO_UPGRADE_JEV_ENABLED", default=False)
+
 # Dropped-turn retry canary gate. The Azure Container App env var name MUST
 # match RETRY_DROPPED_TENANT_IDS exactly. Comma-separated tenant UUIDs; empty
 # means nobody, preserving the standard error notification path for the fleet.

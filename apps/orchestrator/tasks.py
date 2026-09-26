@@ -862,7 +862,14 @@ def hibernate_idle_tenants_task() -> dict:
             .select_for_update(skip_locked=True)
         )
 
+    from apps.orchestrator import openclaw_auto_upgrade
     from apps.orchestrator.hibernation import _cron_active_or_imminent
+
+    auto_upgrading = 0
+    try:
+        openclaw_auto_upgrade.reap_stale_run()
+    except Exception:
+        logger.exception("hibernate_idle_tenants: auto-upgrade recovery check failed")
 
     for tenant in idle_tenants:
         # Re-check last_message_at + cron_wake_at to avoid TOCTOU race
@@ -894,23 +901,37 @@ def hibernate_idle_tenants_task() -> dict:
             )
             continue
 
+        # An idle 5.28 tenant upgrades to 9.4 first; the upgrade task
+        # hibernates it when done. A tenant mid-upgrade is never hibernated.
+        try:
+            intercepted = openclaw_auto_upgrade.intercept_idle_tenant(tenant)
+        except Exception:
+            logger.exception("hibernate_idle_tenants: auto-upgrade check failed for %s", str(tenant.id)[:8])
+            intercepted = openclaw_auto_upgrade.in_flight(tenant.id)
+        if intercepted:
+            auto_upgrading += 1
+            continue
+
         if hibernate_idle_tenant(tenant):
             hibernated += 1
         else:
             failed += 1
 
     logger.info(
-        "hibernate_idle_tenants: hibernated=%d failed=%d skipped_cron_wake=%d skipped_imminent_cron=%d",
+        "hibernate_idle_tenants: hibernated=%d failed=%d skipped_cron_wake=%d skipped_imminent_cron=%d "
+        "auto_upgrading=%d",
         hibernated,
         failed,
         skipped_cron_wake,
         skipped_imminent_cron,
+        auto_upgrading,
     )
     return {
         "hibernated": hibernated,
         "failed": failed,
         "skipped_cron_wake": skipped_cron_wake,
         "skipped_imminent_cron": skipped_imminent_cron,
+        "auto_upgrading": auto_upgrading,
     }
 
 

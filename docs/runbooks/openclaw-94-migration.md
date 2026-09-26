@@ -258,6 +258,50 @@ reset completed steps, or run a competing image bump to force progress.
   resurrected SMB cron state and duplicates **before** reactivating deliveries.
   There is no implemented inverse migration guaranteeing this recovery.
 
+## Automatic upgrade at idle time (default off)
+
+`apps/orchestrator/openclaw_auto_upgrade.py` runs this same tool hands-free
+for 5.28 tenants that come back and then go idle. The manual rule above ("no
+automatic rollback") still holds for operator runs; the automatic path adds
+its own undo because nobody is watching it.
+
+- **Switches** (Django Container App env): `OPENCLAW_AUTO_UPGRADE_ENABLED`
+  (unset = off), `OPENCLAW_AUTO_UPGRADE_TENANT_IDS` (empty = nobody, `*` =
+  every 5.28 tenant), `OPENCLAW_AUTO_UPGRADE_TAG` (optional; defaults to
+  `OPENCLAW_IMAGE_TAG`, must be `2026.9.4-<sha>`), and
+  `OPENCLAW_AUTO_UPGRADE_JEV_ENABLED` (unset = off).
+- **Trigger**: the idle sweep, just before it would hibernate an awake,
+  ACTIVE, unfenced 5.28 tenant with no open migration record and no cooldown.
+  4.x, suspended and hibernated tenants are never touched.
+- **One at a time**: a DB lease (`openclaw_auto_upgrade_lock`) allows one run
+  platform-wide, and the next run starts at least 12 minutes after the last
+  one ends (exec console 429 limit). While a tenant holds the lease, neither
+  the idle sweep nor `check_cron_wake_idle` hibernates it.
+- **Execution**: the QStash task spawns `manage.py auto_upgrade_openclaw` as a
+  detached process, so a worker recycle cannot cut the migration short. Waits
+  are delayed QStash deliveries (120 s after a wake, 5 min before re-waking,
+  12 min before a console retry). A heartbeat keeps the lease alive; if the
+  process dies, the lease lapses and the next sweep resumes the run once via
+  `--takeover` semantics, then rolls back.
+- **Rules**: PASS → hibernate. Failure at `image`/`version`/`config` → roll
+  back at once. Console timeout or 429 at `preflight`/`capture`/`crons`/`verify`
+  → wait 12 min and resume, twice at most. `tenant_unavailable` → re-wake and
+  retry once. Cron timing (`cron_imminent`/`cron_running`) → give up quietly,
+  1-hour cooldown. `BLOCKED_UNSUPPORTED` or anything unrecognised → roll back,
+  email, 7-day cooldown. With the Jev flag on, an unrecognised failure goes to
+  Jev, which can only choose "retry once later" (at p ≥ 0.85) or "roll back".
+- **Safe exit**: a run never ends with its own record fenced. It rolls back
+  with `rollback_tenant` when an undo point exists, and otherwise resets the
+  record to `ROLLED_BACK` and lifts the fence (`reset_unsubmitted_migration`;
+  nothing was written to Azure). It never touches a record another owner holds.
+- **Email**: every rollback or stop emails `PLATFORM_OWNER_EMAIL` with the short
+  tenant ID, the step, the reason code, what was done, and the commands to
+  retry by hand. It never includes user content.
+- **Inspect**: the per-tenant state is in `openclaw_auto_upgrades` (cooldown,
+  counters, last outcome, history); Jev verdicts are also stored on the
+  migration record under `auto_upgrade_decisions`. To clear a cooldown, set
+  `cooldown_until` to null.
+
 ## Runtime-backed cron contract
 
 The cron contract is recorded from the real fleet image
