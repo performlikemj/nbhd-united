@@ -76,11 +76,21 @@ def _fuel_jobs(tenant) -> list[dict]:
     9.4 container. The key is stable per name, so an edited prep cron replaces
     its predecessor and a dropped plan's cron is removed by the writer.
     """
+    from apps.orchestrator.cron_drift import strip_date_line
     from apps.orchestrator.fuel_cron import _desired_fuel_crons
 
     jobs = []
     for job in _desired_fuel_crons(tenant):
         job = dict(job)
+        # Fuel messages are rebuilt on every call with a minute-stamped
+        # "Current date and time: ... SNAPSHOT" first paragraph (the prompt
+        # says never to use it; the runtime appends the live clock at fire
+        # time). Left in, every file rewrite changes the job, so the 9.4
+        # writer re-adds it each pass and verify never matches (eval-behavior
+        # canary 2026-09-26). The 5.28 reconciler strips it the same way.
+        payload = job.get("payload")
+        if isinstance(payload, dict) and isinstance(payload.get("message"), str):
+            job["payload"] = {**payload, "message": strip_date_line(payload["message"])}
         job["declarationKey"] = "nbhd:fuel:" + sha256(job["name"].encode("utf-8")).hexdigest()[:16]
         jobs.append(_payload_model(job))
     return jobs
