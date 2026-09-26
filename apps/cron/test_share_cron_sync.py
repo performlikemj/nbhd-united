@@ -187,6 +187,30 @@ class DesiredJobsTest(TestCase):
         self.assertEqual(second["_fuel:Soccer Engine"]["declarationKey"], key)
         self.assertNotIn("declarationKey", prep)
 
+    def test_fuel_message_is_stable_across_rebuilds(self):
+        def prep(minute):
+            return [
+                {
+                    "name": "_fuel:Plan",
+                    "enabled": True,
+                    "schedule": {"kind": "cron", "expr": "0 6 * * *", "tz": "UTC"},
+                    "payload": {
+                        "kind": "agentTurn",
+                        "message": f"Current date and time: Saturday, September 26, 2026 at 05:{minute} (UTC) "
+                        "— SNAPSHOT taken when this cron payload was last reconciled, may be stale.\n\nPrep body",
+                    },
+                    "delivery": {"mode": "none"},
+                    "sessionTarget": "isolated",
+                }
+            ]
+
+        with patch("apps.orchestrator.fuel_cron._desired_fuel_crons", return_value=prep("05")):
+            first = [j for j in _desired_jobs(self.t) if j["name"] == "_fuel:Plan"][0]
+        with patch("apps.orchestrator.fuel_cron._desired_fuel_crons", return_value=prep("47")):
+            later = [j for j in _desired_jobs(self.t) if j["name"] == "_fuel:Plan"][0]
+        self.assertEqual(first, later)
+        self.assertEqual(first["payload"]["message"], "Prep body")
+
     def test_each_job_carries_stable_nbhd_declaration_key(self):
         row = _mk(self.t, "R", kind="cron")
         jobs = _desired_jobs(self.t)
