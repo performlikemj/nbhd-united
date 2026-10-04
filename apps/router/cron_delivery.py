@@ -569,6 +569,14 @@ class CronDeliveryView(APIView):
         placeholder_message_text, journal_link = extract_journal_link(
             placeholder_message_text, tenant_id=tenant.id, channel=f"cron_{channel}"
         )
+        # ``[[insight:...]]`` markers are platform markup, never user-facing.
+        # Strip the tokens (the statement stays) before every transport and the
+        # at-rest row; the AssistantInsight write waits until the delivery has
+        # passed its skip and dedup gates below so a retried send records once.
+        from apps.insights.markers import INSIGHT_MARKER_RE
+
+        insight_source_text = placeholder_message_text
+        placeholder_message_text = INSIGHT_MARKER_RE.sub(lambda m: (m.group(2) or "").strip(), placeholder_message_text)
         if journal_link is None:
             try:
                 if _is_morning_briefing_send(
@@ -656,6 +664,16 @@ class CronDeliveryView(APIView):
             )
             if duplicate_response is not None:
                 return duplicate_response
+
+        # Record insights from the placeholder-space copy, same as the live
+        # reply paths. Bookkeeping only — a failure must never block delivery.
+        if "[[insight:" in insight_source_text:
+            try:
+                from apps.insights.markers import extract_and_record_insights
+
+                extract_and_record_insights(insight_source_text, tenant=tenant)
+            except Exception:
+                logger.exception("insight marker extraction failed (cron delivery)")
 
         # The current runtime carries job_name but no full schedule occurrence
         # identity. P0's degraded receipt-hour claim above is intentionally

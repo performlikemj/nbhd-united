@@ -261,6 +261,60 @@ class CronDeliveryViewTest(TestCase):
         self.assertNotIn("quick-replies", stored.message_text)
 
     @patch("apps.router.proactive_context._dispatch_ios_push")
+    def test_app_insight_marker_stripped_and_recorded(self, _push):
+        """A scheduled send never shows raw ``[[insight:...]]`` in the app feed."""
+        from apps.insights.models import AssistantInsight
+        from apps.router.models import DeviceToken
+
+        DeviceToken.objects.create(tenant=self.tenant, user=self.user, token="i" * 64)
+
+        resp = self.client.post(
+            self.url,
+            {
+                "message": (
+                    "Nice. [[insight:fuel/morning_workouts]]Both of today's sessions were in the "
+                    "books before 9 a.m.[[/insight]] Mobility is still on the plan."
+                )
+            },
+            format="json",
+            **self._headers(),
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["channel"], "app")
+        stored = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertEqual(
+            stored.message_text,
+            "Nice. Both of today's sessions were in the books before 9 a.m. Mobility is still on the plan.",
+        )
+        insight = AssistantInsight.objects.get(tenant=self.tenant)
+        self.assertEqual(insight.pillar, "fuel")
+        self.assertEqual(insight.statement, "Both of today's sessions were in the books before 9 a.m.")
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_telegram_insight_marker_stripped_before_send(self, mock_client_cls):
+        mock_http = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_http.post.return_value = mock_resp
+        mock_http.__enter__ = MagicMock(return_value=mock_http)
+        mock_http.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_http
+
+        resp = self.client.post(
+            self.url,
+            {"message": "Morning. [[insight:journal/mood]]You write more on rough days.[[/insight]]"},
+            format="json",
+            **self._headers(),
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        sent_text = mock_http.post.call_args.kwargs["json"]["text"]
+        self.assertEqual(sent_text, "Morning. You write more on rough days.")
+        self.assertNotIn("insight", ProactiveOutbound.objects.get(tenant=self.tenant).message_text)
+
+    @patch("apps.router.proactive_context._dispatch_ios_push")
     def test_app_quick_reply_marker_stripped_before_send_and_persisted(self, _push):
         from apps.router.models import DeviceToken
 
